@@ -49,8 +49,8 @@ def add_derived_features(panel):
 
 
 # ---------------- panel ----------------
-def build_panel(data_path, start, end, instruments=None):
-    """(tickers, raw_dfs, feature_panel) on a common daily calendar START..END.
+def build_panel(data_path, start, end, instruments=None, freq='D'):
+    """(tickers, raw_dfs, feature_panel) on a common START..END grid at `freq` (default 'D' = daily).
 
     instruments=None -> all pairs from data.pickle; a list -> keep only those (in that order)."""
     with open(data_path, 'rb') as f:
@@ -64,7 +64,7 @@ def build_panel(data_path, start, end, instruments=None):
         oh = [oh[pos[t]] for t in instruments]
         tk = list(instruments)
     raw = {t: oh[i] for i, t in enumerate(tk)}
-    idx = pd.date_range(start=start, end=end, freq='D', tz='UTC')
+    idx = pd.date_range(start=start, end=end, freq=freq, tz='UTC')
 
     # IMPORTANT (look-ahead guard): SIGNAL features are ffill only, NO bfill.
     # bfill would drag a not-yet-listed ticker's first price into the past, and
@@ -124,39 +124,40 @@ STD_FLOOR = 1e-9        # variance floor: exact ==0 misses a near-constant serie
 
 
 # ---------------- metrics ----------------
-def _sharpe(r):
+def _sharpe(r, ann=ANN):
     r = r[r != 0]
     s = r.std()
     if len(r) < 5 or not np.isfinite(s) or s < STD_FLOOR:
         return np.nan
-    return (r.mean() * ANN) / (s * np.sqrt(ANN))
+    return (r.mean() * ann) / (s * np.sqrt(ann))
 
 
-def _metrics(r):
+def _metrics(r, ann=ANN):
     r = r[r != 0]
     s = r.std()
     if len(r) < 5 or not np.isfinite(s) or s < STD_FLOOR:
         return None
     eq = (1 + r).cumprod()
-    yrs = len(r) / ANN
+    yrs = len(r) / ann
     last = float(eq.iloc[-1])
     return {
-        'sharpe': (r.mean() * ANN) / (s * np.sqrt(ANN)),
+        'sharpe': (r.mean() * ann) / (s * np.sqrt(ann)),
         'dd': float((eq / eq.cummax() - 1).min()),
         'cagr': (last ** (1 / yrs) - 1) if (yrs > 0 and last > 0) else np.nan,  # wiped-out capital -> NaN, not complex
         'n': int(len(r)),
     }
 
 
-def make_market(panel, tk, raw=None):
-    return precompute_market(panel, tk, raw)
+def make_market(panel, tk, raw=None, vol_window=30):
+    return precompute_market(panel, tk, raw, vol_window=vol_window)
 
 
-def simulate_returns(node, tk, panel, market, vol, exec_rate):
+def simulate_returns(node, tk, panel, market, vol, exec_rate, ann=ANN, ewma_lambda=0.06):
     """Full series of the genome's NET returns over the whole period (for champion charts)."""
     try:
         ap = eval_alpha_panel(node, panel)
-        return fast_sim(ap[tk].to_numpy(dtype=np.float64), market, vol, exec_rate)
+        return fast_sim(ap[tk].to_numpy(dtype=np.float64), market, vol, exec_rate,
+                        ann=ann, ewma_lambda=ewma_lambda)
     except Exception:
         return None
 
@@ -169,7 +170,7 @@ def basket_returns(panel):
     return panel['ret'].where(eligible).mean(axis=1).fillna(0.0)
 
 
-def evaluate(node, tk, panel, market, splits, vol, exec_rate):
+def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lambda=0.06):
     """Run the genome through the fast engine. Return a dict with per-segment metrics and the
     train+val returns vector (for correlation/novelty). None -> an invalid genome."""
     try:
@@ -180,7 +181,8 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate):
         return None
 
     try:
-        ret = fast_sim(alpha_panel[tk].to_numpy(dtype=np.float64), market, vol, exec_rate)
+        ret = fast_sim(alpha_panel[tk].to_numpy(dtype=np.float64), market, vol, exec_rate,
+                       ann=ann, ewma_lambda=ewma_lambda)
     except Exception:
         return None
 
@@ -192,7 +194,7 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate):
     if (tr != 0).mean() < MIN_ACTIVE_FRAC or (va != 0).mean() < MIN_ACTIVE_FRAC:
         return None
 
-    m_tr, m_va, m_te = _metrics(tr), _metrics(va), _metrics(te)
+    m_tr, m_va, m_te = _metrics(tr, ann), _metrics(va, ann), _metrics(te, ann)
     if m_tr is None or m_va is None:
         return None
 

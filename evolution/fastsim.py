@@ -18,7 +18,7 @@ EWMA_LAMBDA = 0.06
 TARGET_ANN = 365
 
 
-def precompute_market(panel, tk, raw=None):
+def precompute_market(panel, tk, raw=None, vol_window=30):
     """Constant market matrices [T, N] (the same for all genomes).
 
     raw (the raw daily dfs per ticker) — to compute vol exactly like the engine: on the NATIVE
@@ -38,10 +38,10 @@ def precompute_market(panel, tk, raw=None):
         vcols = {}
         for t in tk:
             nc = raw[t]['close']
-            vcols[t] = ((-1 + nc / nc.shift(1)).rolling(30).std()).reindex(close.index)
+            vcols[t] = ((-1 + nc / nc.shift(1)).rolling(vol_window).std()).reindex(close.index)
         V = pd.DataFrame(vcols)[tk].ffill().fillna(0.0).to_numpy(dtype=np.float64)
     else:                                           # fallback: on the reindexed close
-        V = close.pct_change().rolling(30).std().ffill().fillna(0.0).to_numpy(dtype=np.float64)
+        V = close.pct_change().rolling(vol_window).std().ffill().fillna(0.0).to_numpy(dtype=np.float64)
     V = np.where(V < VOL_FLOOR, VOL_FLOOR, V)
 
     sampled = (close != close.shift(1)).fillna(False).astype(float)
@@ -51,8 +51,10 @@ def precompute_market(panel, tk, raw=None):
     return {'C': C, 'R': R, 'V': V, 'base_elig': base_elig, 'index': idx, 'tk': list(tk)}
 
 
-def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.10):
+def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.10,
+             ann=TARGET_ANN, ewma_lambda=EWMA_LAMBDA):
     """alpha_values: [T, N] raw signal (in market['tk'] order); NaN where there's no data.
+    `ann` = bars/year (vol-target annualization), `ewma_lambda` = vol-EWMA decay per bar.
     Returns a pd.Series of NET capital returns (like capital.pct_change() in the engine)."""
     C, R, V, base_elig = market['C'], market['R'], market['V'], market['base_elig']
     T, N = C.shape
@@ -73,15 +75,15 @@ def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.1
             strat_scalar = 1.0
             cap = 10_000.0
         else:
-            strat_scalar = ewstrat * vol_target / np.sqrt(ewma * TARGET_ANN)
+            strat_scalar = ewstrat * vol_target / np.sqrt(ewma * ann)
             dprice = C[i] - C[i - 1]
             day_pnl = np.nansum(units_prev * dprice)
             nominal_ret = np.nansum(w_prev * R[i])
             capital_ret = nominal_ret * lev_prev
             cap = capital[i - 1] + day_pnl
             if capital_ret != 0:                       # the engine freezes EWMA on "dead" days
-                ewma = EWMA_LAMBDA * capital_ret ** 2 + (1 - EWMA_LAMBDA) * ewma
-                ewstrat = EWMA_LAMBDA * strat_scalar + (1 - EWMA_LAMBDA) * ewstrat
+                ewma = ewma_lambda * capital_ret ** 2 + (1 - ewma_lambda) * ewma
+                ewstrat = ewma_lambda * strat_scalar + (1 - ewma_lambda) * ewstrat
 
         elig = E[i]
         Ci = C[i]
