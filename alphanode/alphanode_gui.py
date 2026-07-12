@@ -19,7 +19,6 @@ import difflib
 import hashlib
 import threading
 import subprocess
-import webbrowser
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -443,15 +442,12 @@ class App:
         self.btn_stop.pack(fill='x', pady=(0, 6), ipady=2)
         b_reset = ttk.Button(btns, text='Reset to defaults', command=self._reset)
         b_reset.pack(fill='x', pady=(0, 6))
-        b_web = ttk.Button(btns, text='Open status in browser', command=self._open_web)
-        b_web.pack(fill='x')
         b_wipe = ttk.Button(btns, text='🗑  Clear all history', style='Danger.TButton',
                             command=self._wipe_history)
         b_wipe.pack(fill='x', pady=(14, 0))
         self._tip(self.btn_start, 'Start the background search with the current settings.')
         self._tip(self.btn_stop, 'Gently stop the search (the current round will finish).')
         self._tip(b_reset, 'Return all settings to their default values.')
-        self._tip(b_web, 'Open the status page in the browser.')
         self._tip(b_wipe, 'Delete all history and found alphas (with confirmation).')
 
     def _section(self, parent, title):
@@ -731,9 +727,6 @@ class App:
 
     def _uni_toggle(self):
         self.e_uni.config(state='disabled' if self.v_uniall.get() else 'normal')
-
-    def _open_web(self):
-        webbrowser.open(f'http://localhost:{self._gi(self.v_port, 8787)}')
 
     def _reset(self):
         self.cfg = dict(DEFAULTS)
