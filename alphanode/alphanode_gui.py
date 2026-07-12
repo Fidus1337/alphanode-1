@@ -36,6 +36,8 @@ if apppaths.RES_ROOT not in sys.path:
 NODE_PY = os.path.join(HERE, 'node.py')                 # dev: scripts via the real python
 FETCH_PY = os.path.join(PROJ, 'fetch_data.py')
 PORTFOLIO_PY = os.path.join(HERE, 'portfolio_build.py')
+SIGNAL_PY = os.path.join(HERE, 'signal_service.py')     # local live-signal API
+SIGNAL_PORT = 8799
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
 STATE_DIR = apppaths.state_dir()
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
@@ -50,7 +52,7 @@ def _child_cmd(role):
     --role, in dev — the real python with the script."""
     if apppaths.FROZEN:
         return [sys.executable, '--role', role]
-    script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY}[role]
+    script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY, 'signal': SIGNAL_PY}[role]
     return [sys.executable, '-u', script]
 
 DEFAULTS = {
@@ -106,6 +108,7 @@ class App:
         self._metrics_seq = 0                             # to discard stale background computations
         self._row_items = {}                              # formula -> table row id (to update cells)
         self._pf_proc = None                              # portfolio-build subprocess
+        self._sig_proc = None                             # signal-API subprocess (one at a time)
         self._pf_img_ref = None                           # keep a ref to the equity PhotoImage (else GC)
         self._pf_doc = None                               # last portfolio result (for re-render on resize)
         self._pf_resize_after = None                      # debounce id for resize re-render
@@ -678,11 +681,17 @@ class App:
         self.btn_pf_paper = ttk.Button(ctl, text='📄 Paper', width=8, state='disabled',
                                        command=self._pf_paper_trade)
         self.btn_pf_paper.pack(side='left', padx=(6, 0))
+        self.btn_pf_sig = ttk.Button(ctl, text='📡 Serve', width=8, state='disabled',
+                                     command=self._pf_serve_signal)
+        self.btn_pf_sig.pack(side='left', padx=(6, 0))
         self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
                                    'weight per asset per day on TEST (same as for a single alpha).')
         self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
                                      'portfolio (all N alphas combined via the real Portfolio engine)\n'
                                      'to run daily on live Binance data — same as for a single alpha.')
+        self._tip(self.btn_pf_sig, 'Start a local signal API for the whole portfolio — serves the\n'
+                                   'combined live target positions as JSON at\n'
+                                   'http://127.0.0.1:8799/signal (localhost).')
         self.lbl_pf = ttk.Label(card3, style='Faint.TLabel', wraplength=900,
                                 text='⚠ selecting by TEST inflates the number (cherry-pick); the '
                                      'diversification gain — combined ≫ any single alpha — is the real part.')
@@ -709,7 +718,7 @@ class App:
         self.lbl_pf_m.config(text='')
         self.pf_img.config(image='')
         self._pf_img_ref = None
-        for b in (self.btn_pf_csv, self.btn_pf_paper):
+        for b in (self.btn_pf_csv, self.btn_pf_paper, self.btn_pf_sig):
             b.config(state='disabled')
 
     def _stat(self, parent, label, col):
@@ -947,8 +956,118 @@ class App:
         try:
             if self.proc and self.proc.poll() is None:
                 self.proc.terminate()
+            self._stop_signal()
         finally:
             self.root.destroy()
+
+    # ---------- local signal API (serve live positions of a formula / portfolio) ----------
+    def _serve_signal(self, formulas, label):
+        formulas = [f for f in (formulas or []) if f and f.strip()]
+        if not formulas:
+            return
+        c = self.cfg
+        if c.get('universe_all', True):
+            try:
+                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
+            except Exception as e:                        # noqa: BLE001
+                messagebox.showerror('Signal API', f'Cannot read the loaded data: {e}', parent=self.root)
+                return
+        else:
+            tickers = [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]
+        if not tickers:
+            messagebox.showwarning('Signal API', 'The pairs universe is empty.', parent=self.root)
+            return
+        self._stop_signal()                               # one service at a time
+        env = dict(os.environ)
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
+                   ALPHANODE_CONFIG_INI=apppaths.config_ini(),
+                   ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
+                   ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
+                   ALPHANODE_SIGNAL_PORT=str(SIGNAL_PORT), ALPHANODE_SIGNAL_REFRESH='900')
+        try:
+            self._sig_proc = subprocess.Popen(
+                _child_cmd('signal'), env=env,
+                cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:                            # noqa: BLE001
+            messagebox.showerror('Signal API', f'Could not start the signal service: {e}', parent=self.root)
+            return
+        self._signal_dialog(label, len(formulas), len(tickers))
+
+    def _pf_serve_signal(self):
+        doc = self._pf_doc
+        formulas = (doc or {}).get('formulas_full')
+        if not formulas:
+            messagebox.showinfo('Signal API', 'Build the portfolio first.', parent=self.root)
+            return
+        self._serve_signal(list(formulas), f'portfolio_top{doc.get("n", len(formulas))}')
+
+    def _stop_signal(self):
+        p, self._sig_proc = self._sig_proc, None
+        try:
+            if p and p.poll() is None:
+                p.terminate()
+        except Exception:                                 # noqa: BLE001
+            pass
+
+    def _signal_dialog(self, label, n_formulas, n_tickers):
+        url = f'http://127.0.0.1:{SIGNAL_PORT}/signal'
+        win = tk.Toplevel(self.root)
+        win.title('Signal API')
+        win.configure(bg=CARD)
+        win.geometry('490x300')
+        frm = tk.Frame(win, bg=CARD)
+        frm.pack(fill='both', expand=True, padx=18, pady=16)
+        tk.Label(frm, text='📡  Signal API running', bg=CARD, fg=TXT,
+                 font=(self.UI, 13, 'bold')).pack(anchor='w')
+        sub = f'portfolio · {n_formulas} alphas' if n_formulas > 1 else label
+        tk.Label(frm, text=f'{sub}  ·  {n_tickers} pairs  ·  live, refresh 15 min', bg=CARD, fg=MUT,
+                 font=(self.UI, 9), wraplength=440, justify='left').pack(anchor='w', pady=(2, 10))
+        tk.Label(frm, text=url, bg=CARD, fg=POS, font=(self.MONO, 11)).pack(anchor='w')
+        status = tk.Label(frm, text='starting — fetching live data, computing the first signal…',
+                          bg=CARD, fg=MUT, font=(self.UI, 9), wraplength=440, justify='left')
+        status.pack(anchor='w', pady=(10, 0))
+        btns = tk.Frame(frm, bg=CARD)
+        btns.pack(anchor='w', pady=(16, 0))
+        ttk.Button(btns, text='Copy URL',
+                   command=lambda: (self.root.clipboard_clear(), self.root.clipboard_append(url))
+                   ).pack(side='left')
+        ttk.Button(btns, text='■  Stop', style='Stop.TButton',
+                   command=lambda: (self._stop_signal(), status.config(text='stopped.'))).pack(side='left', padx=(8, 0))
+        ttk.Button(btns, text='Close', command=win.destroy).pack(side='left', padx=(8, 0))
+        tk.Label(frm, text='Closing this window keeps the API running; use Stop to stop it.\n'
+                           'Advisory signal — not execution. GET /health for status.',
+                 bg=CARD, fg=FAINT, font=(self.UI, 8), justify='left').pack(anchor='w', pady=(12, 0))
+
+        def poll():
+            if not win.winfo_exists():
+                return
+            threading.Thread(target=self._poll_signal_health, args=(status, win), daemon=True).start()
+            win.after(3000, poll)
+        win.after(1000, poll)
+
+    def _poll_signal_health(self, status, win):
+        if self._sig_proc is None:
+            return
+        try:
+            import urllib.request
+            with urllib.request.urlopen(f'http://127.0.0.1:{SIGNAL_PORT}/health', timeout=3) as r:
+                h = json.load(r)
+            if h.get('ok'):
+                age = h.get('age_secs')
+                txt = (f'● serving · updated {h.get("updated_at", "")} ({age:.0f}s ago)'
+                       if age is not None else '● serving')
+            elif h.get('error'):
+                txt = f'⚠ {h["error"]}'
+            else:
+                txt = 'computing the first signal…'
+        except Exception:                                 # noqa: BLE001
+            txt = 'starting…' if (self._sig_proc and self._sig_proc.poll() is None) else 'not running'
+        try:
+            if win.winfo_exists():
+                self.root.after(0, lambda: status.config(text=txt))
+        except (RuntimeError, tk.TclError):
+            pass
 
     # ---------- status polling ----------
     def _poll(self):
@@ -1442,6 +1561,7 @@ class App:
         self._pf_doc = doc                               # remember for re-render on resize
         self.btn_pf_csv.config(state=('normal' if doc.get('weights') else 'disabled'))
         self.btn_pf_paper.config(state=('normal' if doc.get('formulas_full') else 'disabled'))
+        self.btn_pf_sig.config(state=('normal' if doc.get('formulas_full') else 'disabled'))
         m = doc.get('metrics') or {}
         b = doc.get('basket') or {}
         self.lbl_pf.config(text=f'top-{doc.get("n")} by TEST OOS combined via the engine  ·  '
@@ -1587,6 +1707,10 @@ class App:
                    command=lambda: self._paper_trade(champ)).pack(side='left')
         ttk.Button(btnrow, text='📥  Download signals (CSV)',
                    command=lambda: self._download_signals(champ)).pack(side='left', padx=(8, 0))
+        _f = champ.get('formula', '')
+        ttk.Button(btnrow, text='📡  Serve signal (API)',
+                   command=lambda: self._serve_signal([_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6])
+                   ).pack(side='left', padx=(8, 0))
 
         body = tk.Frame(win, bg=CARD)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 14))
