@@ -140,6 +140,9 @@ def main():
     elif role == 'portfolio':
         import portfolio_build
         portfolio_build.main()                           # combines top-N by TEST via the real engine
+    elif role == 'signal':
+        import signal_service
+        signal_service.main()                            # local live-signal HTTP API (JSON, localhost)
     elif role == 'cli':
         import cli
         cli.main(argv[1:])                               # remaining argv -> CLI subcommands
