@@ -114,8 +114,9 @@ class App:
         self._shown = []                                 # what is actually shown in the table (for clicks)
         self._lb_sort = 'base'                           # how to rank the leaderboard: base | test
         self._lb_min = None                              # threshold: show only TEST OOS > X (or None)
+        self._lb_minact = 2.0                            # min trade activity (trades/asset/year on TEST)
         self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'sort': 'base', 'minv': None, 'computed': False}
+                           'ts': 0.0, 'sort': 'base', 'minv': None, 'minact': 2.0, 'computed': False}
         self._lb_target = 20                             # how many DISTINCT families to show
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
@@ -612,19 +613,32 @@ class App:
         self._tip(e_min, 'Show only alphas with TEST OOS above the threshold.\n'
                          'E.g. 1  → only those with held-out Sharpe > 1.\n'
                          'Empty — no filter. Enter or click outside the field — apply.')
+        ttk.Label(sortf, text='  ·  min tr/yr', style='Mut.TLabel').pack(side='left', padx=(6, 4))
+        self.v_lbact = tk.StringVar(value='2')
+        e_act = ttk.Entry(sortf, textvariable=self.v_lbact, width=4, justify='center')
+        e_act.pack(side='left')
+        e_act.bind('<Return>', lambda ev: self._set_lb_sort())
+        e_act.bind('<FocusOut>', lambda ev: self._set_lb_sort())
+        self._tip(e_act, 'Minimum trade activity: trades per asset per year (on TEST).\n'
+                         'Hides "strategies" that barely trade — e.g. 10 trades over 3.5 years,\n'
+                         'whose high TEST Sharpe is a lucky buy-and-hold on a few bets, not real trading.\n'
+                         'E.g. 2 → each asset must be traded at least ~2×/year on average.\n'
+                         'Empty/0 — no filter. Enter or click outside — apply.')
         wrap = ttk.Frame(card2, style='Card.TFrame')
         wrap.pack(fill='both', expand=True)
-        cols = ('rank', 'fit', 'test', 'ls', 'win', 'formula')
+        cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
         for c, txt, w, anc in (('rank', '#', 40, 'center'), ('fit', 'fitness', 74, 'e'),
                                ('test', 'TEST OOS', 84, 'e'), ('ls', 'trades L/S', 84, 'center'),
-                               ('win', 'win%', 56, 'e'), ('formula', 'formula', 372, 'w')):
+                               ('act', 'tr/yr·a', 58, 'e'),
+                               ('win', 'win%', 56, 'e'), ('formula', 'formula', 320, 'w')):
             self.tree.heading(c, text=txt)
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
         self._tip(self.lbl_lb_head, 'trades L/S = total number of long / short positions OPENED over TEST\n'
                                     '(a trade = crossing into long/short from flat or the opposite side);\n'
-                                    'win% = share of days with profit (daily hit-rate). Both on TEST (OOS),\n'
-                                    'computed on current data. Counted on target weights (daily rebalance).')
+                                    'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
+                                    'filter drops barely-trading alphas); win% = share of days with profit.\n'
+                                    'All on TEST (OOS), on target weights (daily rebalance).')
         self.tree.tag_configure('pos', foreground=POS)
         self.tree.tag_configure('neg', foreground=NEG)
         self.tree.tag_configure('odd', background=STRIPE)
@@ -826,7 +840,8 @@ class App:
         self._treesig = None
         self._shown = []
         self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'sort': self._lb_sort, 'minv': self._lb_min, 'computed': False}
+                           'ts': 0.0, 'sort': self._lb_sort, 'minv': self._lb_min,
+                           'minact': self._lb_minact, 'computed': False}
         self._history = []
         self._draw_chart()
         self.s_rounds.config(text='0')
@@ -1020,8 +1035,9 @@ class App:
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
-    def _lb_head_for(self, mode, minv=None):
-        flt = f'  ·  TEST > {minv:+.2f} filter' if minv is not None else ''
+    def _lb_head_for(self, mode, minv=None, minact=None):
+        flt = f'  ·  TEST > {minv:+.2f}' if minv is not None else ''
+        flt += f'  ·  ≥{minact:g} tr/yr·a' if minact else ''
         if mode == 'test':
             return ('TOP BY TEST OOS  ·  ⚠ cherry-pick on held-out (number inflated)' + flt +
                     '  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
@@ -1038,14 +1054,27 @@ class App:
         except ValueError:
             return None
 
+    def _read_lb_act(self):
+        """Min trade activity from the field (trades/asset/year): empty/0/garbage -> None (no filter)."""
+        raw = (self.v_lbact.get() or '').strip().replace(',', '.')
+        if not raw:
+            return None
+        try:
+            v = float(raw)
+        except ValueError:
+            return None
+        return v if v > 0 else None
+
     def _set_lb_sort(self):
         mode = self.v_lbsort.get()
         minv = self._read_lb_min()
-        if mode == self._lb_sort and minv == self._lb_min:
+        minact = self._read_lb_act()
+        if mode == self._lb_sort and minv == self._lb_min and minact == self._lb_minact:
             return
         self._lb_sort = mode
         self._lb_min = minv
-        self._lb_head_text = self._lb_head_for(mode, minv)
+        self._lb_minact = minact
+        self._lb_head_text = self._lb_head_for(mode, minv, minact)
         self.lbl_lb_head.config(text=self._lb_head_text)
         self._start_lb_compute(force=True)               # immediate recompute for the new order/filter
         self._drain_lb()                                 # and render, even if the node is stopped
@@ -1060,11 +1089,12 @@ class App:
         if cache['computing']:
             return
         if (not force and mt == cache['mtime'] and cache.get('sort') == self._lb_sort
-                and cache.get('minv') == self._lb_min):
+                and cache.get('minv') == self._lb_min and cache.get('minact') == self._lb_minact):
             return
         cache['computing'] = True
         cache['ts'] = time.time()
-        threading.Thread(target=self._compute_diverse, args=(lib, mt, self._lb_sort, self._lb_min),
+        threading.Thread(target=self._compute_diverse,
+                         args=(lib, mt, self._lb_sort, self._lb_min, self._lb_minact),
                          daemon=True).start()
 
     def _drain_lb(self, tries=20):
@@ -1081,11 +1111,16 @@ class App:
     def _render_lb(self, best):
         """Fill the table and adjust the header (including when the filter let no one through)."""
         self._fill_tree(best)
-        if not best and self._lb_min is not None and self._lib_cache.get('computed'):
-            self._lb_head_text = (f'NO ALPHAS WITH TEST OOS > {self._lb_min:+.2f}  ·  '
-                                  'lower the threshold or clear the field')
+        if not best and (self._lb_min is not None or self._lb_minact) and self._lib_cache.get('computed'):
+            parts = []
+            if self._lb_min is not None:
+                parts.append(f'TEST OOS > {self._lb_min:+.2f}')
+            if self._lb_minact:
+                parts.append(f'≥ {self._lb_minact:g} tr/yr·a')
+            self._lb_head_text = ('NO ALPHAS WITH ' + ' AND '.join(parts) +
+                                  '  ·  lower the thresholds or clear the fields')
         else:
-            self._lb_head_text = self._lb_head_for(self._lb_sort, self._lb_min)
+            self._lb_head_text = self._lb_head_for(self._lb_sort, self._lb_min, self._lb_minact)
         self.lbl_lb_head.config(text=self._lb_head_text)
 
     def _refresh_leaderboard(self, status_best):
@@ -1102,7 +1137,7 @@ class App:
         elif not cache.get('computed'):
             self._fill_tree(status_best)                 # until computed — the top from the node (as before)
 
-    def _compute_diverse(self, path, mtime, sort, minv):
+    def _compute_diverse(self, path, mtime, sort, minv, minact):
         rows = []
         try:
             for line in open(path, encoding='utf-8'):
@@ -1122,6 +1157,8 @@ class App:
             tk_ = self._LB_TESTKEY
             rows = [c for c in rows if tk_(c) is not None and tk_(c) > minv]
         rows.sort(key=keyf, reverse=True)                # by fitness min(train,val) OR by TEST OOS
+        if minact:                                       # drop barely-trading alphas (relative activity)
+            rows = self._filter_active(rows, minact)
         kept = []
         for c in rows[:500]:                             # candidates — the top by the chosen metric
             f = c.get('formula', '')
@@ -1130,7 +1167,7 @@ class App:
             if len(kept) >= self._lb_target:
                 break
         self._lib_cache.update(diverse=kept, mtime=mtime, computing=False, dirty=True,
-                               sort=sort, minv=minv, computed=True)
+                               sort=sort, minv=minv, minact=minact, computed=True)
 
     def _fill_tree(self, best):
         best = self._dedup(best)
@@ -1151,22 +1188,24 @@ class App:
             formula = c.get('formula', '')
             f = formula if len(formula) <= 78 else formula[:78] + '…'
             m = self._metrics_cache.get(formula)
-            ls, win = self._fmt_metrics(m)
+            ls, act, win = self._fmt_metrics(m)
             item = self.tree.insert('', 'end', values=(
                 i + 1, f'{base:+.2f}' if base is not None else '—',
-                f'{ts:+.2f}' if ts is not None else '—', ls, win, f),
+                f'{ts:+.2f}' if ts is not None else '—', ls, act, win, f),
                 tags=(sign, stripe))
             self._row_items[formula] = item
         self._start_metrics(best)                        # compute long/short/win in the background
 
     @staticmethod
     def _fmt_metrics(m):
-        """('long/short' string, 'win%' string) from the cache: None=still computing, 'err'=failed."""
+        """('L/S', 'tr/yr·a', 'win%') strings from the cache: None=still computing, 'err'=failed."""
         if m is None:
-            return '…', '…'
+            return '…', '…', '…'
         if m == 'err':
-            return '—', '—'
-        return f'{m["long"]:.0f}/{m["short"]:.0f}', f'{m["win"] * 100:.0f}%'
+            return '—', '—', '—'
+        a = m.get('act', 0.0)
+        astr = f'{a:.1f}' if a < 10 else f'{a:.0f}'
+        return f'{m["long"]:.0f}/{m["short"]:.0f}', astr, f'{m["win"] * 100:.0f}%'
 
     def _start_metrics(self, champs):
         """Background computation of long/short/win (on TEST) for the shown alphas; cached by formula."""
@@ -1177,46 +1216,88 @@ class App:
         seq = self._metrics_seq
         threading.Thread(target=self._compute_metrics, args=(todo, seq), daemon=True).start()
 
+    def _metrics_ctx(self):
+        """Prepared context for trade-stat computation: panel/market, the TEST mask, and the
+        universe size + span used for the activity rate. Built once per pass; may raise if the
+        data/config is unavailable (callers fail open)."""
+        import numpy as np
+        cfg = self._build_plot_cfg()
+        _tk, panel, market, _basket = self._get_market(cfg)
+        ts0, ts1 = cfg['splits']['test']                 # TEST (OOS) window
+        tmask = (market['index'] >= ts0) & (market['index'] < ts1)
+        elig = market['base_elig']
+        n_assets = int(elig[tmask].any(axis=0).sum()) or int(elig.shape[1])   # assets live on TEST
+        years = max(float(np.count_nonzero(tmask)) / 365.0, 1e-9)
+        return {'panel': panel, 'market': market, 'V': market['V'], 'elig': elig, 'tmask': tmask,
+                'n_assets': max(1, n_assets), 'years': years, 'vol': cfg['vol'], 'exec': cfg['exec']}
+
+    def _trade_stats(self, formula, ctx):
+        """{long, short, win, act} for one formula on TEST — act = trades per asset per year
+        (relative activity, universe/period independent). 'err' if it doesn't parse or never trades."""
+        import numpy as np
+        import pandas as pd
+        from genome import parse
+        from evaluator import eval_alpha_panel
+        from fastsim import fast_sim
+        market, V, elig, tmask = ctx['market'], ctx['V'], ctx['elig'], ctx['tmask']
+        try:
+            raw = eval_alpha_panel(parse(formula), ctx['panel'])[market['tk']].to_numpy(dtype=np.float64)
+            A = pd.DataFrame(raw).ffill().to_numpy()
+            E = elig & np.isfinite(A)
+            fc = np.where(E, np.where(E, A, 0.0) / V, 0.0)
+            chips = np.nansum(np.abs(fc), axis=1, keepdims=True)
+            W = fc / np.where(chips == 0.0, 1.0, chips)                      # + long / − short
+            side = np.where(W > 0.0005, 1, np.where(W < -0.0005, -1, 0))     # daily side [T,N]
+            if not np.abs(side[tmask]).any():                               # no positions on TEST — invalid
+                return 'err'
+            # a "trade" = opening a position: cross into long/short from flat/opposite
+            prev = np.vstack([np.zeros((1, side.shape[1])), side[:-1]])      # previous calendar day
+            long_tr = int(((side == 1) & (prev != 1))[tmask].sum())         # long entries in TEST
+            short_tr = int(((side == -1) & (prev != -1))[tmask].sum())      # short entries in TEST
+            rt = fast_sim(raw, market, ctx['vol'], ctx['exec']).to_numpy()[tmask]
+            active = np.abs(rt) > 1e-9                                       # days when something happened
+            win = float((rt[active] > 0).mean()) if active.any() else 0.0
+            act = (long_tr + short_tr) / ctx['n_assets'] / ctx['years']     # trades / asset / year
+            return {'long': long_tr, 'short': short_tr, 'win': win, 'act': act}
+        except Exception:                                                   # noqa: BLE001
+            return 'err'
+
+    def _filter_active(self, rows, minact, cap=140):
+        """Keep candidates whose activity >= minact (trades/asset/year on TEST). Bounded and
+        cache-backed: evaluate the top candidates until enough pass or the eval budget is spent;
+        fail open (return rows unchanged) if data/config is unavailable."""
+        with self._metrics_lock:
+            try:
+                ctx = self._metrics_ctx()
+            except Exception:                            # noqa: BLE001  (no data/config)
+                return rows
+            want, out, evals = self._lb_target * 3, [], 0
+            for c in rows:
+                f = c.get('formula', '')
+                m = self._metrics_cache.get(f)
+                if not (isinstance(m, dict) and 'act' in m):
+                    if evals >= cap:
+                        break                            # budget spent — the rest are lower-ranked
+                    m = self._trade_stats(f, ctx)
+                    self._metrics_cache[f] = m
+                    evals += 1
+                if isinstance(m, dict) and m.get('act', 0.0) >= minact:
+                    out.append(c)
+                    if len(out) >= want:
+                        break
+            return out
+
     def _compute_metrics(self, champs, seq):
         with self._metrics_lock:
             try:
-                import numpy as np
-                import pandas as pd
-                from genome import parse
-                from evaluator import eval_alpha_panel
-                from fastsim import fast_sim
-                cfg = self._build_plot_cfg()
-                _tk, panel, market, _basket = self._get_market(cfg)
-                ts0, ts1 = cfg['splits']['test']         # TEST (OOS) window
-                idx = market['index']
-                tmask = (idx >= ts0) & (idx < ts1)
-                V, elig = market['V'], market['base_elig']
+                ctx = self._metrics_ctx()
                 for c in champs:
                     if seq != self._metrics_seq:         # the list changed — drop the stale computation
                         return
                     formula = c['formula']
-                    try:
-                        raw = eval_alpha_panel(parse(formula), panel)[market['tk']].to_numpy(dtype=np.float64)
-                        A = pd.DataFrame(raw).ffill().to_numpy()
-                        E = elig & np.isfinite(A)
-                        fc = np.where(E, np.where(E, A, 0.0) / V, 0.0)
-                        chips = np.nansum(np.abs(fc), axis=1, keepdims=True)
-                        W = fc / np.where(chips == 0.0, 1.0, chips)      # + long / − short
-                        side = np.where(W > 0.0005, 1, np.where(W < -0.0005, -1, 0))   # daily side [T,N]
-                        if not np.abs(side[tmask]).any():                # no positions on TEST — invalid
-                            self._metrics_cache[formula] = 'err'
-                            continue
-                        # a "trade" = opening a position: cross into long/short from flat/opposite
-                        prev = np.vstack([np.zeros((1, side.shape[1])), side[:-1]])    # previous calendar day
-                        long_tr = int(((side == 1) & (prev != 1))[tmask].sum())        # long entries in TEST
-                        short_tr = int(((side == -1) & (prev != -1))[tmask].sum())     # short entries in TEST
-                        rets = fast_sim(raw, market, cfg['vol'], cfg['exec']).to_numpy()
-                        rt = rets[tmask]
-                        active = np.abs(rt) > 1e-9                        # days when something happened
-                        win = float((rt[active] > 0).mean()) if active.any() else 0.0
-                        self._metrics_cache[formula] = {'long': long_tr, 'short': short_tr, 'win': win}
-                    except Exception:                    # noqa: BLE001
-                        self._metrics_cache[formula] = 'err'
+                    m = self._metrics_cache.get(formula)
+                    if not (isinstance(m, dict) and 'act' in m):     # not already done by the filter
+                        self._metrics_cache[formula] = self._trade_stats(formula, ctx)
             except Exception:                            # noqa: BLE001  (no data/config — quietly)
                 for c in champs:
                     self._metrics_cache.setdefault(c.get('formula', ''), 'err')
@@ -1233,8 +1314,9 @@ class App:
         for formula, item in list(self._row_items.items()):
             if not self.tree.exists(item):
                 continue
-            ls, win = self._fmt_metrics(self._metrics_cache.get(formula))
+            ls, act, win = self._fmt_metrics(self._metrics_cache.get(formula))
             self.tree.set(item, 'ls', ls)
+            self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
 
     # ---------- equity chart on click (TRAIN|VAL|TEST + B&H) ----------
