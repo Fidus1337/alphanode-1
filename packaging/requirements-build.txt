@@ -1,0 +1,12 @@
+# Dependencies for BUILDING the application (frozen). Installed in CI/locally before PyInstaller.
+# The runtime graph is intentionally narrow: numpy/pandas/matplotlib(Agg)/tkinter + aiosonic/orjson/onecache
+# (Binance data fetcher). scipy/seaborn/statsmodels are NOT in the bundle (excluded in .spec).
+numpy>=1.24
+pandas>=2.0
+matplotlib>=3.6
+requests          # quantpylib.throttler.aiosonic imports requests
+aiosonic==0.31.1  # quantpylib is verified on 0.31.x (the API changed in 1.x)
+orjson
+onecache
+pillow            # icon generation (make_icon.py)
+pyinstaller>=6.0

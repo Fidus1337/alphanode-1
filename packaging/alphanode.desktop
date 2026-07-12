@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=AlphaNode
+GenericName=Alpha strategy search
+Comment=Evolutionary search for trading strategies (GP) with a live status panel
+Exec=AlphaNode
+Icon=alphanode
+Categories=Office;Finance;Science;
+Terminal=false
+StartupNotify=true

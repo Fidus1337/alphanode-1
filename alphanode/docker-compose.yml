@@ -1,0 +1,32 @@
+# Run the node:  docker-compose up --build -d    (from the alphanode/ folder)   -> `run` command
+# Status:        http://localhost:8787
+# Other CLI commands in the same image (they read the same /data, don't disturb the running node):
+#   docker compose run --rm alphanode top --sort test --min-test 1
+#   docker compose run --rm alphanode status
+#   docker compose run --rm alphanode fetch --top 150 --min-years 3
+#   docker compose run --rm alphanode export --sort test --rank 1
+services:
+  alphanode:
+    build:
+      context: ..                       # repo root (needs evolution/, quantpylib/, data.pickle)
+      dockerfile: alphanode/Dockerfile
+    # Resource hard cap at the container level. Tune to your percentage × number of cores:
+    # 50% of 12 cores -> cpus "6". The node also limits workers itself via ALPHANODE_CPU_PERCENT.
+    cpus: "4.0"
+    mem_limit: 4g
+    environment:
+      ALPHANODE_CPU_PERCENT: "50"       # 5..95 -> number of parallel workers = % × cores
+      ALPHANODE_UNIVERSE: "all"          # all | BTCUSDT,ETHUSDT,BNBUSDT,...
+      ALPHANODE_POP: "200"
+      ALPHANODE_GENS: "25"
+      ALPHANODE_SEED: "1"
+      ALPHANODE_PAUSE: "5"               # pause between rounds (sec)
+      # ALPHANODE_MAX_ROUNDS: "0"        # 0 = run forever
+    volumes:
+      - alphanode-data:/data             # alpha library + status (survives restart)
+    ports:
+      - "8787:8787"                      # minimal status interface
+    restart: unless-stopped
+
+volumes:
+  alphanode-data:

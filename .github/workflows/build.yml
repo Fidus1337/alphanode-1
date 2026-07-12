@@ -1,0 +1,115 @@
+name: build-desktop
+
+# Build of the AlphaNode desktop application: Windows (.exe + Inno Setup installer) and Linux (AppImage).
+# Run manually (Actions -> build-desktop -> Run) or by pushing a vX.Y.Z tag (which also produces a Release).
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  # ---------------------------------------------------------------- Windows
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packaging/requirements-build.txt
+
+      - name: Icon
+        run: python packaging/make_icon.py
+
+      - name: PyInstaller (onedir)
+        run: pyinstaller --noconfirm --clean --distpath packaging/dist --workpath packaging/build packaging/AlphaNode.spec
+
+      - name: Selfcheck (frozen)
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath "packaging\dist\AlphaNode\AlphaNode.exe" `
+               -ArgumentList "--role","selfcheck" `
+               -WorkingDirectory "packaging\dist\AlphaNode" -Wait -PassThru
+          if (Test-Path "packaging\dist\AlphaNode\selfcheck.log") {
+            Get-Content "packaging\dist\AlphaNode\selfcheck.log"
+          }
+          if ($p.ExitCode -ne 0) { throw "selfcheck failed ($($p.ExitCode))" }
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path packaging/dist/AlphaNode/* -DestinationPath packaging/dist/AlphaNode-windows-portable.zip
+
+      - name: Inno Setup installer
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" packaging\AlphaNode.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alphanode-windows
+          path: |
+            packaging/dist/AlphaNode-windows-portable.zip
+            packaging/Output/AlphaNode-Setup.exe
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Linux
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: System libs (FUSE for AppImage, Tk for the build)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libfuse2 tk-dev
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packaging/requirements-build.txt
+
+      - name: Build AppImage
+        env:
+          PYTHON: python
+          APPIMAGE_EXTRACT_AND_RUN: '1'      # runners without FUSE mounting -> extract-and-run
+        run: bash packaging/build_linux.sh
+
+      - name: Selfcheck + one node round (frozen)
+        run: |
+          BIN=packaging/dist/AlphaNode/AlphaNode
+          "$BIN" --role selfcheck || (cat packaging/dist/AlphaNode/selfcheck.log; exit 1)
+          ALPHANODE_MAX_ROUNDS=1 ALPHANODE_POP=20 ALPHANODE_GENS=2 ALPHANODE_PAUSE=0 \
+          ALPHANODE_STATE_DIR="$RUNNER_TEMP/an" ALPHANODE_STATUS_PORT=8799 "$BIN" --role node
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alphanode-linux
+          path: packaging/dist/AlphaNode-x86_64.AppImage
+          if-no-files-found: error
+
+  # ---------------------------------------------------------------- Release (on tag)
+  release:
+    needs: [windows, linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/**/*
+          generate_release_notes: true

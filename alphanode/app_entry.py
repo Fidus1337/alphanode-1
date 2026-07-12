@@ -1,0 +1,163 @@
+"""Single entry point of the built application (PyInstaller).
+
+The same executable can launch in different roles — the GUI spawns its own child processes via
+`sys.executable --role <role>` (in the built form there's no plain python nearby, so we launch
+ourselves):
+
+    <exe>                      → GUI (default)
+    <exe> --role node          → background search node (node.main)
+    <exe> --role fetch [args]  → Binance data fetcher (fetch_data.main)
+    <exe> --role runpy F [a…]  → run python file F of a paper-trade bundle (for the "run" button)
+
+In development mode this file is not used (the GUI calls scripts through real python).
+"""
+import os
+import sys
+
+
+def _fix_std_streams():
+    """In a windowed build on Windows sys.stdout/stderr = None -> print() crashes. Child roles
+    (node/fetch) write a log that the parent reads through a pipe: we reconnect the stream to fd 1/2,
+    otherwise to /dev/null. On Linux the streams are live, so this branch is harmless."""
+    for name, fd in (('stdout', 1), ('stderr', 2)):
+        if getattr(sys, name, None) is None:
+            try:
+                stream = os.fdopen(fd, 'w', buffering=1)
+            except OSError:
+                stream = open(os.devnull, 'w')
+            setattr(sys, name, stream)
+
+
+def _prep_path():
+    """Make alphanode/, the resource root, and evolution/ importable (in the bundle and in dev)."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for p in (here,):
+        if p not in sys.path:
+            sys.path.insert(0, p)
+    import apppaths                                       # noqa: E402  (after inserting here into path)
+    for p in (apppaths.RES_ROOT, os.path.join(apppaths.RES_ROOT, 'evolution')):
+        if os.path.isdir(p) and p not in sys.path:
+            sys.path.insert(0, p)
+
+
+def _selfcheck():
+    """Windowless diagnostics of the built bundle: imports, engine, data, Tk. Writes selfcheck.log to
+    cwd and exits with code 0/1 (in a windowed build stdout may be unavailable — CI checks the code and
+    the log). Used during build and in CI (<exe> --role selfcheck)."""
+    import io
+    import traceback
+    buf = io.StringIO()
+
+    def out(*a):
+        line = ' '.join(str(x) for x in a)
+        print(line)
+        buf.write(line + '\n')
+
+    try:
+        _selfcheck_body(out)
+    except Exception:                                    # noqa: BLE001
+        buf.write('SELFCHECK FAILED\n' + traceback.format_exc())
+        try:
+            with open('selfcheck.log', 'w', encoding='utf-8') as f:
+                f.write(buf.getvalue())
+        except OSError:
+            pass
+        print(buf.getvalue(), file=sys.stderr)
+        sys.exit(1)
+    try:
+        with open('selfcheck.log', 'w', encoding='utf-8') as f:
+            f.write(buf.getvalue())
+    except OSError:
+        pass
+    sys.exit(0)
+
+
+def _selfcheck_body(out):
+    import os
+    import pickle
+    import apppaths
+    out('frozen      :', apppaths.FROZEN)
+    out('res_root    :', apppaths.RES_ROOT)
+    out('user_dir    :', apppaths.USER_DIR)
+    out('config_ini  :', apppaths.config_ini(), os.path.exists(apppaths.config_ini()))
+    dp = apppaths.data_path()
+    out('data_path   :', dp, os.path.exists(dp))
+
+    import numpy, pandas, matplotlib                      # noqa: F401
+    out('numpy/pandas/mpl:', numpy.__version__, pandas.__version__, matplotlib.__version__)
+
+    from config import load_config
+    cfg = load_config()
+    out('load_config : ok, instruments =', 'all' if cfg.get('instruments') is None
+        else len(cfg['instruments']))
+
+    from evaluator import build_panel                     # noqa: F401
+    from evolved_strategy import make_evolved             # noqa: F401
+    from quantpylib.simulator.alpha import Portfolio      # noqa: F401
+    out('engine imports: ok')
+
+    if os.path.exists(dp):
+        with open(dp, 'rb') as f:
+            tk_, _oh = pickle.load(f)
+        out('dataset     :', len(tk_), 'pairs')
+    else:
+        out('dataset     : no embedded data.pickle (download it in the app)')
+
+    import paper_export
+    out('paper EVO   :', paper_export.EVO, os.path.isdir(paper_export.EVO))
+    out('paper QUANT :', paper_export.QUANT, os.path.isdir(paper_export.QUANT))
+
+    if os.environ.get('DISPLAY') or sys.platform.startswith('win'):
+        import tkinter as tk
+        r = tk.Tk()
+        r.withdraw()
+        import alphanode_gui
+        alphanode_gui.App(r)                              # build the whole UI (window hidden)
+        out('gui build   : ok, child_cmd(node) =', alphanode_gui._child_cmd('node')[:2], '…')
+        r.destroy()
+    else:
+        out('gui build   : skipped (no DISPLAY)')
+    out('SELFCHECK OK')
+
+
+def main():
+    import multiprocessing
+    multiprocessing.freeze_support()                     # portfolio build uses a process pool
+    _fix_std_streams()
+    _prep_path()
+    argv = sys.argv
+    role = os.environ.get('ALPHANODE_ROLE')
+    if len(argv) >= 3 and argv[1] == '--role':
+        role = argv[2]
+        del argv[1:3]                                    # leave clean argv for the child code
+
+    if role == 'node':
+        import node
+        node.main()
+    elif role == 'fetch':
+        import fetch_data
+        fetch_data.main()                                # it calls os._exit() itself
+    elif role == 'portfolio':
+        import portfolio_build
+        portfolio_build.main()                           # combines top-N by TEST via the real engine
+    elif role == 'cli':
+        import cli
+        cli.main(argv[1:])                               # remaining argv -> CLI subcommands
+    elif role == 'selfcheck':
+        _selfcheck()
+    elif role == 'runpy':
+        if len(argv) < 2:
+            print('runpy: no file given', file=sys.stderr)
+            sys.exit(2)
+        import runpy
+        target = os.path.abspath(argv[1])
+        sys.argv = [target] + list(argv[2:])             # as if the script itself was launched
+        os.chdir(os.path.dirname(target))
+        runpy.run_path(target, run_name='__main__')
+    else:
+        import alphanode_gui
+        alphanode_gui.main()
+
+
+if __name__ == '__main__':
+    main()
