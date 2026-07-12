@@ -18,7 +18,7 @@ current work, and can beat it.
 
 | File | Role |
 |------|------|
-| `primitives.py` | Operator dictionary: time-series (`ts_mean/zscore/delta/roc/ema/...`), element-wise (`add/sub/mul/div/sign/tanh/...`), cross-sectional (`cs_rank/zscore/demean/scale`). All on wide tables, with no look-ahead. |
+| `primitives.py` | Operator dictionary (38 ops): time-series unary (`ts_mean/std/zscore/rank/argmax/argmin/median/skew/kurt/roc/delta/delay/sum/min/max/ema/decay_linear`), time-series binary (`ts_corr/ts_cov`), element-wise (`add/sub/mul/div/pmin/pmax/gt/lt/neg/sign/abs/slog/tanh/sigmoid/ssqrt`), cross-sectional (`cs_rank/zscore/demean/scale`). Terminals: OHLCV + `ret` and derived `vwap/range/body/dvol/logret` (built in `evaluator.add_derived_features`, shared with the live export). Windows `[2..200]`. All on wide tables, past-only. |
 | `genome.py` | Genome = an expression tree. Random generation, crossover (swapping subtrees), mutations (subtree / operator / window). |
 | `evaluator.py` | Compile tree → wide signal table → lightweight `PrecomputedAlpha(Alpha)` → `run_simulation()`. Metrics per segment from the `capital` column (NET, after fees). |
 | `evolution.py` | The GA loop: tournament selection, elitism, random injection, formula cache, parallel evaluation, a diverse Hall of Fame. |

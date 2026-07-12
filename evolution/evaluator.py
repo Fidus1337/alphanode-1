@@ -28,6 +28,25 @@ np.seterr(divide='ignore', invalid='ignore')
 ANN = 365
 MIN_ACTIVE_FRAC = 0.10      # the signal must actually trade on at least 10% of the segment's days
 
+BASE_FEATURES = ['close', 'open', 'high', 'low', 'volume']
+
+
+def add_derived_features(panel):
+    """Add derived terminal features to `panel` IN PLACE (same-day transforms of OHLCV, so
+    look-ahead safe). Needs the 5 base OHLCV tables; adds 'ret' if it isn't there yet. Shared by
+    the search panel (build_panel) and the live export (evolved_strategy) so the terminal set
+    never diverges between them."""
+    def _fin(df):
+        return df.replace([np.inf, -np.inf], np.nan)
+    if 'ret' not in panel:
+        panel['ret'] = panel['close'].pct_change()
+    panel['vwap'] = (panel['high'] + panel['low'] + panel['close']) / 3.0    # typical price
+    panel['range'] = _fin((panel['high'] - panel['low']) / panel['close'])   # intrabar range
+    panel['body'] = _fin((panel['close'] - panel['open']) / panel['open'])   # candle body
+    panel['dvol'] = panel['close'] * panel['volume']                         # dollar volume
+    panel['logret'] = _fin(np.log1p(panel['ret']))                           # log return
+    return panel
+
 
 # ---------------- panel ----------------
 def build_panel(data_path, start, end, instruments=None):
@@ -56,8 +75,8 @@ def build_panel(data_path, start, end, instruments=None):
     def wide(col):
         return pd.DataFrame({t: raw[t][col] for t in tk}).reindex(idx).ffill()
 
-    panel = {c: wide(c) for c in ['close', 'open', 'high', 'low', 'volume']}
-    panel['ret'] = panel['close'].pct_change()
+    panel = {c: wide(c) for c in BASE_FEATURES}
+    add_derived_features(panel)                 # 'ret' + vwap/range/body/dvol/logret
     return tk, raw, panel
 
 

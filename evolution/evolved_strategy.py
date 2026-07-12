@@ -22,9 +22,8 @@ if PROJ not in sys.path:
     sys.path.insert(0, PROJ)
 
 from quantpylib.simulator.alpha import Alpha    # noqa: E402
-import primitives as P                          # noqa: E402
 from genome import parse                        # noqa: E402
-from evaluator import eval_alpha_panel          # noqa: E402
+from evaluator import eval_alpha_panel, add_derived_features   # noqa: E402
 
 
 class EvolvedAlpha(Alpha):
@@ -45,18 +44,20 @@ class EvolvedAlpha(Alpha):
 
     def post_compute(self, date_range):
         # by this point the engine has already reindexed self.dfs and computed ret/vol/eligible
+        base = ['close', 'open', 'high', 'low', 'volume', 'ret']
         panel = {f: pd.DataFrame({inst: self.dfs[inst][f] for inst in self.insts})
-                 for f in P.FEATURES}
+                 for f in base}
         # look-ahead guard: the engine bfills the price into the pre-listing region; we zero out
-        # the features before the first eligible date so cross-sectional operators can't see the
-        # future (consistent with the ffill-only search panel in build_panel).
+        # the base features before the first eligible date so cross-sectional operators can't see
+        # the future (consistent with the ffill-only search panel in build_panel).
         for inst in self.insts:
             ok = self.dfs[inst]['eligible']
             ok = ok[ok > 0].index
             if len(ok):
                 cut = ok.min()
-                for f in P.FEATURES:
+                for f in base:
                     panel[f].loc[panel[f].index < cut, inst] = np.nan
+        add_derived_features(panel)      # derived terminals from the masked base -> same masking
         alpha_wide = eval_alpha_panel(self._node, panel)
         for inst in self.insts:
             a = alpha_wide[inst].reindex(self.dfs[inst].index).ffill()
