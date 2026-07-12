@@ -43,6 +43,7 @@ STATE_DIR = apppaths.state_dir()
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 PORTFOLIO_JSON = os.path.join(STATE_DIR, 'portfolio.json')
 PORTFOLIO_PNG = os.path.join(STATE_DIR, 'portfolio_equity.png')
+SIGNAL_LOG = os.path.join(STATE_DIR, 'signal.log')      # signal-service subprocess output
 SETTINGS = apppaths.settings_file()
 CORES = os.cpu_count() or 4
 
@@ -109,6 +110,7 @@ class App:
         self._row_items = {}                              # formula -> table row id (to update cells)
         self._pf_proc = None                              # portfolio-build subprocess
         self._sig_proc = None                             # signal-API subprocess (one at a time)
+        self._sig_log = None                              # its stdout/stderr log handle
         self._pf_img_ref = None                           # keep a ref to the equity PhotoImage (else GC)
         self._pf_doc = None                               # last portfolio result (for re-render on resize)
         self._pf_resize_after = None                      # debounce id for resize re-render
@@ -985,10 +987,11 @@ class App:
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
                    ALPHANODE_SIGNAL_PORT=str(SIGNAL_PORT), ALPHANODE_SIGNAL_REFRESH='900')
         try:
+            self._sig_log = open(SIGNAL_LOG, 'w', buffering=1)   # capture the service's output/errors
             self._sig_proc = subprocess.Popen(
                 _child_cmd('signal'), env=env,
                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                stdout=self._sig_log, stderr=subprocess.STDOUT)
         except Exception as e:                            # noqa: BLE001
             messagebox.showerror('Signal API', f'Could not start the signal service: {e}', parent=self.root)
             return
@@ -1009,6 +1012,12 @@ class App:
                 p.terminate()
         except Exception:                                 # noqa: BLE001
             pass
+        try:
+            if self._sig_log:
+                self._sig_log.close()
+        except Exception:                                 # noqa: BLE001
+            pass
+        self._sig_log = None
 
     def _signal_dialog(self, label, n_formulas, n_tickers):
         url = f'http://127.0.0.1:{SIGNAL_PORT}/signal'
