@@ -135,10 +135,18 @@ def build(top_n, sim_start, jobs, out_path):
     br = bh[(bh.index >= ts) & (bh.index < te)].fillna(0.0); be = (1 + br).cumprod()
     dates = [d.strftime('%Y-%m-%d') for d in ce.index]
 
+    # combined target weights over TEST (for the "Download signals" CSV / paper-trade in the GUI)
+    present = [t for t in tk if f'{t} w' in comb.columns]
+    cw = comb.loc[(comb.index >= ts) & (comb.index < te), [f'{t} w' for t in present]]
+    cw = cw[cw.abs().sum(axis=1) > 0]                     # drop empty days
+    weights = {'dates': [d.strftime('%Y-%m-%d') for d in cw.index], 'tickers': present,
+               'W': [[round(float(x), 5) for x in row] for row in cw.to_numpy()]}
+
     doc = {'ok': True, 'n': len(formulas), 'sim_start': str(pd.Timestamp(start).date()),
            'test': f'{ts.date()}..{te.date()}',
            'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
-           'formulas': [f[:90] for f in formulas],
+           'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
+           'weights': weights,
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values],
                       'basket': [round(float(x), 5) for x in be.values]},
            'built_secs': round(time.time() - t0, 1)}

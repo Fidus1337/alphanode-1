@@ -676,6 +676,17 @@ class App:
         self._tip(self.btn_pf, 'Runs the top-N alphas by TEST Sharpe through the project Portfolio\n'
                                'engine (real simulation, ~1–2 min in the background) and shows the\n'
                                'combined dollar-neutral equity on TEST.')
+        self.btn_pf_csv = ttk.Button(ctl, text='📥 CSV', width=7, state='disabled',
+                                     command=self._pf_download_signals)
+        self.btn_pf_csv.pack(side='left', padx=(8, 0))
+        self.btn_pf_paper = ttk.Button(ctl, text='📄 Paper', width=8, state='disabled',
+                                       command=self._pf_paper_trade)
+        self.btn_pf_paper.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
+                                   'weight per asset per day on TEST (same as for a single alpha).')
+        self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
+                                     'portfolio (all N alphas combined via the real Portfolio engine)\n'
+                                     'to run daily on live Binance data — same as for a single alpha.')
         self.lbl_pf = ttk.Label(card3, style='Faint.TLabel', wraplength=900,
                                 text='⚠ selecting by TEST inflates the number (cherry-pick); the '
                                      'diversification gain — combined ≫ any single alpha — is the real part.')
@@ -693,6 +704,17 @@ class App:
         except Exception:                                # noqa: BLE001
             return
         self._render_portfolio(doc)
+
+    def _reset_portfolio_ui(self):
+        """Clear the Portfolio panel (after a history wipe, or when nothing is built)."""
+        self._pf_doc = None
+        self._pf_last_w = 0
+        self.lbl_pf.config(text='no portfolio yet — set "top" and click "Build portfolio".')
+        self.lbl_pf_m.config(text='')
+        self.pf_img.config(image='')
+        self._pf_img_ref = None
+        for b in (self.btn_pf_csv, self.btn_pf_paper):
+            b.config(state='disabled')
 
     def _stat(self, parent, label, col):
         f = ttk.Frame(parent, style='Card.TFrame')
@@ -742,14 +764,15 @@ class App:
         msg = ('Delete ALL run history? This action is irreversible.\n\n'
                f'• {n_alphas} found alphas  (library.jsonl)\n'
                f'• {n_rounds} rounds and the chart  (history.jsonl)\n'
-               '• current status  (status.json)\n\n'
+               '• current status  (status.json)\n'
+               '• the built portfolio  (portfolio.json)\n\n'
                'Search settings (the parameters on the left) will remain.')
         if not messagebox.askyesno('Full clear', msg, icon='warning',
                                     default='no', parent=self.root):
             return
         import glob
         removed = 0
-        for name in ('library.jsonl', 'history.jsonl', 'status.json'):
+        for name in ('library.jsonl', 'history.jsonl', 'status.json', 'portfolio.json'):
             try:
                 os.remove(os.path.join(STATE_DIR, name))
                 removed += 1
@@ -760,6 +783,10 @@ class App:
                 os.remove(p)
             except OSError:
                 pass
+        try:
+            os.remove(PORTFOLIO_PNG)                      # the portfolio equity image
+        except OSError:
+            pass
         self._reset_ui_after_wipe()
         messagebox.showinfo('Done', 'History cleared. You can start the search from scratch.', parent=self.root)
 
@@ -849,6 +876,7 @@ class App:
         self.s_found.config(text='0')
         self.lbl_cur.config(text='')
         self.lbl_state.config(text='● stopped', foreground=MUT)
+        self._reset_portfolio_ui()                        # clear the Portfolio panel too
 
     def _apply_cfg_to_widgets(self):
         c = self.cfg
@@ -1419,6 +1447,8 @@ class App:
             self.lbl_pf.config(text='portfolio build failed: ' + str(doc.get('error', ''))[:120])
             return
         self._pf_doc = doc                               # remember for re-render on resize
+        self.btn_pf_csv.config(state=('normal' if doc.get('weights') else 'disabled'))
+        self.btn_pf_paper.config(state=('normal' if doc.get('formulas_full') else 'disabled'))
         m = doc.get('metrics') or {}
         b = doc.get('basket') or {}
         self.lbl_pf.config(text=f'top-{doc.get("n")} by TEST OOS combined via the engine  ·  '
@@ -1603,29 +1633,95 @@ class App:
             W = fc / np.where(chips == 0.0, 1.0, chips)             # target weight: + long / − short
 
             wide = pd.DataFrame(np.round(W, 6), index=market['index'], columns=market['tk'])
-            wide.index.name = 'date'
-            wide = wide[wide.abs().sum(axis=1) > 0]                 # without empty pre-listing days
-            sp = cfg['splits']
-
-            # human-readable tidy format: row = one position
-            long = wide.reset_index().melt(id_vars='date', var_name='ticker', value_name='weight')
-            long = long[long['weight'].abs() > 0.0005].copy()
-            long['side'] = np.where(long['weight'] > 0, 'LONG', 'SHORT')
-            long['weight_pct'] = long['weight'].map(lambda x: f'{x * 100:+.1f}%')
-            d = long['date']
-            long['segment'] = np.where(d < sp['val'][0], 'TRAIN',
-                                       np.where(d < sp['test'][0], 'VAL', 'TEST'))
-            long['_aw'] = long['weight'].abs()
-            long = long.sort_values(['date', '_aw'], ascending=[True, False]).drop(columns='_aw')
-            long = long[['date', 'segment', 'ticker', 'side', 'weight', 'weight_pct']]
-            long.to_csv(path, index=False)
-
-            last = wide.iloc[-1]
-            pos = sorted([(t, float(v)) for t, v in last.items() if abs(v) > 0.0005],
-                         key=lambda kv: -abs(kv[1]))
-            self._signals_dialog(path, wide.index[-1].date(), pos, len(wide))
+            self._signals_from_wide(wide, cfg['splits'], path)
         except Exception as e:                                     # noqa: BLE001
             messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
+
+    def _signals_from_wide(self, wide, splits, path):
+        """Wide target-weight table (index=date, cols=tickers) -> tidy CSV (row = one position) +
+        the 'what to hold now' dialog. Shared by a single alpha and the combined portfolio."""
+        import numpy as np
+        wide = wide.copy()
+        wide.index.name = 'date'
+        wide = wide[wide.abs().sum(axis=1) > 0]                    # drop empty (pre-listing) days
+        long = wide.reset_index().melt(id_vars='date', var_name='ticker', value_name='weight')
+        long = long[long['weight'].abs() > 0.0005].copy()
+        long['side'] = np.where(long['weight'] > 0, 'LONG', 'SHORT')
+        long['weight_pct'] = long['weight'].map(lambda x: f'{x * 100:+.1f}%')
+        d = long['date']
+        long['segment'] = np.where(d < splits['val'][0], 'TRAIN',
+                                   np.where(d < splits['test'][0], 'VAL', 'TEST'))
+        long['_aw'] = long['weight'].abs()
+        long = long.sort_values(['date', '_aw'], ascending=[True, False]).drop(columns='_aw')
+        long = long[['date', 'segment', 'ticker', 'side', 'weight', 'weight_pct']]
+        long.to_csv(path, index=False)
+        last = wide.iloc[-1]
+        pos = sorted([(t, float(v)) for t, v in last.items() if abs(v) > 0.0005],
+                     key=lambda kv: -abs(kv[1]))
+        self._signals_dialog(path, wide.index[-1].date(), pos, len(wide))
+
+    # ---------- PORTFOLIO: CSV signals + paper-trade bundle (same as a single alpha) ----------
+    def _pf_download_signals(self):
+        doc = self._pf_doc
+        if not doc or not doc.get('weights'):
+            messagebox.showinfo('Portfolio signals',
+                                'Build the portfolio first (rebuild it if it was built by an older version).',
+                                parent=self.root)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title='Save portfolio signals', defaultextension='.csv',
+            initialfile=f'signals_portfolio_top{doc.get("n", "")}.csv',
+            filetypes=[('CSV', '*.csv'), ('All files', '*.*')])
+        if not path:
+            return
+        try:
+            import numpy as np
+            import pandas as pd
+            w = doc['weights']
+            idx = pd.to_datetime(w['dates']).tz_localize('UTC')   # match the tz-aware splits
+            wide = pd.DataFrame(np.array(w['W'], dtype=float), index=idx, columns=w['tickers'])
+            self._signals_from_wide(wide, self._build_plot_cfg()['splits'], path)
+        except Exception as e:                                     # noqa: BLE001
+            messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
+
+    def _pf_paper_trade(self):
+        doc = self._pf_doc
+        formulas = (doc or {}).get('formulas_full')
+        if not formulas:
+            messagebox.showinfo('Paper Trade',
+                                'Build the portfolio first (rebuild it if it was built by an older version).',
+                                parent=self.root)
+            return
+        try:
+            sys.path.insert(0, HERE)
+            import paper_export
+        except Exception as e:                                     # noqa: BLE001
+            messagebox.showerror('Paper Trade', f'The generator failed to load: {e}', parent=self.root)
+            return
+        c = self.cfg
+        if c.get('universe_all', True):
+            try:
+                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
+            except Exception as e:                                 # noqa: BLE001
+                messagebox.showerror('Paper Trade', f'Cannot read the loaded data: {e}', parent=self.root)
+                return
+        else:
+            tickers = [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]
+        if not tickers:
+            messagebox.showwarning('Paper Trade', 'The pairs universe is empty.', parent=self.root)
+            return
+        name = f'portfolio_top{doc.get("n", len(formulas))}'
+        meta = {'test': (doc.get('metrics') or {})}                # readme shows the combined TEST Sharpe
+        try:
+            path = paper_export.build_bundle(
+                list(formulas), name, tickers, float(c.get('target_vol', 0.25)),
+                float(c.get('exec_cost', 0.001)),
+                str(doc.get('sim_start', c.get('train_start', '2019-09-05'))),
+                apppaths.exports_dir(), meta=meta)
+        except Exception as e:                                     # noqa: BLE001
+            messagebox.showerror('Paper Trade', f'Bundle build error: {e}', parent=self.root)
+            return
+        self._paper_dialog(path, len(tickers))
 
     def _signals_dialog(self, path, latest_date, positions, n_days):
         win = tk.Toplevel(self.root)

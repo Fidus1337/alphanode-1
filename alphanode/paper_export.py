@@ -29,13 +29,12 @@ ENGINE_MODULES = ['primitives.py', 'genome.py', 'evaluator.py', 'fastsim.py', 'e
 REQUIREMENTS = "numpy>=1.24\npandas>=2.0\n"
 
 STRATEGY_PY = '''\
-"""An evolutionary alpha as a strategy (via the real quantpylib engine).
+"""Evolutionary alpha(s) as strategy classes (via the real quantpylib engine).
 
-    from strategy import Strategy
-    a = Strategy(insts=tickers, dfs=dfs, start=..., end=..., portfolio_vol=0.25, execrates=0.001)
-    portfolio_df = a.run_simulation()
+    from strategy import STRATEGIES, Strategy       # Strategy = the first alpha
+    # combine several via quantpylib Portfolio(stratdfs=[s.run_simulation() for s in ...])
 
-The formula yields a number per instrument per day: >0 -> long, <0 -> short, |.| -> size.
+Each formula yields a number per instrument per day: >0 -> long, <0 -> short, |.| -> size.
 The engine normalizes, targets volatility, and computes positions on its own. See README.md.
 """
 import os
@@ -47,10 +46,11 @@ if BASE_DIR not in sys.path:
 
 from evolved_strategy import make_evolved
 
-FORMULA = {formula!r}
+FORMULAS = {formulas!r}
 NAME = {name!r}
 
-Strategy = make_evolved(FORMULA, NAME)
+STRATEGIES = [make_evolved(f, f'{{NAME}}_{{i}}') for i, f in enumerate(FORMULAS)]
+Strategy = STRATEGIES[0]                 # convenience: the first alpha
 '''
 
 RUNNER_PY = '''\
@@ -88,7 +88,7 @@ from evolved_strategy import make_evolved
 from quantpylib.simulator.alpha import Portfolio
 
 CFG = json.load(open(os.path.join(BASE_DIR, 'config.json'), encoding='utf-8'))
-FORMULA = CFG['formula']
+FORMULAS = CFG.get('formulas') or [CFG['formula']]     # one alpha, or a combined portfolio of N
 NAME = CFG.get('name', 'PaperAlpha')
 TICKERS0 = CFG['tickers']
 START = datetime.fromisoformat(CFG.get('start', '2019-09-05'))
@@ -146,13 +146,16 @@ def fresh(dfs):
 
 
 def compute_targets(tickers, dfs, end):
-    """Run the alpha up to end via the real engine; target weights + leverage from the last row."""
-    Alpha = make_evolved(FORMULA, NAME)
-    a = Alpha(insts=tickers, dfs=fresh(dfs), start=START, end=end,
-              portfolio_vol=VOL, execrates=EXEC)
-    stratdf = a.run_simulation()
+    """Run each alpha up to end via the real engine, combine via Portfolio; target weights +
+    leverage from the last row (a single alpha is just a one-strategy portfolio)."""
+    stratdfs = []
+    for i, formula in enumerate(FORMULAS):
+        Alpha = make_evolved(formula, f'{NAME}_{i}')
+        a = Alpha(insts=tickers, dfs=fresh(dfs), start=START, end=end,
+                  portfolio_vol=VOL, execrates=EXEC)
+        stratdfs.append(a.run_simulation())
     pf = Portfolio(insts=tickers, dfs=fresh(dfs), start=START, end=end,
-                   stratdfs=[stratdf], portfolio_vol=VOL, execrates=EXEC)
+                   stratdfs=stratdfs, portfolio_vol=VOL, execrates=EXEC)
     last = pf.run_simulation().iloc[-1]
     lev = float(last.get('leverage', 0.0))
     weights = {t: float(last.get(f'{t} w', 0.0)) for t in tickers}
@@ -273,24 +276,35 @@ if __name__ == '__main__':
 '''
 
 
-def _readme(formula, name, tickers, vol, exec_rate, meta, start_capital):
+def _readme(formulas, name, tickers, vol, exec_rate, meta, start_capital):
     def sh(seg):
         v = (meta or {}).get(seg, {}).get('sharpe') if meta else None
         return f'{v:+.2f}' if v is not None else '—'
     folder = f'paper_{name}'
+    n = len(formulas)
+    if n == 1:
+        kind = 'one evolutionary alpha'
+        flabel = 'Formula'
+        flist = '```\n' + formulas[0] + '\n```'
+        metrics_line = f'TRAIN Sharpe {sh("train")} · VAL {sh("val")} · **TEST {sh("test")}**'
+    else:
+        kind = (f'a PORTFOLIO of {n} evolutionary alphas combined via the quantpylib '
+                '`Portfolio` engine (inverse-vol weighting across alphas)')
+        flabel = f'Formulas ({n}, combined)'
+        flist = '\n'.join(f'{i + 1}. `{f}`' for i, f in enumerate(formulas))
+        metrics_line = f'combined **TEST Sharpe {sh("test")}**'
     return f'''# Paper-trading bundle — `{name}`
 
-Self-contained paper trading of one evolutionary alpha on **live Binance data**
+Self-contained paper trading of {kind} on **live Binance data**
 (USD-M perpetual, public klines — API keys are NOT needed).
 
-## Formula
-```
-{formula}
-```
-Gives a number per instrument per day: **>0 → long, <0 → short**, absolute value → size. Then the
-(`quantpylib`) engine normalizes, targets volatility ({vol:g}), and computes positions on its own.
+## {flabel}
+{flist}
 
-Metrics from the search (a hypothetical backtest): TRAIN Sharpe {sh('train')} · VAL {sh('val')} · **TEST {sh('test')}**.
+Each formula gives a number per instrument per day: **>0 → long, <0 → short**, absolute value → size.
+The (`quantpylib`) engine normalizes, targets volatility ({vol:g}), and computes positions on its own.
+
+Metrics from the search (a hypothetical backtest): {metrics_line}.
 
 ## ⚠️ Honest disclaimer
 - This is a **hypothetical backtest**, not investment advice. The past ≠ the future.
@@ -332,7 +346,9 @@ mark-to-market → rebalance to targets → fees ({exec_rate:g}) → log.
 
 def build_bundle(formula, name, tickers, vol, exec_rate, start, out_root,
                  start_capital=10000.0, meta=None):
-    """Build a self-contained bundle in out_root/paper_<name>/. Return the folder path."""
+    """Build a self-contained bundle in out_root/paper_<name>/. Return the folder path.
+    `formula` may be a single formula string OR a list of formulas (a combined portfolio)."""
+    formulas = [formula] if isinstance(formula, str) else list(formula)
     dest = os.path.join(out_root, f'paper_{name}')
     if os.path.exists(dest):
         shutil.rmtree(dest)
@@ -342,18 +358,18 @@ def build_bundle(formula, name, tickers, vol, exec_rate, start, out_root,
         shutil.copy2(os.path.join(EVO, mod), os.path.join(dest, mod))
     shutil.copytree(QUANT, os.path.join(dest, 'quantpylib'))
 
-    cfg = {'formula': formula, 'name': name, 'tickers': list(tickers),
+    cfg = {'formulas': formulas, 'formula': formulas[0], 'name': name, 'tickers': list(tickers),
            'start': start, 'portfolio_vol': float(vol), 'exec': float(exec_rate),
            'start_capital': float(start_capital)}
     with open(os.path.join(dest, 'config.json'), 'w', encoding='utf-8') as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
 
     with open(os.path.join(dest, 'strategy.py'), 'w', encoding='utf-8') as f:
-        f.write(STRATEGY_PY.format(formula=formula, name=name))
+        f.write(STRATEGY_PY.format(formulas=formulas, name=name))
     with open(os.path.join(dest, 'paper_trade.py'), 'w', encoding='utf-8') as f:
         f.write(RUNNER_PY)
     with open(os.path.join(dest, 'requirements.txt'), 'w', encoding='utf-8') as f:
         f.write(REQUIREMENTS)
     with open(os.path.join(dest, 'README.md'), 'w', encoding='utf-8') as f:
-        f.write(_readme(formula, name, tickers, vol, exec_rate, meta, start_capital))
+        f.write(_readme(formulas, name, tickers, vol, exec_rate, meta, start_capital))
     return dest
