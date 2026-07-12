@@ -233,21 +233,33 @@ _FUNCS = {
     'cs_rank': cs_rank, 'cs_zscore': cs_zscore, 'cs_demean': cs_demean, 'cs_scale': cs_scale,
 }
 
-BINARY = ['add', 'sub', 'mul', 'div', 'pmin', 'pmax', 'gt', 'lt']          # arity 2, no window
-UN_ELEM = ['neg', 'sign', 'abs', 'slog', 'tanh', 'sigmoid', 'ssqrt']       # arity 1, no window
-UN_TS = ['ts_mean', 'ts_std', 'ts_zscore', 'ts_min', 'ts_max',             # arity 1, window
-         'ts_delta', 'ts_delay', 'ts_sum', 'ts_roc', 'ema',
-         'ts_rank', 'ts_argmax', 'ts_argmin', 'ts_median', 'ts_skew', 'ts_kurt', 'decay_linear']
-BIN_TS = ['ts_corr', 'ts_cov']                                             # arity 2, window
-UN_CS = ['cs_rank', 'cs_zscore', 'cs_demean', 'cs_scale']                  # arity 1, no window
+# Full arity/window tables cover EVERY defined function, so any historical library formula still
+# parses and evaluates — even operators the search no longer generates (see the active set below).
+_BINARY_ALL = ['add', 'sub', 'mul', 'div', 'pmin', 'pmax', 'gt', 'lt']
+_UN_ELEM_ALL = ['neg', 'sign', 'abs', 'slog', 'tanh', 'sigmoid', 'ssqrt']
+_UN_TS_ALL = ['ts_mean', 'ts_std', 'ts_zscore', 'ts_min', 'ts_max',
+              'ts_delta', 'ts_delay', 'ts_sum', 'ts_roc', 'ema',
+              'ts_rank', 'ts_argmax', 'ts_argmin', 'ts_median', 'ts_skew', 'ts_kurt', 'decay_linear']
+_BIN_TS_ALL = ['ts_corr', 'ts_cov']
+_UN_CS_ALL = ['cs_rank', 'cs_zscore', 'cs_demean', 'cs_scale']
 
-ALL_PRIMS = BINARY + UN_ELEM + UN_TS + BIN_TS + UN_CS
-ARITY = {op: 2 for op in BINARY + BIN_TS}
-ARITY.update({op: 1 for op in UN_ELEM + UN_TS + UN_CS})
-NEEDS_WINDOW = {op: (op in UN_TS or op in BIN_TS) for op in ALL_PRIMS}
+ARITY = {op: 2 for op in _BINARY_ALL + _BIN_TS_ALL}
+ARITY.update({op: 1 for op in _UN_ELEM_ALL + _UN_TS_ALL + _UN_CS_ALL})
+NEEDS_WINDOW = {op: (op in _UN_TS_ALL or op in _BIN_TS_ALL) for op in ARITY}
+
+# ACTIVE generation set = the ORIGINAL 25 operators. The expanded operators above stay callable
+# (so the existing library still evaluates), but the GP will NOT create NEW formulas with them:
+# gt/lt output {0,1} -> long-only (and are redundant with sign(sub(...))); ts_argmax/argmin are >= 0.
+BINARY = ['add', 'sub', 'mul', 'div', 'pmin', 'pmax']          # arity 2, no window
+UN_ELEM = ['neg', 'sign', 'abs', 'slog', 'tanh']              # arity 1, no window
+UN_TS = ['ts_mean', 'ts_std', 'ts_zscore', 'ts_min', 'ts_max',  # arity 1, window
+         'ts_delta', 'ts_delay', 'ts_sum', 'ts_roc', 'ema']
+UN_CS = ['cs_rank', 'cs_zscore', 'cs_demean', 'cs_scale']      # arity 1, no window
+
+ALL_PRIMS = BINARY + UN_ELEM + UN_TS + UN_CS                   # 25 operators the search generates
 
 # compatibility groups for point mutation (swap an operator for one of the SAME arity+window kind)
-COMPAT_GROUPS = [BINARY, UN_ELEM, UN_TS, BIN_TS, UN_CS]
+COMPAT_GROUPS = [BINARY, UN_ELEM, UN_TS, UN_CS]
 
 
 def apply_primitive(op, args, window):
