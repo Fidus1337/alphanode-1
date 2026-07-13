@@ -102,6 +102,19 @@ def _selfcheck_body(out):
     import signal_service                                  # noqa: F401
     out('fetch/signal imports: ok')
 
+    # exercise the fast fitness kernel on a tiny synthetic market: forces numba to compile inside the
+    # frozen process, so a bundle that failed to include numba is visible here (as a graceful numpy
+    # fallback — never a crash, thanks to _run_kernel's guard). Reports which path is active.
+    import fastsim
+    _T, _N = 60, 3
+    _C = numpy.cumprod(numpy.full((_T, _N), 1.003), axis=0)
+    _R = numpy.zeros((_T, _N)); _R[1:] = _C[1:] / _C[:-1] - 1.0
+    _mk = {'C': _C, 'R': _R, 'V': numpy.full((_T, _N), 0.02),
+           'base_elig': numpy.ones((_T, _N), bool),
+           'index': pandas.date_range('2020-01-01', periods=_T, freq='D', tz='UTC'), 'tk': ['A', 'B', 'C']}
+    fastsim.fast_sim(numpy.tile(numpy.linspace(-1.0, 1.0, _N), (_T, 1)), _mk, 0.30, 0.001)
+    out('fast_sim    : ok, numba', 'ACTIVE' if fastsim._kernel_jit is not None else 'fallback(numpy)')
+
     if os.path.exists(dp):
         with open(dp, 'rb') as f:
             tk_, _oh = pickle.load(f)

@@ -4,6 +4,7 @@
 numpy>=1.24
 pandas>=2.0
 pytz              # quantpylib.wrappers.binance imports it directly (pandas 2.x no longer guarantees it)
+numba             # JIT-compiles the fast_sim fitness kernel (~4x node); optional at runtime (numpy fallback)
 matplotlib>=3.6
 requests          # quantpylib.throttler.aiosonic imports requests
 aiosonic==0.31.1  # quantpylib is verified on 0.31.x (the API changed in 1.x)
