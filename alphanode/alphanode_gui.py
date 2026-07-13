@@ -118,8 +118,9 @@ class App:
         self._shown = []                                 # what is actually shown in the table (for clicks)
         self._sort_col = 'fit'                            # leaderboard sort column (click a header)
         self._sort_desc = True                            # descending (best first)
+        self._lb_select = 'fit'                           # POPULATION key: 'fit' = min(train,val); 'test' = held-out OOS
         self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'computed': False}
+                           'ts': 0.0, 'computed': False, 'select': None}
         self._lb_target = 20                             # how many DISTINCT families to select
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
@@ -584,8 +585,7 @@ class App:
         card2.grid(row=2, column=0, sticky='nsew', pady=(16, 0))
         hrow = ttk.Frame(card2, style='Card.TFrame')
         hrow.pack(fill='x', pady=(0, 8))
-        self._lb_head_text = ('LEADERBOARD — best alpha per family (top by fitness min(train,val))  ·  '
-                              'click a column to sort  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
+        self._lb_head_text = self._lb_head_text_for('fit')
         self.lbl_lb_head = ttk.Label(hrow, text=self._lb_head_text, style='H.TLabel')
         self.lbl_lb_head.pack(side='left', anchor='w')
         wrap = ttk.Frame(card2, style='Card.TFrame')
@@ -1184,8 +1184,17 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt + arrow)
 
+    @staticmethod
+    def _lb_head_text_for(select):
+        src = ('TOP by TEST OOS — held-out, cherry-picked ⚠' if select == 'test'
+               else 'top by fitness min(train,val)')
+        return (f'LEADERBOARD — best alpha per family ({src})  ·  '
+                'click a column to sort  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
+
     def _sort_by(self, col):
-        """Click a column header — sort the shown rows by it (toggle direction on repeat click)."""
+        """Click a column header. 'fitness' and 'TEST OOS' also RE-SELECT the population from the
+        WHOLE library by that metric (top-by-fitness vs top-by-held-out-TEST); ls/act/win/formula
+        just reorder the current population. Repeat click on the same column toggles direction."""
         if col not in self._SORTABLE:
             return
         if col == self._sort_col:
@@ -1194,7 +1203,14 @@ class App:
             self._sort_col, self._sort_desc = col, True
         self._update_headings()
         self._treesig = None                             # force a redraw in the new order
-        self._render_lb(self._lib_cache.get('diverse') or self._shown)
+        select = col if col in ('fit', 'test') else self._lb_select
+        if select != self._lb_select:                    # population key changed -> re-query the library
+            self._lb_select = select
+            self._lb_head_text = self._lb_head_text_for(select)
+            self.lbl_lb_head.config(text=self._lb_head_text)
+            self._start_lb_compute(force=True)
+        else:
+            self._render_lb(self._lib_cache.get('diverse') or self._shown)
 
     def _start_lb_compute(self, force=False):
         lib = os.path.join(STATE_DIR, 'library.jsonl')
@@ -1219,8 +1235,9 @@ class App:
         Computed in the background and cached by (mtime, sort mode, threshold) — otherwise O(N²) similarity would freeze the GUI."""
         cache = self._lib_cache
         now = time.time()
-        if not cache['computing'] and now - cache['ts'] > 6:
-            self._start_lb_compute()                     # restart on change of file / mode / threshold
+        stale_select = cache.get('select') != self._lb_select    # a header click changed the population key
+        if not cache['computing'] and (stale_select or now - cache['ts'] > 6):
+            self._start_lb_compute(force=stale_select)   # restart on file change / mode switch / period
         if cache['dirty']:
             cache['dirty'] = False
             self._treesig = None                         # force a redraw after recompute
@@ -1229,8 +1246,11 @@ class App:
             self._fill_tree(status_best)                 # until computed — the top from the node (as before)
 
     def _compute_diverse(self, path, mtime):
-        """Select the top-N DIVERSE families by fitness min(train,val) — this only picks WHICH alphas
-        to show; the table is ordered client-side by clicking a column header (_sort_by)."""
+        """Select the top-N DIVERSE families FROM THE WHOLE library, ranked by the active population
+        key: 'fit' = fitness min(train,val) (honest), or 'test' = held-out TEST OOS (explicit
+        cherry-pick, chosen by clicking the TEST OOS header). Picks only WHICH alphas show; the row
+        order is set client-side in _sorted."""
+        select = self._lb_select
         rows = []
         try:
             for line in open(path, encoding='utf-8'):
@@ -1244,8 +1264,12 @@ class App:
         except OSError:
             self._lib_cache['computing'] = False
             return
-        rows = [c for c in rows if c.get('base') is not None]
-        rows.sort(key=lambda c: c.get('base'), reverse=True)     # honest fitness min(train,val)
+        if select == 'test':
+            rows = [c for c in rows if self._LB_TESTKEY(c) is not None]
+            rows.sort(key=self._LB_TESTKEY, reverse=True)        # top by held-out TEST OOS (cherry-pick)
+        else:
+            rows = [c for c in rows if c.get('base') is not None]
+            rows.sort(key=lambda c: c.get('base'), reverse=True)  # top by honest fitness min(train,val)
         kept = []
         for c in rows[:500]:
             f = c.get('formula', '')
@@ -1253,7 +1277,8 @@ class App:
                 kept.append(c)
             if len(kept) >= self._lb_target:
                 break
-        self._lib_cache.update(diverse=kept, mtime=mtime, computing=False, dirty=True, computed=True)
+        self._lib_cache.update(diverse=kept, mtime=mtime, select=select,
+                               computing=False, dirty=True, computed=True)
 
     def _fill_tree(self, best):
         best = self._sorted(self._dedup(best))           # pick diverse families, then order by the clicked column
