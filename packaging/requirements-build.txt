@@ -2,7 +2,8 @@
 # The runtime graph is intentionally narrow: numpy/pandas/matplotlib(Agg)/tkinter + aiosonic/orjson/onecache
 # (Binance data fetcher). scipy/seaborn/statsmodels are NOT in the bundle (excluded in .spec).
 numpy>=1.24
-pandas>=2.0
+pandas>=2.0,<3    # pin to 2.x: pandas 3's Copy-on-Write returns read-only .to_numpy() arrays; the
+                  # code handles it, but this keeps the build matching the validated 2.x bundle
 pytz              # quantpylib.wrappers.binance imports it directly (pandas 2.x no longer guarantees it)
 numba             # JIT-compiles the fast_sim fitness kernel (~4x node); optional at runtime (numpy fallback)
 matplotlib>=3.6

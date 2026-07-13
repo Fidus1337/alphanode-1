@@ -43,9 +43,11 @@ def precompute_market(panel, tk, raw=None):
     close = panel['close'][tk].bfill()              # engine-correct bfilled close for C/R/eligible
     C = close.to_numpy(dtype=np.float64)
     prev = close.shift(1)
-    R = (close / prev - 1.0).to_numpy(dtype=np.float64)
-    R[0, :] = 0.0
-    R = np.nan_to_num(R, nan=0.0)
+    # nan_to_num returns a fresh WRITABLE array — important under pandas Copy-on-Write (pandas 3.x
+    # default), where .to_numpy() hands back a read-only view and R[0, :] = 0.0 would otherwise raise
+    # "assignment destination is read-only".
+    R = np.nan_to_num((close / prev - 1.0).to_numpy(dtype=np.float64), nan=0.0)
+    R[0, :] = 0.0                                    # first row: no previous close
 
     if raw is not None:                             # vol as in the engine: on the native close
         vcols = {}
