@@ -116,12 +116,11 @@ class App:
         self._pf_resize_after = None                      # debounce id for resize re-render
         self._pf_last_w = 0                               # last render width (skip tiny resizes)
         self._shown = []                                 # what is actually shown in the table (for clicks)
-        self._lb_sort = 'base'                           # how to rank the leaderboard: base | test
-        self._lb_min = None                              # threshold: show only TEST OOS > X (or None)
-        self._lb_minact = 2.0                            # min trade activity (trades/asset/year on TEST)
+        self._sort_col = 'fit'                            # leaderboard sort column (click a header)
+        self._sort_desc = True                            # descending (best first)
         self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'sort': 'base', 'minv': None, 'minact': 2.0, 'computed': False}
-        self._lb_target = 20                             # how many DISTINCT families to show
+                           'ts': 0.0, 'computed': False}
+        self._lb_target = 20                             # how many DISTINCT families to select
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
         self.cfg = dict(DEFAULTS)
@@ -585,56 +584,24 @@ class App:
         card2.grid(row=2, column=0, sticky='nsew', pady=(16, 0))
         hrow = ttk.Frame(card2, style='Card.TFrame')
         hrow.pack(fill='x', pady=(0, 8))
-        self._lb_head_text = self._lb_head_for('base')
+        self._lb_head_text = ('LEADERBOARD — best alpha per family (top by fitness min(train,val))  ·  '
+                              'click a column to sort  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
         self.lbl_lb_head = ttk.Label(hrow, text=self._lb_head_text, style='H.TLabel')
         self.lbl_lb_head.pack(side='left', anchor='w')
-        sortf = ttk.Frame(hrow, style='Card.TFrame')
-        sortf.pack(side='right')
-        ttk.Label(sortf, text='rank by:', style='Mut.TLabel').pack(side='left', padx=(0, 6))
-        self.v_lbsort = tk.StringVar(value='base')
-        for val, lab, tip in (
-                ('base', 'fitness',
-                 'Rank by the honest fitness min(train, val).\n'
-                 'Selection without peeking at TEST — that is how the node works.'),
-                ('test', 'TEST OOS',
-                 'Rank by held-out TEST — "top by OOS".\n'
-                 '⚠ This is cherry-pick on held-out data: alphas picked\n'
-                 'this way have an inflated TEST (a selection effect).\n'
-                 'Fine to look at, but NOT as a selection criterion.')):
-            rb = ttk.Radiobutton(sortf, text=lab, value=val, variable=self.v_lbsort,
-                                 style='Card.TRadiobutton', command=self._set_lb_sort)
-            rb.pack(side='left', padx=(0, 4))
-            self._tip(rb, tip)
-        ttk.Label(sortf, text='  ·  TEST >', style='Mut.TLabel').pack(side='left', padx=(6, 4))
-        self.v_lbmin = tk.StringVar(value='')
-        e_min = ttk.Entry(sortf, textvariable=self.v_lbmin, width=5, justify='center')
-        e_min.pack(side='left')
-        e_min.bind('<Return>', lambda ev: self._set_lb_sort())
-        e_min.bind('<FocusOut>', lambda ev: self._set_lb_sort())
-        self._tip(e_min, 'Show only alphas with TEST OOS above the threshold.\n'
-                         'E.g. 1  → only those with held-out Sharpe > 1.\n'
-                         'Empty — no filter. Enter or click outside the field — apply.')
-        ttk.Label(sortf, text='  ·  min tr/yr', style='Mut.TLabel').pack(side='left', padx=(6, 4))
-        self.v_lbact = tk.StringVar(value='2')
-        e_act = ttk.Entry(sortf, textvariable=self.v_lbact, width=4, justify='center')
-        e_act.pack(side='left')
-        e_act.bind('<Return>', lambda ev: self._set_lb_sort())
-        e_act.bind('<FocusOut>', lambda ev: self._set_lb_sort())
-        self._tip(e_act, 'Minimum trade activity: trades per asset per year (on TEST).\n'
-                         'Hides "strategies" that barely trade — e.g. 10 trades over 3.5 years,\n'
-                         'whose high TEST Sharpe is a lucky buy-and-hold on a few bets, not real trading.\n'
-                         'E.g. 2 → each asset must be traded at least ~2×/year on average.\n'
-                         'Empty/0 — no filter. Enter or click outside — apply.')
         wrap = ttk.Frame(card2, style='Card.TFrame')
         wrap.pack(fill='both', expand=True)
         cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
+        self._HEAD = {}
         for c, txt, w, anc in (('rank', '#', 40, 'center'), ('fit', 'fitness', 74, 'e'),
                                ('test', 'TEST OOS', 84, 'e'), ('ls', 'trades L/S', 84, 'center'),
                                ('act', 'tr/yr·a', 58, 'e'),
                                ('win', 'win%', 56, 'e'), ('formula', 'formula', 320, 'w')):
-            self.tree.heading(c, text=txt)
+            self._HEAD[c] = txt
+            kw = {} if c == 'rank' else {'command': (lambda c=c: self._sort_by(c))}
+            self.tree.heading(c, text=txt, **kw)
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
+        self._update_headings()                          # show the sort arrow on the active column
         self._tip(self.lbl_lb_head, 'trades L/S = total number of long / short positions OPENED over TEST\n'
                                     '(a trade = crossing into long/short from flat or the opposite side);\n'
                                     'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
@@ -871,8 +838,7 @@ class App:
         self._treesig = None
         self._shown = []
         self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'sort': self._lb_sort, 'minv': self._lb_min,
-                           'minact': self._lb_minact, 'computed': False}
+                           'ts': 0.0, 'computed': False}
         self._history = []
         self._draw_chart()
         self.s_rounds.config(text='0')
@@ -1184,49 +1150,51 @@ class App:
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
-    def _lb_head_for(self, mode, minv=None, minact=None):
-        flt = f'  ·  TEST > {minv:+.2f}' if minv is not None else ''
-        flt += f'  ·  ≥{minact:g} tr/yr·a' if minact else ''
-        if mode == 'test':
-            return ('TOP BY TEST OOS  ·  ⚠ cherry-pick on held-out (number inflated)' + flt +
-                    '  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
-        return ('BEST ALPHA FROM EACH FAMILY (by fitness min(train,val))  ·  TEST — OOS' + flt +
-                '  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
+    _SORTABLE = ('fit', 'test', 'ls', 'act', 'win', 'formula')
 
-    def _read_lb_min(self):
-        """Threshold from the field: empty/garbage -> None (no filter). A comma separator is also accepted."""
-        raw = (self.v_lbmin.get() or '').strip().replace(',', '.')
-        if not raw:
-            return None
-        try:
-            return float(raw)
-        except ValueError:
-            return None
+    def _sort_key(self, c, col):
+        if col == 'fit':
+            return c.get('base')
+        if col == 'test':
+            return self._LB_TESTKEY(c)
+        if col == 'formula':
+            return c.get('formula', '')
+        m = self._metrics_cache.get(c.get('formula', ''))    # ls / act / win — from the metrics cache
+        m = m if isinstance(m, dict) else {}
+        if col == 'ls':
+            return m.get('long', 0) + m.get('short', 0)
+        if col == 'act':
+            return m.get('act')
+        if col == 'win':
+            return m.get('win')
+        return None
 
-    def _read_lb_act(self):
-        """Min trade activity from the field (trades/asset/year): empty/0/garbage -> None (no filter)."""
-        raw = (self.v_lbact.get() or '').strip().replace(',', '.')
-        if not raw:
-            return None
-        try:
-            v = float(raw)
-        except ValueError:
-            return None
-        return v if v > 0 else None
+    def _sorted(self, rows):
+        col, desc = self._sort_col, self._sort_desc
+        if col == 'formula':
+            return sorted(rows, key=lambda c: c.get('formula', ''), reverse=desc)
 
-    def _set_lb_sort(self):
-        mode = self.v_lbsort.get()
-        minv = self._read_lb_min()
-        minact = self._read_lb_act()
-        if mode == self._lb_sort and minv == self._lb_min and minact == self._lb_minact:
+        def k(c):
+            v = self._sort_key(c, col)
+            return float('-inf') if v is None else v      # missing metrics sort to the bottom
+        return sorted(rows, key=k, reverse=desc)
+
+    def _update_headings(self):
+        for c, txt in self._HEAD.items():
+            arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
+            self.tree.heading(c, text=txt + arrow)
+
+    def _sort_by(self, col):
+        """Click a column header — sort the shown rows by it (toggle direction on repeat click)."""
+        if col not in self._SORTABLE:
             return
-        self._lb_sort = mode
-        self._lb_min = minv
-        self._lb_minact = minact
-        self._lb_head_text = self._lb_head_for(mode, minv, minact)
-        self.lbl_lb_head.config(text=self._lb_head_text)
-        self._start_lb_compute(force=True)               # immediate recompute for the new order/filter
-        self._drain_lb()                                 # and render, even if the node is stopped
+        if col == self._sort_col:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_col, self._sort_desc = col, True
+        self._update_headings()
+        self._treesig = None                             # force a redraw in the new order
+        self._render_lb(self._lib_cache.get('diverse') or self._shown)
 
     def _start_lb_compute(self, force=False):
         lib = os.path.join(STATE_DIR, 'library.jsonl')
@@ -1237,40 +1205,14 @@ class App:
         cache = self._lib_cache
         if cache['computing']:
             return
-        if (not force and mt == cache['mtime'] and cache.get('sort') == self._lb_sort
-                and cache.get('minv') == self._lb_min and cache.get('minact') == self._lb_minact):
+        if not force and mt == cache['mtime']:
             return
         cache['computing'] = True
         cache['ts'] = time.time()
-        threading.Thread(target=self._compute_diverse,
-                         args=(lib, mt, self._lb_sort, self._lb_min, self._lb_minact),
-                         daemon=True).start()
-
-    def _drain_lb(self, tries=20):
-        """Render the table as soon as the background recompute is ready (works even when the node is stopped)."""
-        cache = self._lib_cache
-        if cache['dirty']:
-            cache['dirty'] = False
-            self._treesig = None
-            self._render_lb(cache['diverse'])
-            return
-        if tries > 0 and cache['computing']:
-            self.root.after(150, lambda: self._drain_lb(tries - 1))
+        threading.Thread(target=self._compute_diverse, args=(lib, mt), daemon=True).start()
 
     def _render_lb(self, best):
-        """Fill the table and adjust the header (including when the filter let no one through)."""
         self._fill_tree(best)
-        if not best and (self._lb_min is not None or self._lb_minact) and self._lib_cache.get('computed'):
-            parts = []
-            if self._lb_min is not None:
-                parts.append(f'TEST OOS > {self._lb_min:+.2f}')
-            if self._lb_minact:
-                parts.append(f'≥ {self._lb_minact:g} tr/yr·a')
-            self._lb_head_text = ('NO ALPHAS WITH ' + ' AND '.join(parts) +
-                                  '  ·  lower the thresholds or clear the fields')
-        else:
-            self._lb_head_text = self._lb_head_for(self._lb_sort, self._lb_min, self._lb_minact)
-        self.lbl_lb_head.config(text=self._lb_head_text)
 
     def _refresh_leaderboard(self, status_best):
         """Into the table — the best alpha FROM EACH family (across the whole library), not the top-20 clones.
@@ -1286,7 +1228,9 @@ class App:
         elif not cache.get('computed'):
             self._fill_tree(status_best)                 # until computed — the top from the node (as before)
 
-    def _compute_diverse(self, path, mtime, sort, minv, minact):
+    def _compute_diverse(self, path, mtime):
+        """Select the top-N DIVERSE families by fitness min(train,val) — this only picks WHICH alphas
+        to show; the table is ordered client-side by clicking a column header (_sort_by)."""
         rows = []
         try:
             for line in open(path, encoding='utf-8'):
@@ -1300,27 +1244,20 @@ class App:
         except OSError:
             self._lib_cache['computing'] = False
             return
-        keyf = self._LB_TESTKEY if sort == 'test' else (lambda c: c.get('base'))
-        rows = [c for c in rows if keyf(c) is not None]
-        if minv is not None:                             # threshold always by TEST OOS, regardless of mode
-            tk_ = self._LB_TESTKEY
-            rows = [c for c in rows if tk_(c) is not None and tk_(c) > minv]
-        rows.sort(key=keyf, reverse=True)                # by fitness min(train,val) OR by TEST OOS
-        if minact:                                       # drop barely-trading alphas (relative activity)
-            rows = self._filter_active(rows, minact)
+        rows = [c for c in rows if c.get('base') is not None]
+        rows.sort(key=lambda c: c.get('base'), reverse=True)     # honest fitness min(train,val)
         kept = []
-        for c in rows[:500]:                             # candidates — the top by the chosen metric
+        for c in rows[:500]:
             f = c.get('formula', '')
             if all(difflib.SequenceMatcher(None, f, k.get('formula', '')).ratio() < 0.80 for k in kept):
                 kept.append(c)
             if len(kept) >= self._lb_target:
                 break
-        self._lib_cache.update(diverse=kept, mtime=mtime, computing=False, dirty=True,
-                               sort=sort, minv=minv, minact=minact, computed=True)
+        self._lib_cache.update(diverse=kept, mtime=mtime, computing=False, dirty=True, computed=True)
 
     def _fill_tree(self, best):
-        best = self._dedup(best)
-        sig = (len(best), best[0]['formula'] if best else '')
+        best = self._sorted(self._dedup(best))           # pick diverse families, then order by the clicked column
+        sig = (self._sort_col, self._sort_desc, len(best), best[0]['formula'] if best else '')
         if getattr(self, '_treesig', None) == sig:
             return
         self._treesig = sig
@@ -1411,31 +1348,6 @@ class App:
         except Exception:                                                   # noqa: BLE001
             return 'err'
 
-    def _filter_active(self, rows, minact, cap=140):
-        """Keep candidates whose activity >= minact (trades/asset/year on TEST). Bounded and
-        cache-backed: evaluate the top candidates until enough pass or the eval budget is spent;
-        fail open (return rows unchanged) if data/config is unavailable."""
-        with self._metrics_lock:
-            try:
-                ctx = self._metrics_ctx()
-            except Exception:                            # noqa: BLE001  (no data/config)
-                return rows
-            want, out, evals = self._lb_target * 3, [], 0
-            for c in rows:
-                f = c.get('formula', '')
-                m = self._metrics_cache.get(f)
-                if not (isinstance(m, dict) and 'act' in m):
-                    if evals >= cap:
-                        break                            # budget spent — the rest are lower-ranked
-                    m = self._trade_stats(f, ctx)
-                    self._metrics_cache[f] = m
-                    evals += 1
-                if isinstance(m, dict) and m.get('act', 0.0) >= minact:
-                    out.append(c)
-                    if len(out) >= want:
-                        break
-            return out
-
     def _compute_metrics(self, champs, seq):
         with self._metrics_lock:
             try:
@@ -1467,6 +1379,9 @@ class App:
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
+        if self._sort_col in ('ls', 'act', 'win'):       # metrics just arrived -> reorder by them
+            self._treesig = None
+            self._render_lb(self._lib_cache.get('diverse') or self._shown)
 
     # ---------- equity chart on click (TRAIN|VAL|TEST + B&H) ----------
     def _on_row_open(self, event):
