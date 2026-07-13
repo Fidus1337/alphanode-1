@@ -1038,9 +1038,18 @@ class App:
                 txt = 'computing the first signal…'
         except Exception:                                 # noqa: BLE001
             txt = 'starting…' if (self._sig_proc and self._sig_proc.poll() is None) else 'not running'
+        # Tk is NOT thread-safe: touch widgets ONLY on the main thread. Marshal the WHOLE update —
+        # including the winfo_exists guard — via root.after. Calling win.winfo_exists() straight from
+        # this worker thread corrupted the Tcl interpreter and segfaulted the GUI (the crash surfaced
+        # later, on the main thread's next widget creation).
+        def apply():
+            try:
+                if win.winfo_exists() and status.winfo_exists():
+                    status.config(text=txt)
+            except tk.TclError:
+                pass
         try:
-            if win.winfo_exists():
-                self.root.after(0, lambda: status.config(text=txt))
+            self.root.after(0, apply)
         except (RuntimeError, tk.TclError):
             pass
 
