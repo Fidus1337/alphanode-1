@@ -3,6 +3,7 @@
 # (Binance data fetcher). scipy/seaborn/statsmodels are NOT in the bundle (excluded in .spec).
 numpy>=1.24
 pandas>=2.0
+pytz              # quantpylib.wrappers.binance imports it directly (pandas 2.x no longer guarantees it)
 matplotlib>=3.6
 requests          # quantpylib.throttler.aiosonic imports requests
 aiosonic==0.31.1  # quantpylib is verified on 0.31.x (the API changed in 1.x)

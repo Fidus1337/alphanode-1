@@ -96,6 +96,12 @@ def _selfcheck_body(out):
     from quantpylib.simulator.alpha import Portfolio      # noqa: F401
     out('engine imports: ok')
 
+    # The data fetcher role pulls the Binance wrapper (import pytz). Exercise it here so a missing
+    # transitive dep (e.g. pytz) fails the build in CI instead of shipping a broken --role fetch.
+    import fetch_data                                      # noqa: F401
+    import signal_service                                  # noqa: F401
+    out('fetch/signal imports: ok')
+
     if os.path.exists(dp):
         with open(dp, 'rb') as f:
             tk_, _oh = pickle.load(f)

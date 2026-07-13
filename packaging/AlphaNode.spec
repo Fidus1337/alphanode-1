@@ -18,7 +18,7 @@ hiddenimports = (
      'signal_service',
      'config', 'evolution', 'evaluator', 'fastsim', 'genome', 'primitives',
      'report', 'evolved_strategy', 'experiments',
-     'aiosonic', 'orjson', 'onecache']
+     'aiosonic', 'orjson', 'onecache', 'pytz']       # pytz: imported by quantpylib.wrappers.binance
     + collect_submodules('quantpylib')
 )
 
