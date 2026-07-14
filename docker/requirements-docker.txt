@@ -1,0 +1,10 @@
+# Runtime deps for the HEADLESS AlphaNode node (Docker). No GUI stack (matplotlib / tkinter /
+# pillow) — only the evolution engine, the Binance data fetcher, and the signal API.
+numpy>=1.24
+pandas>=2.0,<3      # pandas 3's Copy-on-Write returns read-only .to_numpy(); pin to the tested 2.x
+numba              # JIT for the fast_sim fitness kernel (~4x); optional at runtime (numpy fallback)
+pytz               # quantpylib.wrappers.binance
+aiosonic==0.31.1   # quantpylib is verified on 0.31.x
+orjson
+onecache
+requests

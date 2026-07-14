@@ -246,9 +246,10 @@ def main():
                      args=(formulas, tickers, start, cfg['vol'], cfg['exec'], refresh, stop),
                      daemon=True).start()
 
-    srv = http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler)
+    host = os.environ.get('ALPHANODE_SIGNAL_HOST') or '127.0.0.1'   # Docker: set 0.0.0.0 to expose it
+    srv = http.server.ThreadingHTTPServer((host, port), Handler)
     print(f'[signal] "{name}" · {len(formulas)} formula(s) · {len(tickers)} pairs · '
-          f'refresh {refresh}s · serving http://127.0.0.1:{port}/signal', flush=True)
+          f'refresh {refresh}s · serving http://{host}:{port}/signal', flush=True)
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

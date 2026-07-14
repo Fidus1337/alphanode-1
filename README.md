@@ -70,11 +70,12 @@ row for its equity curve with TRAIN|VAL|TEST zones. Bottom: a **PORTFOLIO** pane
 top-N alphas through the real `Portfolio` engine and shows the diversified equity vs a buy & hold basket.
 
 **CLI** (`alphanode/cli.py`) — the same knobs as flags. Subcommands: `run`, `fetch`, `top`, `status`,
-`export`. State lives in `ALPHANODE_STATE_DIR` (default `alphanode/state/`), so `top`/`status` see the
-library of a running node. Also runnable from the packaged binary: `AlphaNode --role cli top`.
+`portfolio`, `signal`, `export`. State lives in `ALPHANODE_STATE_DIR` (default `alphanode/state/`), so
+`top`/`status` see the library of a running node. Also runnable from the packaged binary:
+`AlphaNode --role cli top`.
 
-**Docker** — CLI-first, for "always in the background". See `alphanode/` for `Dockerfile` /
-`docker-compose.yml`.
+**Docker** — the same headless functionality (search + live web status, data fetch, portfolio builder,
+signal API) in a container. See **[Run with Docker](#run-with-docker)** below.
 
 **Update the data** — pull the top-N USDT perps by 24h turnover (public Binance endpoints, no keys):
 
@@ -88,6 +89,43 @@ restart the search (the old library was mined on different pairs).
 **Paper trade a champion** — from the GUI's equity window, *📄 Paper Trade* assembles a self-contained
 `exports/paper_<hash>/` bundle (strategy + a daily paper trader on live Binance data + engine copy) that
 runs anywhere with no dependency on this repo.
+
+---
+
+## Run with Docker
+
+Everything the GUI does **except the desktop window** — the evolutionary search node with a live web
+status page, data fetch, portfolio builder, and the signal API — packaged headless. The engine runs
+identically; you drive it with the CLI and watch progress in a browser.
+
+```bash
+docker compose up -d --build node               # start the search; state persists in ./alphanode-data
+#  → live leaderboard + progress at  http://localhost:8787
+
+docker compose logs -f node                     # follow the search log
+docker compose run --rm node top -n 20          # leaderboard in the terminal
+docker compose run --rm node status             # node state
+docker compose run --rm node fetch --top 150    # refresh Binance data (into the volume)
+docker compose run --rm node portfolio --top 6  # combine top-6 alphas → state/portfolio.json
+docker compose --profile signal up -d signal    # serve the top alpha's live signal on :8799
+```
+
+- **Status page** (`:8787`) is the browser view of the leaderboard + progress — the GUI's core, headless.
+- **State** (mined library, node status, `data.pickle`) persists in `./alphanode-data`, mounted at `/data`.
+- **Config** via `environment:` in `docker-compose.yml` or `-e ALPHANODE_*` (CPU share, universe, pop/gens,
+  TRAIN/VAL/TEST boundaries, …) — the same keys as the GUI/CLI.
+- **numba** is baked into the image (~4× faster node); it falls back to numpy if it can't load.
+
+Plain Docker (no compose) works too:
+
+```bash
+docker build -t alphanode .
+docker run -d -p 8787:8787 -v "$PWD/alphanode-data:/data" alphanode run --cpu 50
+docker run --rm       -v "$PWD/alphanode-data:/data" alphanode top -n 20
+```
+
+> The daemon must be reachable — add your user to the `docker` group
+> (`sudo usermod -aG docker $USER`, then re-login) or prefix the commands with `sudo`.
 
 ---
 
@@ -116,6 +154,7 @@ Everything the engine understands is configurable, in three layers (later overri
 | `strategies.py`, `paper_trade.py`, `run_paper.sh` | Legacy hand-coded strategies (Bollinger/MA/Donchian/RSI) + a standalone daily paper trader. |
 | `research/` | Jupyter experiments (e.g. a direction-classifier study). |
 | `packaging/` | Build tooling: AppImage (`build_linux.sh`), `.deb` (`build_deb.sh`), the PyInstaller spec, Windows installer, icons. |
+| `Dockerfile`, `docker-compose.yml`, `docker/` | Headless container — search node + web status, fetch, portfolio, signal API. See **[Run with Docker](#run-with-docker)**. |
 | `.github/` | CI — the Windows build workflow. |
 
 Generated at runtime and git-ignored: `alphanode/state/` (the mined library + node status),

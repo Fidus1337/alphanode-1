@@ -1,0 +1,21 @@
+# keep the build context (and image) small: ship only the engine + app sources + data snapshot.
+.git/
+.venv/
+**/__pycache__/
+*.pyc
+*.pyo
+
+# desktop packaging + build artifacts (not used by the headless image)
+packaging/
+docs/
+
+# runtime / generated state — the container has its own /data volume
+alphanode/state/
+alphanode/gui_settings.json
+exports/
+evolution/experiments/
+*.log
+paper_state.json
+paper_trades.csv
+eval_*.png
+evolution/evo_*.png

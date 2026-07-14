@@ -1,10 +1,12 @@
 """AlphaNode CLI — control the strategy-search node without a GUI (for Docker/server/ssh).
 
-    python alphanode/cli.py run [flags]      # start continuous search (foreground, log to stdout)
-    python alphanode/cli.py fetch [flags]    # download fresh Binance data
-    python alphanode/cli.py top [flags]      # top alphas found in the library (table in the terminal)
-    python alphanode/cli.py status           # current node state (rounds, best)
-    python alphanode/cli.py export [flags]    # build a paper-trading bundle from a formula/rank
+    python alphanode/cli.py run [flags]        # start continuous search (foreground, log to stdout)
+    python alphanode/cli.py fetch [flags]      # download fresh Binance data
+    python alphanode/cli.py top [flags]        # top alphas found in the library (table in the terminal)
+    python alphanode/cli.py status             # current node state (rounds, best)
+    python alphanode/cli.py portfolio [flags]  # build a combined portfolio from top-N alphas by TEST
+    python alphanode/cli.py signal [flags]     # serve live target positions over a local HTTP API (JSON)
+    python alphanode/cli.py export [flags]     # build a paper-trading bundle from a formula/rank
 
 Everything configurable in the GUI is here as flags too; an unset flag = taken from ALPHANODE_*/config.ini.
 State (library, status) is read from ALPHANODE_STATE_DIR (in Docker — /data).
@@ -200,6 +202,53 @@ def cmd_export(args):
     print(f'  run:  cd "{dest}" && pip install -r requirements.txt && python paper_trade.py')
 
 
+def cmd_portfolio(args):
+    os.environ.setdefault('ALPHANODE_STATE_DIR', _state_dir())
+    os.environ.setdefault('ALPHANODE_DATA', _data_path())
+    import portfolio_build
+    out = args.out or os.path.join(_state_dir(), 'portfolio.json')
+    argv = ['portfolio', '--top', str(args.top), '--sim-start', args.sim_start, '--out', out]
+    if args.jobs is not None:
+        argv += ['--jobs', str(args.jobs)]
+    sys.argv = argv
+    portfolio_build.main()                                    # writes portfolio.json; exits itself
+
+
+def cmd_signal(args):
+    os.environ.setdefault('ALPHANODE_STATE_DIR', _state_dir())
+    os.environ.setdefault('ALPHANODE_DATA', _data_path())
+    name = args.name
+    if args.formula:
+        formulas, name = [args.formula], name or 'alpha'
+    elif args.portfolio:
+        try:
+            doc = json.load(open(os.path.join(_state_dir(), 'portfolio.json'), encoding='utf-8'))
+        except OSError:
+            print('portfolio.json not found — run "portfolio" first')
+            return
+        formulas = doc.get('formulas_full') or []
+        name = name or f'portfolio_top{doc.get("n", len(formulas))}'
+        if not formulas:
+            print('no formulas in portfolio.json')
+            return
+    else:                                                     # Nth best from the library by --sort
+        rows, _ = _load_library(_state_dir())
+        picked = _rank(rows, args.sort, None, args.rank, diverse=False)
+        if len(picked) < args.rank:
+            print(f'library has fewer than {args.rank} alphas (total {len(picked)})')
+            return
+        formulas, name = [picked[args.rank - 1].get('formula')], name or f'alpha_rank{args.rank}'
+    os.environ['ALPHANODE_SIGNAL_FORMULAS'] = json.dumps(formulas)
+    os.environ['ALPHANODE_SIGNAL_NAME'] = name
+    for flag, envk in (('port', 'PORT'), ('refresh', 'REFRESH'), ('host', 'HOST'),
+                       ('universe', 'TICKERS'), ('start', 'START')):
+        v = getattr(args, flag, None)
+        if v not in (None, ''):
+            os.environ['ALPHANODE_SIGNAL_' + envk] = str(v)
+    import signal_service
+    signal_service.main()                                     # serves until stopped (Ctrl-C / SIGTERM)
+
+
 def build_parser():
     p = argparse.ArgumentParser(prog='alphanode', description='AlphaNode CLI (headless alpha-search node)')
     sub = p.add_subparsers(dest='cmd', required=True)
@@ -273,6 +322,27 @@ def build_parser():
     e.add_argument('--start', default='2019-09-05')
     e.add_argument('--out', default=None, help='where to put the bundle (default exports/)')
     e.set_defaults(func=cmd_export)
+
+    pf = sub.add_parser('portfolio', help='build a combined portfolio from top-N alphas by TEST')
+    pf.add_argument('--top', type=int, default=6)
+    pf.add_argument('--sim-start', dest='sim_start', default='2022-06-01', help='warm-up start before TEST')
+    pf.add_argument('--jobs', type=int, default=None, help='parallel workers (default auto)')
+    pf.add_argument('--out', default=None, help='default — <state_dir>/portfolio.json')
+    pf.set_defaults(func=cmd_portfolio)
+
+    sg = sub.add_parser('signal', help='serve live target positions over a local HTTP API (JSON)')
+    gg = sg.add_mutually_exclusive_group()
+    gg.add_argument('--formula', help='serve this exact formula')
+    gg.add_argument('--rank', type=int, default=1, help='serve the Nth best alpha by --sort (default 1)')
+    sg.add_argument('--portfolio', action='store_true', help='serve the built portfolio (portfolio.json)')
+    sg.add_argument('--sort', choices=['fitness', 'test'], default='fitness')
+    sg.add_argument('--name', default=None, help='label for the served strategy')
+    sg.add_argument('--port', type=int, default=None, help='default 8799')
+    sg.add_argument('--refresh', type=int, default=None, help='recompute period, sec (default 900)')
+    sg.add_argument('--host', default=None, help='bind host (Docker: 0.0.0.0)')
+    sg.add_argument('--start', default=None, help='ISO date to warm the engine from')
+    sg.add_argument('--universe', help='ticker list; default — all from data.pickle')
+    sg.set_defaults(func=cmd_signal)
     return p
 
 

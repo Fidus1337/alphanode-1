@@ -1,0 +1,40 @@
+# AlphaNode headless. `docker compose up -d node` runs the search; the live status page (leaderboard
+# + progress) is at http://localhost:8787. Library/status/data persist in ./alphanode-data.
+#
+#   docker compose up -d --build node                 # start the search node
+#   docker compose logs -f node                       # follow the search log
+#   docker compose run --rm node top -n 20            # leaderboard in the terminal
+#   docker compose run --rm node fetch --top 150      # refresh Binance data (into the volume)
+#   docker compose run --rm node portfolio --top 6    # build a combined portfolio -> state/portfolio.json
+#   docker compose --profile signal up -d signal      # serve the top alpha's live signal on :8799
+services:
+  node:
+    build: .
+    image: alphanode:latest
+    restart: unless-stopped
+    ports:
+      - "8787:8787"                       # status page -> http://localhost:8787
+    volumes:
+      - ./alphanode-data:/data            # library.jsonl, status.json, data.pickle persist here
+    environment:
+      ALPHANODE_CPU_PERCENT: "50"         # share of CPU (workers = % x cores)
+      ALPHANODE_UNIVERSE: "all"           # or "BTCUSDT,ETHUSDT,..."
+      ALPHANODE_POP: "200"
+      ALPHANODE_GENS: "25"
+      ALPHANODE_STATUS_PORT: "8787"
+    command: ["run"]
+
+  # optional live-signal API (bound to 0.0.0.0 so it's reachable from the host).
+  # start with:  docker compose --profile signal up -d signal
+  signal:
+    build: .
+    image: alphanode:latest
+    profiles: ["signal"]
+    restart: unless-stopped
+    ports:
+      - "8799:8799"                       # signal API -> http://localhost:8799/signal
+    volumes:
+      - ./alphanode-data:/data
+    environment:
+      ALPHANODE_SIGNAL_HOST: "0.0.0.0"    # expose outside the container
+    command: ["signal", "--rank", "1"]    # serve the current top-1 alpha (by fitness)
