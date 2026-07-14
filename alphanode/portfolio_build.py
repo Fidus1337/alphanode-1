@@ -65,10 +65,16 @@ _G = {}
 
 def _winit(sim_start, sim_end):
     from config import load_config
-    from evaluator import build_panel
+    from evaluator import load_raw
     cfg = load_config()
-    tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'))
-    _G.update(cfg=cfg, tk=tk, raw=raw, panel=panel, start=sim_start, end=sim_end)
+    # workers only run the engine on the RAW dfs — skip build_panel's wide feature tables
+    # (11 x N x days), which _sim_one never touches, to save per-worker memory + startup CPU.
+    tk, raw = load_raw(cfg['data'], cfg.get('instruments'))
+    try:
+        os.nice(10)                                       # background priority: keep the GUI responsive
+    except (AttributeError, OSError):
+        pass
+    _G.update(cfg=cfg, tk=tk, raw=raw, start=sim_start, end=sim_end)
 
 
 def _sim_one(arg):

@@ -49,10 +49,12 @@ def add_derived_features(panel):
 
 
 # ---------------- panel ----------------
-def build_panel(data_path, start, end, instruments=None):
-    """(tickers, raw_dfs, feature_panel) on a common daily calendar START..END.
+def load_raw(data_path, instruments=None):
+    """(tickers, {ticker: OHLCV df}) from data.pickle — the raw per-ticker frames only, WITHOUT
+    building the wide feature panel. For callers that need just the raw dfs (e.g. the real-engine
+    portfolio workers), avoiding the panel's memory/CPU cost.
 
-    instruments=None -> all pairs from data.pickle; a list -> keep only those (in that order)."""
+    instruments=None -> all pairs; a list -> keep only those, in that order."""
     with open(data_path, 'rb') as f:
         tk, oh = pickle.load(f)
     if instruments:
@@ -63,7 +65,14 @@ def build_panel(data_path, start, end, instruments=None):
                              f'Available: {tk}. New pairs need to be downloaded.')
         oh = [oh[pos[t]] for t in instruments]
         tk = list(instruments)
-    raw = {t: oh[i] for i, t in enumerate(tk)}
+    return tk, {t: oh[i] for i, t in enumerate(tk)}
+
+
+def build_panel(data_path, start, end, instruments=None):
+    """(tickers, raw_dfs, feature_panel) on a common daily calendar START..END.
+
+    instruments=None -> all pairs from data.pickle; a list -> keep only those (in that order)."""
+    tk, raw = load_raw(data_path, instruments)
     idx = pd.date_range(start=start, end=end, freq='D', tz='UTC')
 
     # IMPORTANT (look-ahead guard): SIGNAL features are ffill only, NO bfill.
