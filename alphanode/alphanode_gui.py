@@ -19,7 +19,6 @@ import difflib
 import hashlib
 import threading
 import subprocess
-import webbrowser
 
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
@@ -37,11 +36,14 @@ if apppaths.RES_ROOT not in sys.path:
 NODE_PY = os.path.join(HERE, 'node.py')                 # dev: scripts via the real python
 FETCH_PY = os.path.join(PROJ, 'fetch_data.py')
 PORTFOLIO_PY = os.path.join(HERE, 'portfolio_build.py')
+SIGNAL_PY = os.path.join(HERE, 'signal_service.py')     # local live-signal API
+SIGNAL_PORT = 8799
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
 STATE_DIR = apppaths.state_dir()
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 PORTFOLIO_JSON = os.path.join(STATE_DIR, 'portfolio.json')
 PORTFOLIO_PNG = os.path.join(STATE_DIR, 'portfolio_equity.png')
+SIGNAL_LOG = os.path.join(STATE_DIR, 'signal.log')      # signal-service subprocess output
 SETTINGS = apppaths.settings_file()
 CORES = os.cpu_count() or 4
 
@@ -51,7 +53,7 @@ def _child_cmd(role):
     --role, in dev — the real python with the script."""
     if apppaths.FROZEN:
         return [sys.executable, '--role', role]
-    script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY}[role]
+    script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY, 'signal': SIGNAL_PY}[role]
     return [sys.executable, '-u', script]
 
 DEFAULTS = {
@@ -107,17 +109,19 @@ class App:
         self._metrics_seq = 0                             # to discard stale background computations
         self._row_items = {}                              # formula -> table row id (to update cells)
         self._pf_proc = None                              # portfolio-build subprocess
+        self._sig_proc = None                             # signal-API subprocess (one at a time)
+        self._sig_log = None                              # its stdout/stderr log handle
         self._pf_img_ref = None                           # keep a ref to the equity PhotoImage (else GC)
         self._pf_doc = None                               # last portfolio result (for re-render on resize)
         self._pf_resize_after = None                      # debounce id for resize re-render
         self._pf_last_w = 0                               # last render width (skip tiny resizes)
         self._shown = []                                 # what is actually shown in the table (for clicks)
-        self._lb_sort = 'base'                           # how to rank the leaderboard: base | test
-        self._lb_min = None                              # threshold: show only TEST OOS > X (or None)
-        self._lb_minact = 2.0                            # min trade activity (trades/asset/year on TEST)
+        self._sort_col = 'fit'                            # leaderboard sort column (click a header)
+        self._sort_desc = True                            # descending (best first)
+        self._lb_select = 'fit'                           # POPULATION key: 'fit' = min(train,val); 'test' = held-out OOS
         self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'sort': 'base', 'minv': None, 'minact': 2.0, 'computed': False}
-        self._lb_target = 20                             # how many DISTINCT families to show
+                           'ts': 0.0, 'computed': False, 'select': None}
+        self._lb_target = 20                             # how many DISTINCT families to select
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
         self.cfg = dict(DEFAULTS)
@@ -443,15 +447,12 @@ class App:
         self.btn_stop.pack(fill='x', pady=(0, 6), ipady=2)
         b_reset = ttk.Button(btns, text='Reset to defaults', command=self._reset)
         b_reset.pack(fill='x', pady=(0, 6))
-        b_web = ttk.Button(btns, text='Open status in browser', command=self._open_web)
-        b_web.pack(fill='x')
         b_wipe = ttk.Button(btns, text='🗑  Clear all history', style='Danger.TButton',
                             command=self._wipe_history)
         b_wipe.pack(fill='x', pady=(14, 0))
         self._tip(self.btn_start, 'Start the background search with the current settings.')
         self._tip(self.btn_stop, 'Gently stop the search (the current round will finish).')
         self._tip(b_reset, 'Return all settings to their default values.')
-        self._tip(b_web, 'Open the status page in the browser.')
         self._tip(b_wipe, 'Delete all history and found alphas (with confirmation).')
 
     def _section(self, parent, title):
@@ -584,56 +585,23 @@ class App:
         card2.grid(row=2, column=0, sticky='nsew', pady=(16, 0))
         hrow = ttk.Frame(card2, style='Card.TFrame')
         hrow.pack(fill='x', pady=(0, 8))
-        self._lb_head_text = self._lb_head_for('base')
+        self._lb_head_text = self._lb_head_text_for('fit')
         self.lbl_lb_head = ttk.Label(hrow, text=self._lb_head_text, style='H.TLabel')
         self.lbl_lb_head.pack(side='left', anchor='w')
-        sortf = ttk.Frame(hrow, style='Card.TFrame')
-        sortf.pack(side='right')
-        ttk.Label(sortf, text='rank by:', style='Mut.TLabel').pack(side='left', padx=(0, 6))
-        self.v_lbsort = tk.StringVar(value='base')
-        for val, lab, tip in (
-                ('base', 'fitness',
-                 'Rank by the honest fitness min(train, val).\n'
-                 'Selection without peeking at TEST — that is how the node works.'),
-                ('test', 'TEST OOS',
-                 'Rank by held-out TEST — "top by OOS".\n'
-                 '⚠ This is cherry-pick on held-out data: alphas picked\n'
-                 'this way have an inflated TEST (a selection effect).\n'
-                 'Fine to look at, but NOT as a selection criterion.')):
-            rb = ttk.Radiobutton(sortf, text=lab, value=val, variable=self.v_lbsort,
-                                 style='Card.TRadiobutton', command=self._set_lb_sort)
-            rb.pack(side='left', padx=(0, 4))
-            self._tip(rb, tip)
-        ttk.Label(sortf, text='  ·  TEST >', style='Mut.TLabel').pack(side='left', padx=(6, 4))
-        self.v_lbmin = tk.StringVar(value='')
-        e_min = ttk.Entry(sortf, textvariable=self.v_lbmin, width=5, justify='center')
-        e_min.pack(side='left')
-        e_min.bind('<Return>', lambda ev: self._set_lb_sort())
-        e_min.bind('<FocusOut>', lambda ev: self._set_lb_sort())
-        self._tip(e_min, 'Show only alphas with TEST OOS above the threshold.\n'
-                         'E.g. 1  → only those with held-out Sharpe > 1.\n'
-                         'Empty — no filter. Enter or click outside the field — apply.')
-        ttk.Label(sortf, text='  ·  min tr/yr', style='Mut.TLabel').pack(side='left', padx=(6, 4))
-        self.v_lbact = tk.StringVar(value='2')
-        e_act = ttk.Entry(sortf, textvariable=self.v_lbact, width=4, justify='center')
-        e_act.pack(side='left')
-        e_act.bind('<Return>', lambda ev: self._set_lb_sort())
-        e_act.bind('<FocusOut>', lambda ev: self._set_lb_sort())
-        self._tip(e_act, 'Minimum trade activity: trades per asset per year (on TEST).\n'
-                         'Hides "strategies" that barely trade — e.g. 10 trades over 3.5 years,\n'
-                         'whose high TEST Sharpe is a lucky buy-and-hold on a few bets, not real trading.\n'
-                         'E.g. 2 → each asset must be traded at least ~2×/year on average.\n'
-                         'Empty/0 — no filter. Enter or click outside — apply.')
         wrap = ttk.Frame(card2, style='Card.TFrame')
         wrap.pack(fill='both', expand=True)
         cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
+        self._HEAD = {}
         for c, txt, w, anc in (('rank', '#', 40, 'center'), ('fit', 'fitness', 74, 'e'),
                                ('test', 'TEST OOS', 84, 'e'), ('ls', 'trades L/S', 84, 'center'),
                                ('act', 'tr/yr·a', 58, 'e'),
                                ('win', 'win%', 56, 'e'), ('formula', 'formula', 320, 'w')):
-            self.tree.heading(c, text=txt)
+            self._HEAD[c] = txt
+            kw = {} if c == 'rank' else {'command': (lambda c=c: self._sort_by(c))}
+            self.tree.heading(c, text=txt, **kw)
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
+        self._update_headings()                          # show the sort arrow on the active column
         self._tip(self.lbl_lb_head, 'trades L/S = total number of long / short positions OPENED over TEST\n'
                                     '(a trade = crossing into long/short from flat or the opposite side);\n'
                                     'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
@@ -682,11 +650,17 @@ class App:
         self.btn_pf_paper = ttk.Button(ctl, text='📄 Paper', width=8, state='disabled',
                                        command=self._pf_paper_trade)
         self.btn_pf_paper.pack(side='left', padx=(6, 0))
+        self.btn_pf_sig = ttk.Button(ctl, text='📡 Serve', width=8, state='disabled',
+                                     command=self._pf_serve_signal)
+        self.btn_pf_sig.pack(side='left', padx=(6, 0))
         self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
                                    'weight per asset per day on TEST (same as for a single alpha).')
         self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
                                      'portfolio (all N alphas combined via the real Portfolio engine)\n'
                                      'to run daily on live Binance data — same as for a single alpha.')
+        self._tip(self.btn_pf_sig, 'Start a local signal API for the whole portfolio — serves the\n'
+                                   'combined live target positions as JSON at\n'
+                                   'http://127.0.0.1:8799/signal (localhost).')
         self.lbl_pf = ttk.Label(card3, style='Faint.TLabel', wraplength=900,
                                 text='⚠ selecting by TEST inflates the number (cherry-pick); the '
                                      'diversification gain — combined ≫ any single alpha — is the real part.')
@@ -713,7 +687,7 @@ class App:
         self.lbl_pf_m.config(text='')
         self.pf_img.config(image='')
         self._pf_img_ref = None
-        for b in (self.btn_pf_csv, self.btn_pf_paper):
+        for b in (self.btn_pf_csv, self.btn_pf_paper, self.btn_pf_sig):
             b.config(state='disabled')
 
     def _stat(self, parent, label, col):
@@ -731,9 +705,6 @@ class App:
 
     def _uni_toggle(self):
         self.e_uni.config(state='disabled' if self.v_uniall.get() else 'normal')
-
-    def _open_web(self):
-        webbrowser.open(f'http://localhost:{self._gi(self.v_port, 8787)}')
 
     def _reset(self):
         self.cfg = dict(DEFAULTS)
@@ -867,8 +838,7 @@ class App:
         self._treesig = None
         self._shown = []
         self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'sort': self._lb_sort, 'minv': self._lb_min,
-                           'minact': self._lb_minact, 'computed': False}
+                           'ts': 0.0, 'computed': False}
         self._history = []
         self._draw_chart()
         self.s_rounds.config(text='0')
@@ -954,8 +924,134 @@ class App:
         try:
             if self.proc and self.proc.poll() is None:
                 self.proc.terminate()
+            self._stop_signal()
         finally:
             self.root.destroy()
+
+    # ---------- local signal API (serve live positions of a formula / portfolio) ----------
+    def _serve_signal(self, formulas, label):
+        formulas = [f for f in (formulas or []) if f and f.strip()]
+        if not formulas:
+            return
+        c = self.cfg
+        if c.get('universe_all', True):
+            try:
+                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
+            except Exception as e:                        # noqa: BLE001
+                messagebox.showerror('Signal API', f'Cannot read the loaded data: {e}', parent=self.root)
+                return
+        else:
+            tickers = [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]
+        if not tickers:
+            messagebox.showwarning('Signal API', 'The pairs universe is empty.', parent=self.root)
+            return
+        self._stop_signal()                               # one service at a time
+        env = dict(os.environ)
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
+                   ALPHANODE_CONFIG_INI=apppaths.config_ini(),
+                   ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
+                   ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
+                   ALPHANODE_SIGNAL_PORT=str(SIGNAL_PORT), ALPHANODE_SIGNAL_REFRESH='900')
+        try:
+            self._sig_log = open(SIGNAL_LOG, 'w', buffering=1)   # capture the service's output/errors
+            self._sig_proc = subprocess.Popen(
+                _child_cmd('signal'), env=env,
+                cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
+                stdout=self._sig_log, stderr=subprocess.STDOUT)
+        except Exception as e:                            # noqa: BLE001
+            messagebox.showerror('Signal API', f'Could not start the signal service: {e}', parent=self.root)
+            return
+        self._signal_dialog(label, len(formulas), len(tickers))
+
+    def _pf_serve_signal(self):
+        doc = self._pf_doc
+        formulas = (doc or {}).get('formulas_full')
+        if not formulas:
+            messagebox.showinfo('Signal API', 'Build the portfolio first.', parent=self.root)
+            return
+        self._serve_signal(list(formulas), f'portfolio_top{doc.get("n", len(formulas))}')
+
+    def _stop_signal(self):
+        p, self._sig_proc = self._sig_proc, None
+        try:
+            if p and p.poll() is None:
+                p.terminate()
+        except Exception:                                 # noqa: BLE001
+            pass
+        try:
+            if self._sig_log:
+                self._sig_log.close()
+        except Exception:                                 # noqa: BLE001
+            pass
+        self._sig_log = None
+
+    def _signal_dialog(self, label, n_formulas, n_tickers):
+        url = f'http://127.0.0.1:{SIGNAL_PORT}/signal'
+        win = tk.Toplevel(self.root)
+        win.title('Signal API')
+        win.configure(bg=CARD)
+        win.geometry('490x300')
+        frm = tk.Frame(win, bg=CARD)
+        frm.pack(fill='both', expand=True, padx=18, pady=16)
+        tk.Label(frm, text='📡  Signal API running', bg=CARD, fg=TXT,
+                 font=(self.UI, 13, 'bold')).pack(anchor='w')
+        sub = f'portfolio · {n_formulas} alphas' if n_formulas > 1 else label
+        tk.Label(frm, text=f'{sub}  ·  {n_tickers} pairs  ·  live, refresh 15 min', bg=CARD, fg=MUT,
+                 font=(self.UI, 9), wraplength=440, justify='left').pack(anchor='w', pady=(2, 10))
+        tk.Label(frm, text=url, bg=CARD, fg=POS, font=(self.MONO, 11)).pack(anchor='w')
+        status = tk.Label(frm, text='starting — fetching live data, computing the first signal…',
+                          bg=CARD, fg=MUT, font=(self.UI, 9), wraplength=440, justify='left')
+        status.pack(anchor='w', pady=(10, 0))
+        btns = tk.Frame(frm, bg=CARD)
+        btns.pack(anchor='w', pady=(16, 0))
+        ttk.Button(btns, text='Copy URL',
+                   command=lambda: (self.root.clipboard_clear(), self.root.clipboard_append(url))
+                   ).pack(side='left')
+        ttk.Button(btns, text='■  Stop', style='Stop.TButton',
+                   command=lambda: (self._stop_signal(), status.config(text='stopped.'))).pack(side='left', padx=(8, 0))
+        ttk.Button(btns, text='Close', command=win.destroy).pack(side='left', padx=(8, 0))
+        tk.Label(frm, text='Closing this window keeps the API running; use Stop to stop it.\n'
+                           'Advisory signal — not execution. GET /health for status.',
+                 bg=CARD, fg=FAINT, font=(self.UI, 8), justify='left').pack(anchor='w', pady=(12, 0))
+
+        def poll():
+            if not win.winfo_exists():
+                return
+            threading.Thread(target=self._poll_signal_health, args=(status, win), daemon=True).start()
+            win.after(3000, poll)
+        win.after(1000, poll)
+
+    def _poll_signal_health(self, status, win):
+        if self._sig_proc is None:
+            return
+        try:
+            import urllib.request
+            with urllib.request.urlopen(f'http://127.0.0.1:{SIGNAL_PORT}/health', timeout=3) as r:
+                h = json.load(r)
+            if h.get('ok'):
+                age = h.get('age_secs')
+                txt = (f'● serving · updated {h.get("updated_at", "")} ({age:.0f}s ago)'
+                       if age is not None else '● serving')
+            elif h.get('error'):
+                txt = f'⚠ {h["error"]}'
+            else:
+                txt = 'computing the first signal…'
+        except Exception:                                 # noqa: BLE001
+            txt = 'starting…' if (self._sig_proc and self._sig_proc.poll() is None) else 'not running'
+        # Tk is NOT thread-safe: touch widgets ONLY on the main thread. Marshal the WHOLE update —
+        # including the winfo_exists guard — via root.after. Calling win.winfo_exists() straight from
+        # this worker thread corrupted the Tcl interpreter and segfaulted the GUI (the crash surfaced
+        # later, on the main thread's next widget creation).
+        def apply():
+            try:
+                if win.winfo_exists() and status.winfo_exists():
+                    status.config(text=txt)
+            except tk.TclError:
+                pass
+        try:
+            self.root.after(0, apply)
+        except (RuntimeError, tk.TclError):
+            pass
 
     # ---------- status polling ----------
     def _poll(self):
@@ -1063,49 +1159,67 @@ class App:
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
-    def _lb_head_for(self, mode, minv=None, minact=None):
-        flt = f'  ·  TEST > {minv:+.2f}' if minv is not None else ''
-        flt += f'  ·  ≥{minact:g} tr/yr·a' if minact else ''
-        if mode == 'test':
-            return ('TOP BY TEST OOS  ·  ⚠ cherry-pick on held-out (number inflated)' + flt +
-                    '  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
-        return ('BEST ALPHA FROM EACH FAMILY (by fitness min(train,val))  ·  TEST — OOS' + flt +
-                '  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
+    _SORTABLE = ('fit', 'test', 'ls', 'act', 'win', 'formula')
 
-    def _read_lb_min(self):
-        """Threshold from the field: empty/garbage -> None (no filter). A comma separator is also accepted."""
-        raw = (self.v_lbmin.get() or '').strip().replace(',', '.')
-        if not raw:
-            return None
-        try:
-            return float(raw)
-        except ValueError:
-            return None
+    def _sort_key(self, c, col):
+        if col == 'fit':
+            return c.get('base')
+        if col == 'test':
+            return self._LB_TESTKEY(c)
+        if col == 'formula':
+            return c.get('formula', '')
+        m = self._metrics_cache.get(c.get('formula', ''))    # ls / act / win — from the metrics cache
+        m = m if isinstance(m, dict) else {}
+        if col == 'ls':
+            return m.get('long', 0) + m.get('short', 0)
+        if col == 'act':
+            return m.get('act')
+        if col == 'win':
+            return m.get('win')
+        return None
 
-    def _read_lb_act(self):
-        """Min trade activity from the field (trades/asset/year): empty/0/garbage -> None (no filter)."""
-        raw = (self.v_lbact.get() or '').strip().replace(',', '.')
-        if not raw:
-            return None
-        try:
-            v = float(raw)
-        except ValueError:
-            return None
-        return v if v > 0 else None
+    def _sorted(self, rows):
+        col, desc = self._sort_col, self._sort_desc
+        if col == 'formula':
+            return sorted(rows, key=lambda c: c.get('formula', ''), reverse=desc)
 
-    def _set_lb_sort(self):
-        mode = self.v_lbsort.get()
-        minv = self._read_lb_min()
-        minact = self._read_lb_act()
-        if mode == self._lb_sort and minv == self._lb_min and minact == self._lb_minact:
+        def k(c):
+            v = self._sort_key(c, col)
+            return float('-inf') if v is None else v      # missing metrics sort to the bottom
+        return sorted(rows, key=k, reverse=desc)
+
+    def _update_headings(self):
+        for c, txt in self._HEAD.items():
+            arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
+            self.tree.heading(c, text=txt + arrow)
+
+    @staticmethod
+    def _lb_head_text_for(select):
+        src = ('TOP by TEST OOS — held-out, cherry-picked ⚠' if select == 'test'
+               else 'top by fitness min(train,val)')
+        return (f'LEADERBOARD — best alpha per family ({src})  ·  '
+                'click a column to sort  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
+
+    def _sort_by(self, col):
+        """Click a column header. 'fitness' and 'TEST OOS' also RE-SELECT the population from the
+        WHOLE library by that metric (top-by-fitness vs top-by-held-out-TEST); ls/act/win/formula
+        just reorder the current population. Repeat click on the same column toggles direction."""
+        if col not in self._SORTABLE:
             return
-        self._lb_sort = mode
-        self._lb_min = minv
-        self._lb_minact = minact
-        self._lb_head_text = self._lb_head_for(mode, minv, minact)
-        self.lbl_lb_head.config(text=self._lb_head_text)
-        self._start_lb_compute(force=True)               # immediate recompute for the new order/filter
-        self._drain_lb()                                 # and render, even if the node is stopped
+        if col == self._sort_col:
+            self._sort_desc = not self._sort_desc
+        else:
+            self._sort_col, self._sort_desc = col, True
+        self._update_headings()
+        self._treesig = None                             # force a redraw in the new order
+        select = col if col in ('fit', 'test') else self._lb_select
+        if select != self._lb_select:                    # population key changed -> re-query the library
+            self._lb_select = select
+            self._lb_head_text = self._lb_head_text_for(select)
+            self.lbl_lb_head.config(text=self._lb_head_text)
+            self._start_lb_compute(force=True)
+        else:
+            self._render_lb(self._lib_cache.get('diverse') or self._shown)
 
     def _start_lb_compute(self, force=False):
         lib = os.path.join(STATE_DIR, 'library.jsonl')
@@ -1116,48 +1230,23 @@ class App:
         cache = self._lib_cache
         if cache['computing']:
             return
-        if (not force and mt == cache['mtime'] and cache.get('sort') == self._lb_sort
-                and cache.get('minv') == self._lb_min and cache.get('minact') == self._lb_minact):
+        if not force and mt == cache['mtime']:
             return
         cache['computing'] = True
         cache['ts'] = time.time()
-        threading.Thread(target=self._compute_diverse,
-                         args=(lib, mt, self._lb_sort, self._lb_min, self._lb_minact),
-                         daemon=True).start()
-
-    def _drain_lb(self, tries=20):
-        """Render the table as soon as the background recompute is ready (works even when the node is stopped)."""
-        cache = self._lib_cache
-        if cache['dirty']:
-            cache['dirty'] = False
-            self._treesig = None
-            self._render_lb(cache['diverse'])
-            return
-        if tries > 0 and cache['computing']:
-            self.root.after(150, lambda: self._drain_lb(tries - 1))
+        threading.Thread(target=self._compute_diverse, args=(lib, mt), daemon=True).start()
 
     def _render_lb(self, best):
-        """Fill the table and adjust the header (including when the filter let no one through)."""
         self._fill_tree(best)
-        if not best and (self._lb_min is not None or self._lb_minact) and self._lib_cache.get('computed'):
-            parts = []
-            if self._lb_min is not None:
-                parts.append(f'TEST OOS > {self._lb_min:+.2f}')
-            if self._lb_minact:
-                parts.append(f'≥ {self._lb_minact:g} tr/yr·a')
-            self._lb_head_text = ('NO ALPHAS WITH ' + ' AND '.join(parts) +
-                                  '  ·  lower the thresholds or clear the fields')
-        else:
-            self._lb_head_text = self._lb_head_for(self._lb_sort, self._lb_min, self._lb_minact)
-        self.lbl_lb_head.config(text=self._lb_head_text)
 
     def _refresh_leaderboard(self, status_best):
         """Into the table — the best alpha FROM EACH family (across the whole library), not the top-20 clones.
         Computed in the background and cached by (mtime, sort mode, threshold) — otherwise O(N²) similarity would freeze the GUI."""
         cache = self._lib_cache
         now = time.time()
-        if not cache['computing'] and now - cache['ts'] > 6:
-            self._start_lb_compute()                     # restart on change of file / mode / threshold
+        stale_select = cache.get('select') != self._lb_select    # a header click changed the population key
+        if not cache['computing'] and (stale_select or now - cache['ts'] > 6):
+            self._start_lb_compute(force=stale_select)   # restart on file change / mode switch / period
         if cache['dirty']:
             cache['dirty'] = False
             self._treesig = None                         # force a redraw after recompute
@@ -1165,7 +1254,12 @@ class App:
         elif not cache.get('computed'):
             self._fill_tree(status_best)                 # until computed — the top from the node (as before)
 
-    def _compute_diverse(self, path, mtime, sort, minv, minact):
+    def _compute_diverse(self, path, mtime):
+        """Select the top-N DIVERSE families FROM THE WHOLE library, ranked by the active population
+        key: 'fit' = fitness min(train,val) (honest), or 'test' = held-out TEST OOS (explicit
+        cherry-pick, chosen by clicking the TEST OOS header). Picks only WHICH alphas show; the row
+        order is set client-side in _sorted."""
+        select = self._lb_select
         rows = []
         try:
             for line in open(path, encoding='utf-8'):
@@ -1179,27 +1273,25 @@ class App:
         except OSError:
             self._lib_cache['computing'] = False
             return
-        keyf = self._LB_TESTKEY if sort == 'test' else (lambda c: c.get('base'))
-        rows = [c for c in rows if keyf(c) is not None]
-        if minv is not None:                             # threshold always by TEST OOS, regardless of mode
-            tk_ = self._LB_TESTKEY
-            rows = [c for c in rows if tk_(c) is not None and tk_(c) > minv]
-        rows.sort(key=keyf, reverse=True)                # by fitness min(train,val) OR by TEST OOS
-        if minact:                                       # drop barely-trading alphas (relative activity)
-            rows = self._filter_active(rows, minact)
+        if select == 'test':
+            rows = [c for c in rows if self._LB_TESTKEY(c) is not None]
+            rows.sort(key=self._LB_TESTKEY, reverse=True)        # top by held-out TEST OOS (cherry-pick)
+        else:
+            rows = [c for c in rows if c.get('base') is not None]
+            rows.sort(key=lambda c: c.get('base'), reverse=True)  # top by honest fitness min(train,val)
         kept = []
-        for c in rows[:500]:                             # candidates — the top by the chosen metric
+        for c in rows[:500]:
             f = c.get('formula', '')
             if all(difflib.SequenceMatcher(None, f, k.get('formula', '')).ratio() < 0.80 for k in kept):
                 kept.append(c)
             if len(kept) >= self._lb_target:
                 break
-        self._lib_cache.update(diverse=kept, mtime=mtime, computing=False, dirty=True,
-                               sort=sort, minv=minv, minact=minact, computed=True)
+        self._lib_cache.update(diverse=kept, mtime=mtime, select=select,
+                               computing=False, dirty=True, computed=True)
 
     def _fill_tree(self, best):
-        best = self._dedup(best)
-        sig = (len(best), best[0]['formula'] if best else '')
+        best = self._sorted(self._dedup(best))           # pick diverse families, then order by the clicked column
+        sig = (self._sort_col, self._sort_desc, len(best), best[0]['formula'] if best else '')
         if getattr(self, '_treesig', None) == sig:
             return
         self._treesig = sig
@@ -1290,31 +1382,6 @@ class App:
         except Exception:                                                   # noqa: BLE001
             return 'err'
 
-    def _filter_active(self, rows, minact, cap=140):
-        """Keep candidates whose activity >= minact (trades/asset/year on TEST). Bounded and
-        cache-backed: evaluate the top candidates until enough pass or the eval budget is spent;
-        fail open (return rows unchanged) if data/config is unavailable."""
-        with self._metrics_lock:
-            try:
-                ctx = self._metrics_ctx()
-            except Exception:                            # noqa: BLE001  (no data/config)
-                return rows
-            want, out, evals = self._lb_target * 3, [], 0
-            for c in rows:
-                f = c.get('formula', '')
-                m = self._metrics_cache.get(f)
-                if not (isinstance(m, dict) and 'act' in m):
-                    if evals >= cap:
-                        break                            # budget spent — the rest are lower-ranked
-                    m = self._trade_stats(f, ctx)
-                    self._metrics_cache[f] = m
-                    evals += 1
-                if isinstance(m, dict) and m.get('act', 0.0) >= minact:
-                    out.append(c)
-                    if len(out) >= want:
-                        break
-            return out
-
     def _compute_metrics(self, champs, seq):
         with self._metrics_lock:
             try:
@@ -1346,6 +1413,9 @@ class App:
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
+        if self._sort_col in ('ls', 'act', 'win'):       # metrics just arrived -> reorder by them
+            self._treesig = None
+            self._render_lb(self._lib_cache.get('diverse') or self._shown)
 
     # ---------- equity chart on click (TRAIN|VAL|TEST + B&H) ----------
     def _on_row_open(self, event):
@@ -1449,6 +1519,7 @@ class App:
         self._pf_doc = doc                               # remember for re-render on resize
         self.btn_pf_csv.config(state=('normal' if doc.get('weights') else 'disabled'))
         self.btn_pf_paper.config(state=('normal' if doc.get('formulas_full') else 'disabled'))
+        self.btn_pf_sig.config(state=('normal' if doc.get('formulas_full') else 'disabled'))
         m = doc.get('metrics') or {}
         b = doc.get('basket') or {}
         self.lbl_pf.config(text=f'top-{doc.get("n")} by TEST OOS combined via the engine  ·  '
@@ -1594,6 +1665,10 @@ class App:
                    command=lambda: self._paper_trade(champ)).pack(side='left')
         ttk.Button(btnrow, text='📥  Download signals (CSV)',
                    command=lambda: self._download_signals(champ)).pack(side='left', padx=(8, 0))
+        _f = champ.get('formula', '')
+        ttk.Button(btnrow, text='📡  Serve signal (API)',
+                   command=lambda: self._serve_signal([_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6])
+                   ).pack(side='left', padx=(8, 0))
 
         body = tk.Frame(win, bg=CARD)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 14))

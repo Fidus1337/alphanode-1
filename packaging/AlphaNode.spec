@@ -15,9 +15,10 @@ APP = os.path.join(PROJ, 'alphanode')
 # collect all quantpylib submodules (it's pulled in by the qt data fetcher and the paper bundle).
 hiddenimports = (
     ['fetch_data', 'apppaths', 'node', 'alphanode_gui', 'paper_export', 'portfolio_build', 'cli',
+     'signal_service',
      'config', 'evolution', 'evaluator', 'fastsim', 'genome', 'primitives',
      'report', 'evolved_strategy', 'experiments',
-     'aiosonic', 'orjson', 'onecache']
+     'aiosonic', 'orjson', 'onecache', 'pytz']       # pytz: imported by quantpylib.wrappers.binance
     + collect_submodules('quantpylib')
 )
 

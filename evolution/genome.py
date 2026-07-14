@@ -11,13 +11,14 @@ import primitives as P
 
 
 class Node:
-    __slots__ = ('op', 'children', 'window', '_canon')
+    __slots__ = ('op', 'children', 'window', '_canon', '_size')
 
     def __init__(self, op, children=None, window=None):
         self.op = op
         self.children = children if children is not None else []
         self.window = window
         self._canon = None
+        self._size = None
 
     # ---------- structure ----------
     @property
@@ -36,7 +37,10 @@ class Node:
         return s
 
     def size(self):
-        return 1 + sum(c.size() for c in self.children)
+        if self._size is not None:                # memoized like canon(); reset on any mutation
+            return self._size
+        self._size = 1 + sum(c.size() for c in self.children)
+        return self._size
 
     def depth(self):
         return 1 + max((c.depth() for c in self.children), default=0)
@@ -88,6 +92,7 @@ def prune(node, max_depth, rng, depth=0):
         return random_terminal(rng) if not node.is_terminal else node
     node.children = [prune(c, max_depth, rng, depth + 1) for c in node.children]
     node._canon = None
+    node._size = None
     return node
 
 
@@ -126,6 +131,7 @@ def _pick_node_from_list(nodes, rng, internal_bias=0.9):
 
 def _invalidate(node):
     node._canon = None
+    node._size = None
     for c in node.children:
         _invalidate(c)
 

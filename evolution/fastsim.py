@@ -8,10 +8,23 @@ Semantics 1-to-1 with quantpylib/simulator/alpha.py:
 
 The market matrices (C,R,V,base_elig) are computed ONCE; only the alpha matrix changes per
 genome -> the daily loop runs over numpy vectors (30 instruments), not pandas .at[].
-Result: ~0.05s instead of ~32s per genome. Agreement with the engine is checked in verify_fastsim.py.
+
+The day loop is the hot path (~86% of a genome's eval). It is compiled with numba when available
+(~20x on the loop -> ~5-6x per genome); without numba it runs the IDENTICAL pure-numpy loop
+(same numbers, current speed). Agreement with the real engine is checked in verify_fastsim.py;
+numba==numpy is checked in verify_numba.py.
 """
 import numpy as np
 import pandas as pd
+
+try:                                     # optional: compile the day loop to machine code
+    import numba as _numba
+except Exception:                        # noqa: BLE001 — numba is optional; any import error -> fallback
+    _numba = None
+
+# division-by-~0 in the loop is intentional (nan/inf -> hold=False); suppress the warnings for the
+# pure-numpy fallback path (numba njit emits none). Matches evaluator.py's process-wide policy.
+np.seterr(divide='ignore', invalid='ignore')
 
 VOL_FLOOR = 0.005
 EWMA_LAMBDA = 0.06
@@ -30,9 +43,11 @@ def precompute_market(panel, tk, raw=None, vol_window=30):
     close = panel['close'][tk].bfill()              # engine-correct bfilled close for C/R/eligible
     C = close.to_numpy(dtype=np.float64)
     prev = close.shift(1)
-    R = (close / prev - 1.0).to_numpy(dtype=np.float64)
-    R[0, :] = 0.0
-    R = np.nan_to_num(R, nan=0.0)
+    # nan_to_num returns a fresh WRITABLE array — important under pandas Copy-on-Write (pandas 3.x
+    # default), where .to_numpy() hands back a read-only view and R[0, :] = 0.0 would otherwise raise
+    # "assignment destination is read-only".
+    R = np.nan_to_num((close / prev - 1.0).to_numpy(dtype=np.float64), nan=0.0)
+    R[0, :] = 0.0                                    # first row: no previous close
 
     if raw is not None:                             # vol as in the engine: on the native close
         vcols = {}
@@ -51,17 +66,15 @@ def precompute_market(panel, tk, raw=None, vol_window=30):
     return {'C': C, 'R': R, 'V': V, 'base_elig': base_elig, 'index': idx, 'tk': list(tk)}
 
 
-def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.10,
-             ann=TARGET_ANN, ewma_lambda=EWMA_LAMBDA):
-    """alpha_values: [T, N] raw signal (in market['tk'] order); NaN where there's no data.
-    `ann` = bars/year (vol-target annualization), `ewma_lambda` = vol-EWMA decay per bar.
-    Returns a pd.Series of NET capital returns (like capital.pct_change() in the engine)."""
-    C, R, V, base_elig = market['C'], market['R'], market['V'], market['base_elig']
+def _sim_kernel_impl(A, C, R, V, E, vol_target, exec_rate, inertia, ann, ewma_lambda):
+    """The sequential day loop -> capital[T].
+
+    State (EWMA vol estimate, capital, positions) carries across days, so this loop is inherently
+    sequential and cannot be vectorized over time — which is exactly why it is worth compiling.
+    Written in plain numpy so numba can njit it verbatim and the fallback stays byte-for-byte the
+    old engine. `A` is the ffilled signal [T,N], `E` the eligibility mask [T,N]; `ann` = bars/year
+    (vol-target annualization) and `ewma_lambda` = vol-EWMA decay per bar (both timeframe-dependent)."""
     T, N = C.shape
-
-    A = pd.DataFrame(alpha_values).ffill().to_numpy(dtype=np.float64)   # post_compute ffill of the signal
-    E = base_elig & np.isfinite(A)                                      # eligible &= ~isna(alpha)
-
     capital = np.empty(T)
     units_prev = np.zeros(N)
     w_prev = np.zeros(N)
@@ -90,19 +103,24 @@ def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.1
         fc = np.where(elig, A[i], 0.0) / V[i]
         fc = np.where(elig, fc, 0.0)
         chips = np.nansum(np.abs(fc))
-        scaled = fc / chips if chips != 0 else np.zeros(N)
+        if chips != 0:
+            scaled = fc / chips
+        else:
+            scaled = np.zeros(N)
         pos_raw = strat_scalar * scaled * cap / Ci
 
         change = np.where(elig, pos_raw - pos_prev, 0.0)
-        with np.errstate(divide='ignore', invalid='ignore'):
-            pct = np.abs(change) / np.abs(pos_raw)     # nan/inf when pos_raw≈0 -> hold=False (as in the engine)
+        pct = np.abs(change) / np.abs(pos_raw)         # nan/inf when pos_raw≈0 -> hold=False (as in the engine)
         hold = elig & (pct < inertia)
         position = np.where(hold, pos_prev, np.where(elig, pos_raw, 0.0))
         change = np.where(hold, 0.0, change)
 
         costs = np.nansum(np.where(elig, np.abs(change) * Ci * exec_rate, 0.0))
         nominal_tot = np.nansum(np.abs(position * Ci))
-        w = (position * Ci / nominal_tot) if nominal_tot != 0 else np.zeros(N)
+        if nominal_tot != 0:
+            w = position * Ci / nominal_tot
+        else:
+            w = np.zeros(N)
 
         cap -= costs
         capital[i] = cap
@@ -111,5 +129,34 @@ def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.1
         w_prev = w
         pos_prev = position
 
+    return capital
+
+
+# Compile the kernel once (lazily, on first call). If numba is missing or can't handle this build
+# (unsupported op, a read-only cache dir in a frozen bundle), we fall back permanently to the
+# identical pure-numpy loop — so correctness never depends on numba being present.
+_kernel_jit = _numba.njit(cache=True)(_sim_kernel_impl) if _numba is not None else None
+
+
+def _run_kernel(A, C, R, V, E, vol_target, exec_rate, inertia, ann, ewma_lambda):
+    global _kernel_jit
+    if _kernel_jit is not None:
+        try:
+            return _kernel_jit(A, C, R, V, E, vol_target, exec_rate, inertia, ann, ewma_lambda)
+        except Exception:                              # noqa: BLE001 — any numba failure -> numpy
+            _kernel_jit = None
+    return _sim_kernel_impl(A, C, R, V, E, vol_target, exec_rate, inertia, ann, ewma_lambda)
+
+
+def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.10,
+             ann=TARGET_ANN, ewma_lambda=EWMA_LAMBDA):
+    """alpha_values: [T, N] raw signal (in market['tk'] order); NaN where there's no data.
+    `ann` = bars/year (vol-target annualization), `ewma_lambda` = vol-EWMA decay per bar (timeframe).
+    Returns a pd.Series of NET capital returns (like capital.pct_change() in the engine)."""
+    C, R, V, base_elig = market['C'], market['R'], market['V'], market['base_elig']
+    A = pd.DataFrame(alpha_values).ffill().to_numpy(dtype=np.float64)   # post_compute ffill of the signal
+    E = base_elig & np.isfinite(A)                                      # eligible &= ~isna(alpha)
+    capital = _run_kernel(A, C, R, V, E, float(vol_target), float(exec_rate), float(inertia),
+                          float(ann), float(ewma_lambda))
     ser = pd.Series(capital, index=market['index'])
     return ser.pct_change().fillna(0.0)
