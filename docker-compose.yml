@@ -16,12 +16,27 @@ services:
       - "8787:8787"                       # status page -> http://localhost:8787
     volumes:
       - ./alphanode-data:/data            # library.jsonl, status.json, data.pickle persist here
+      # to tune the FULL baseline (genome/GA/fitness/segments) without rebuilding, mount your own
+      # config.ini over the one in the image:  cp evolution/config.ini ./config.ini  (then edit)
+      # - ./config.ini:/app/evolution/config.ini:ro
+    # --- CONFIGURE THE SEARCH HERE (each key overrides evolution/config.ini) ---
+    # Values must be strings (quoted). Uncomment a line to change it from the config.ini default.
     environment:
-      ALPHANODE_CPU_PERCENT: "50"         # share of CPU (workers = % x cores)
-      ALPHANODE_UNIVERSE: "all"           # or "BTCUSDT,ETHUSDT,..."
-      ALPHANODE_POP: "200"
-      ALPHANODE_GENS: "25"
-      ALPHANODE_STATUS_PORT: "8787"
+      ALPHANODE_CPU_PERCENT: "50"         # 5..95 — share of CPU (workers = % x cores)
+      ALPHANODE_UNIVERSE: "all"           # [universe] instruments — "all" or "BTCUSDT,ETHUSDT,..."
+      ALPHANODE_POP: "200"                # [search] population
+      ALPHANODE_GENS: "25"                # [search] generations
+      ALPHANODE_STATUS_PORT: "8787"       # status page port (match the ports mapping above)
+      # ALPHANODE_TARGET_VOL: "0.25"      # [simulation] target_vol
+      # ALPHANODE_EXEC_COST: "0.001"      # [simulation] exec_cost (fee, fraction of turnover)
+      # ALPHANODE_TRAIN_START: "2019-09-05"   # [segments] — TRAIN < VAL < TEST (TEST held out)
+      # ALPHANODE_VAL_START:   "2021-11-01"
+      # ALPHANODE_TEST_START:  "2023-01-01"
+      # ALPHANODE_TEST_END:    "2026-07-05"
+      # ALPHANODE_MAX_DEPTH: "8"          # [genome] max_depth   ·   ALPHANODE_MAX_SIZE: "40"
+      # ALPHANODE_TOURNAMENT: "5"         # [ga] tournament / elitism / random_inject / crossover_prob
+      # ALPHANODE_PARSIMONY: "0.010"      # [fitness] parsimony / corr_threshold / corr_penalty / hof_capacity
+      # ALPHANODE_SEED: "7"               # RNG seed   ·   ALPHANODE_MAX_ROUNDS: "0" (0 = infinite)
     command: ["run"]
 
   # optional live-signal API (bound to 0.0.0.0 so it's reachable from the host).
