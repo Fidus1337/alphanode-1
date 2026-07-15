@@ -90,6 +90,13 @@ restart the search (the old library was mined on different pairs).
 `exports/paper_<hash>/` bundle (strategy + a daily paper trader on live Binance data + engine copy) that
 runs anywhere with no dependency on this repo.
 
+**Serve live signals** — *📡 Serve signal (API)* (per alpha, or *📡 Serve* for the whole portfolio) starts
+a local JSON service with the current target positions, recomputed on live Binance data every 15 min.
+Any number of them run side by side: each takes the next free port from `8799` and gets a row in the
+**SIGNAL API** card on the main screen — URL, log path, live `/health`, and *✕ Free port*. The services
+are detached, so they keep serving after the GUI closes (it asks) and are re-adopted on the next start;
+the registry lives in `state/signals.json`. Advisory signal only — no orders, no keys.
+
 ---
 
 ## Run with Docker

@@ -41,6 +41,7 @@ SIGNAL_PORT = 8799                                      # BASE port: each servic
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
 STATE_DIR = apppaths.state_dir()
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
+SIGNALS_JSON = os.path.join(STATE_DIR, 'signals.json')  # registry of served APIs (survives a restart)
 PORTFOLIO_JSON = os.path.join(STATE_DIR, 'portfolio.json')
 PORTFOLIO_PNG = os.path.join(STATE_DIR, 'portfolio_equity.png')
 SETTINGS = apppaths.settings_file()
@@ -110,9 +111,9 @@ class App:
         self._pf_proc = None                              # portfolio-build subprocess
         self._sigs = []                                   # running signal-API services (one per port)
         self._sig_health = {}                             # port -> status text (written by poll workers)
-        self._sig_win = None                              # the "Signal API" manager window (single)
         self._sig_status_lbl = {}                         # port -> status Label (main thread only)
         self._sig_shown = None                            # ports currently rendered (rebuild only on change)
+        self._sig_pending = None                          # services found by _sig_restore, for the tick
         self._pf_img_ref = None                           # keep a ref to the equity PhotoImage (else GC)
         self._pf_doc = None                               # last portfolio result (for re-render on resize)
         self._pf_resize_after = None                      # debounce id for resize re-render
@@ -131,6 +132,8 @@ class App:
         self._style()
         self._build()
         self._poll()
+        self._sig_tick()                                  # live status of the served signal APIs
+        threading.Thread(target=self._sig_restore, daemon=True).start()   # re-adopt ones left running
         root.protocol('WM_DELETE_WINDOW', self._on_close)
 
     # ---------- settings (persist) ----------
@@ -253,6 +256,14 @@ class App:
         s.configure('Danger.TButton', background=CARD, foreground=NEG, borderwidth=1, relief='solid',
                     bordercolor='#f2c9d3', focuscolor=CARD, padding=(10, 7))
         s.map('Danger.TButton', background=[('active', '#fdecef'), ('disabled', CARD)])
+        # compact variants — for the per-row controls of the signal-API list
+        s.configure('Mini.TButton', background=CARD, foreground=TXT, borderwidth=1, relief='solid',
+                    bordercolor=BORDER, focuscolor=CARD, padding=(7, 3), font=(F, 9))
+        s.map('Mini.TButton', background=[('active', HEAD_BG), ('disabled', CARD)],
+              foreground=[('disabled', FAINT)])
+        s.configure('MiniDanger.TButton', background=CARD, foreground=NEG, borderwidth=1, relief='solid',
+                    bordercolor='#f2c9d3', focuscolor=CARD, padding=(7, 3), font=(F, 9))
+        s.map('MiniDanger.TButton', background=[('active', '#fdecef'), ('disabled', CARD)])
 
         # radio / check (indicator in accent color)
         s.configure('Card.TRadiobutton', background=CARD, foreground=TXT, focuscolor=CARD)
@@ -554,7 +565,7 @@ class App:
     def _build_status(self, body):
         right = tk.Frame(body, bg=BG)
         right.grid(row=0, column=1, sticky='nsew')
-        right.rowconfigure(2, weight=1)
+        right.rowconfigure(3, weight=1)                  # the leaderboard takes the slack
         right.columnconfigure(0, weight=1)
 
         card = self._card(right)
@@ -575,8 +586,10 @@ class App:
         self.lbl_cur = ttk.Label(card, text='', style='Mut.TLabel', font=(self.MONO, 9))
         self.lbl_cur.pack(anchor='w', pady=(14, 0))
 
+        self._build_signals_card(right)                  # row 1 — hidden while nothing is served
+
         chart_card = self._card(right)
-        chart_card.grid(row=1, column=0, sticky='ew', pady=(16, 0))
+        chart_card.grid(row=2, column=0, sticky='ew', pady=(16, 0))
         ttk.Label(chart_card, text='PROGRESS — FITNESS min(train,val) BY ROUND  ·  TEST kept held-out',
                   style='H.TLabel').pack(anchor='w', pady=(0, 8))
         self.chart = tk.Canvas(chart_card, height=170, bg=CARD, highlightthickness=0)
@@ -584,7 +597,7 @@ class App:
         self.chart.bind('<Configure>', lambda e: self._draw_chart())
 
         card2 = self._card(right)
-        card2.grid(row=2, column=0, sticky='nsew', pady=(16, 0))
+        card2.grid(row=3, column=0, sticky='nsew', pady=(16, 0))
         hrow = ttk.Frame(card2, style='Card.TFrame')
         hrow.pack(fill='x', pady=(0, 8))
         self._lb_head_text = self._lb_head_text_for('fit')
@@ -629,7 +642,7 @@ class App:
 
         # ---- PORTFOLIO panel (combine top-N by TEST via the real engine) ----
         card3 = self._card(right)
-        card3.grid(row=3, column=0, sticky='ew', pady=(16, 0))
+        card3.grid(row=4, column=0, sticky='ew', pady=(16, 0))
         self.pf_card = card3
         hp = ttk.Frame(card3, style='Card.TFrame')
         hp.pack(fill='x')
@@ -661,8 +674,9 @@ class App:
                                      'portfolio (all N alphas combined via the real Portfolio engine)\n'
                                      'to run daily on live Binance data — same as for a single alpha.')
         self._tip(self.btn_pf_sig, 'Start a local signal API for the whole portfolio — serves the\n'
-                                   'combined live target positions as JSON at\n'
-                                   'http://127.0.0.1:8799/signal (localhost).')
+                                   'combined live target positions as JSON on localhost. Each\n'
+                                   'service takes the next free port from 8799 and appears in the\n'
+                                   'SIGNAL API card above (URL, log, "free the port").')
         self.lbl_pf = ttk.Label(card3, style='Faint.TLabel', wraplength=900,
                                 text='⚠ selecting by TEST inflates the number (cherry-pick); the '
                                      'diversification gain — combined ≫ any single alpha — is the real part.')
@@ -924,15 +938,152 @@ class App:
 
     def _on_close(self):
         try:
+            if self._sigs:                               # they outlive the GUI unless asked to stop
+                if messagebox.askyesno(
+                        'Signal API', f'{len(self._sigs)} signal API service(s) are still running.\n\n'
+                        'Stop them and free their ports?\n\n'
+                        'No — leave them serving; AlphaNode picks them up again on the next start.',
+                        parent=self.root):
+                    self._stop_all_signals()
+                else:
+                    self._sig_save()
             if self.proc and self.proc.poll() is None:
                 self.proc.terminate()
-            self._stop_all_signals()
         finally:
             self.root.destroy()
 
     # ---------- local signal API (serve live positions of a formula / portfolio) ----------
     # Several services run side by side: each takes the next free port from SIGNAL_PORT upward and
-    # shows up as a row in the "Signal API" manager window.
+    # gets a row in the SIGNAL API card on the main screen (URL + log path + "free the port").
+    # A service is a detached process: it survives the GUI, so the registry is persisted to
+    # signals.json and re-adopted (verified over /health) on the next start.
+    def _build_signals_card(self, right):
+        card = self._card(right)
+        self.sig_card = card
+        card.grid(row=1, column=0, sticky='ew', pady=(16, 0))
+        hs = ttk.Frame(card, style='Card.TFrame')
+        hs.pack(fill='x')
+        self.lbl_sig_head = ttk.Label(hs, text='SIGNAL API — running services', style='H.TLabel')
+        self.lbl_sig_head.pack(side='left')
+        self.btn_sig_all = ttk.Button(hs, text='✕ Free all ports', style='MiniDanger.TButton',
+                                      command=self._stop_all_signals_ui)
+        self.btn_sig_all.pack(side='right')
+        self._tip(self.btn_sig_all, 'Stop every running signal API and release its port.')
+        self._sig_rows = ttk.Frame(card, style='Card.TFrame')
+        self._sig_rows.pack(fill='x', pady=(8, 0))
+        card.grid_remove()                               # shown only while something is being served
+
+    @staticmethod
+    def _pid_alive(pid):
+        """Is this PID still running? (os.kill(pid, 0) is an existence check on POSIX — but on
+        Windows os.kill TERMINATES on any signal, so ask the kernel there instead.)"""
+        if not pid:
+            return False
+        try:
+            if os.name == 'nt':
+                import ctypes
+                h = ctypes.windll.kernel32.OpenProcess(0x1000, False, int(pid))   # QUERY_LIMITED_INFO
+                if not h:
+                    return False
+                code = ctypes.c_ulong()
+                ok = ctypes.windll.kernel32.GetExitCodeProcess(h, ctypes.byref(code))
+                ctypes.windll.kernel32.CloseHandle(h)
+                return bool(ok) and code.value == 259                              # STILL_ACTIVE
+            os.kill(int(pid), 0)
+            return True
+        except Exception:                                # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _kill_pid(pid):
+        try:
+            if os.name == 'nt':                          # see _pid_alive: no signals on Windows
+                subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)],
+                               capture_output=True, creationflags=0x08000000)      # CREATE_NO_WINDOW
+            else:
+                os.kill(int(pid), signal.SIGTERM)
+        except Exception:                                # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _pid_on_port(port):
+        """Best effort: who listens on `port`. Last resort for freeing a port held by a service we
+        have neither a process handle nor a PID for (e.g. started by an older build)."""
+        try:
+            if os.name == 'nt':
+                out = subprocess.run(['netstat', '-ano', '-p', 'TCP'], capture_output=True,
+                                     text=True, creationflags=0x08000000).stdout
+                for ln in out.splitlines():
+                    f = ln.split()
+                    if len(f) >= 5 and f[3].upper() == 'LISTENING' and f[1].endswith(f':{port}'):
+                        return int(f[-1])
+            else:
+                out = subprocess.run(['lsof', '-ti', f'tcp:{port}', '-sTCP:LISTEN'],
+                                     capture_output=True, text=True).stdout.split()
+                if out:
+                    return int(out[0])
+        except Exception:                                # noqa: BLE001
+            pass
+        return None
+
+    def _sig_save(self):
+        """Persist the registry so a restarted (or crashed) GUI can find these services again."""
+        keys = ('port', 'pid', 'label', 'log', 'n_formulas', 'n_tickers', 'started')
+        try:
+            json.dump([{k: s.get(k) for k in keys} for s in self._sigs],
+                      open(SIGNALS_JSON, 'w', encoding='utf-8'), indent=1)
+        except Exception:                                # noqa: BLE001
+            pass
+
+    def _sig_probe(self, port, timeout=0.6):
+        """/health of `port` — the dict if an AlphaNode signal API answers there, else None."""
+        try:
+            import urllib.request
+            with urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=timeout) as r:
+                h = json.load(r)
+            return h if isinstance(h, dict) and 'name' in h and 'computing' in h else None
+        except Exception:                                # noqa: BLE001
+            return None
+
+    def _sig_restore(self):
+        """Background: find signal APIs that outlived the GUI. Scans the port range rather than
+        trusting signals.json alone — that way a service survives even a lost registry; the file
+        only restores the nice-to-haves (label, log path). Hands the result to the main thread."""
+        meta = {}
+        try:
+            for e in json.load(open(SIGNALS_JSON, encoding='utf-8')):
+                meta[int(e.get('port') or 0)] = e
+        except Exception:                                # noqa: BLE001
+            pass
+        found = []
+        for p in range(SIGNAL_PORT, SIGNAL_PORT + 10):
+            h = self._sig_probe(p)
+            if not h:
+                continue
+            m = meta.get(p, {})
+            log = m.get('log')
+            if not log or not os.path.exists(log):
+                cand = os.path.join(STATE_DIR, f'signal_{p}.log')
+                log = cand if os.path.exists(cand) else None
+            # a service from an older build has no pid in /health — ask the OS who holds the port
+            pid = h.get('pid') or m.get('pid') or self._pid_on_port(p)
+            found.append({'port': p, 'pid': pid, 'proc': None, 'fh': None,
+                          'label': h.get('name') or m.get('label') or f'signal_{p}', 'log': log,
+                          'n_formulas': int(h.get('n_formulas') or m.get('n_formulas') or 0),
+                          'n_tickers': int(h.get('n_tickers') or m.get('n_tickers') or 0),
+                          'started': m.get('started'), 'adopted': True})
+        self._sig_pending = found or None                 # no Tk from a worker — _sig_tick picks it up
+
+    def _sig_adopt(self, found):
+        """Main thread: add the re-found services to the registry (the tick draws them)."""
+        have = {s['port'] for s in self._sigs}
+        for e in found:
+            if e['port'] in have:
+                continue
+            self._sigs.append(e)
+            self._sig_health[e['port']] = 'reconnecting…'
+        self._sig_save()
+
     def _free_signal_port(self, tries=50):
         """First free TCP port at/after SIGNAL_PORT that we aren't already using."""
         import socket
@@ -941,6 +1092,9 @@ class App:
             if p in busy:
                 continue
             with socket.socket() as sk:
+                # same option the service's HTTP server binds with (allow_reuse_address) — without it
+                # a port we just freed reads as busy while old connections linger in TIME_WAIT
+                sk.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                 try:
                     sk.bind(('127.0.0.1', p))
                     return p
@@ -965,7 +1119,7 @@ class App:
             messagebox.showwarning('Signal API', 'The pairs universe is empty.', parent=self.root)
             return
         if any(s['label'] == label for s in self._sigs):   # already serving this one — just show it
-            self._open_signal_manager()
+            self._render_signal_rows()
             return
         port = self._free_signal_port()
         if port is None:
@@ -977,19 +1131,22 @@ class App:
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
                    ALPHANODE_SIGNAL_PORT=str(port), ALPHANODE_SIGNAL_REFRESH='900')
+        log_path = os.path.join(STATE_DIR, f'signal_{port}.log')
         try:
-            log = open(os.path.join(STATE_DIR, f'signal_{port}.log'), 'w', buffering=1)
+            fh = open(log_path, 'w', buffering=1)
             proc = subprocess.Popen(                       # each service logs to its own file
                 _child_cmd('signal'), env=env,
                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
-                stdout=log, stderr=subprocess.STDOUT)
+                stdout=fh, stderr=subprocess.STDOUT)
         except Exception as e:                            # noqa: BLE001
             messagebox.showerror('Signal API', f'Could not start the signal service: {e}', parent=self.root)
             return
-        self._sigs.append({'port': port, 'proc': proc, 'log': log, 'label': label,
-                           'n_formulas': len(formulas), 'n_tickers': len(tickers)})
+        self._sigs.append({'port': port, 'proc': proc, 'pid': proc.pid, 'fh': fh, 'log': log_path,
+                           'label': label, 'n_formulas': len(formulas), 'n_tickers': len(tickers),
+                           'started': time.strftime('%Y-%m-%d %H:%M')})
         self._sig_health[port] = 'starting — fetching live data, computing the first signal…'
-        self._open_signal_manager()
+        self._sig_save()
+        self._render_signal_rows()
 
     def _pf_serve_signal(self):
         doc = self._pf_doc
@@ -1000,73 +1157,70 @@ class App:
         self._serve_signal(list(formulas), f'portfolio_top{doc.get("n", len(formulas))}')
 
     def _stop_signal(self, entry):
-        """Stop ONE service and drop it from the registry."""
+        """Stop ONE service, free its port, drop it from the registry. Works both for services we
+        started (process handle) and for ones adopted from an earlier session (PID only)."""
         try:
-            if entry['proc'] and entry['proc'].poll() is None:
-                entry['proc'].terminate()
+            proc = entry.get('proc')
+            if proc is not None and proc.poll() is None:
+                proc.terminate()
+            elif proc is None:                            # adopted: no handle, kill by PID
+                pid = entry.get('pid') or self._pid_on_port(entry['port'])
+                if pid:
+                    self._kill_pid(pid)
         except Exception:                                 # noqa: BLE001
             pass
         try:
-            if entry['log']:
-                entry['log'].close()
+            if entry.get('fh'):
+                entry['fh'].close()
         except Exception:                                 # noqa: BLE001
             pass
         self._sig_health.pop(entry['port'], None)
         if entry in self._sigs:
             self._sigs.remove(entry)
+        self._sig_save()
 
     def _stop_all_signals(self):
         for entry in list(self._sigs):
             self._stop_signal(entry)
 
-    def _open_signal_manager(self):
-        """The "Signal API" window — a live list of every running service (raised if already open)."""
-        win = self._sig_win
-        if win is not None and win.winfo_exists():
-            win.deiconify()
-            win.lift()
-            self._render_signal_rows()
-            return
-        win = tk.Toplevel(self.root)
-        self._sig_win = win
-        win.title('Signal API')
-        win.configure(bg=CARD)
-        win.geometry('580x360')
-        frm = tk.Frame(win, bg=CARD)
-        frm.pack(fill='both', expand=True, padx=18, pady=16)
-        tk.Label(frm, text='📡  Signal API — running services', bg=CARD, fg=TXT,
-                 font=(self.UI, 13, 'bold')).pack(anchor='w')
-        tk.Label(frm, text='Every formula / portfolio you serve gets its own port. Closing this '
-                           'window keeps the APIs running.', bg=CARD, fg=MUT, font=(self.UI, 9),
-                 wraplength=530, justify='left').pack(anchor='w', pady=(2, 10))
-        self._sig_rows = tk.Frame(frm, bg=CARD)
-        self._sig_rows.pack(fill='both', expand=True)
-        tk.Label(frm, text='Advisory signal — not execution. GET /health for status.',
-                 bg=CARD, fg=FAINT, font=(self.UI, 8), justify='left').pack(anchor='w', pady=(10, 0))
+    def _stop_signal_ui(self, entry):
+        self._stop_signal(entry)
         self._render_signal_rows()
 
-        def tick():
-            if not win.winfo_exists():
-                self._sig_win = None
-                return
-            for s in self._sigs:
-                if s['proc'] and s['proc'].poll() is not None:      # the service died on its own
-                    self._sig_health[s['port']] = 'stopped (process exited)'
-                else:
-                    threading.Thread(target=self._sig_poll_worker, args=(s['port'],),
-                                     daemon=True).start()
-            ports = tuple(s['port'] for s in self._sigs)
-            if ports != self._sig_shown:                  # the set changed -> rebuild the rows
-                self._render_signal_rows()
-            else:                                         # same set -> only refresh the status text
-                for p, lbl in list(self._sig_status_lbl.items()):
-                    if lbl.winfo_exists():
-                        lbl.config(text=self._sig_health.get(p, 'starting…'))
-            win.after(3000, tick)
-        win.after(400, tick)
+    def _stop_all_signals_ui(self):
+        if not self._sigs or messagebox.askyesno(
+                'Signal API', f'Stop all {len(self._sigs)} service(s) and free their ports?',
+                parent=self.root):
+            self._stop_all_signals()
+            self._render_signal_rows()
+
+    def _sig_tick(self):
+        """Every 3s: refresh the health of each service. Main thread — the HTTP call itself is
+        handed to a worker (see _sig_poll_worker)."""
+        pending, self._sig_pending = self._sig_pending, None
+        if pending:
+            self._sig_adopt(pending)
+        for s in list(self._sigs):
+            proc, pid = s.get('proc'), s.get('pid')
+            if proc is not None:
+                dead = proc.poll() is not None
+            else:                                         # adopted: unknown PID -> let /health speak
+                dead = bool(pid) and not self._pid_alive(pid)
+            if dead:
+                self._sig_health[s['port']] = '○ stopped (the process exited) — port is free'
+            else:
+                threading.Thread(target=self._sig_poll_worker, args=(s['port'],), daemon=True).start()
+        ports = tuple(s['port'] for s in self._sigs)
+        if ports != self._sig_shown:                      # the set changed -> rebuild the rows
+            self._render_signal_rows()
+        else:                                             # same set -> only refresh the status text
+            for p, lbl in list(self._sig_status_lbl.items()):
+                if lbl.winfo_exists():
+                    lbl.config(text=self._sig_health.get(p, 'starting…'))
+        self.root.after(3000, self._sig_tick)
 
     def _render_signal_rows(self):
-        """Rebuild the service list. Main thread only."""
+        """Rebuild the service list on the main screen. Main thread only."""
         holder = getattr(self, '_sig_rows', None)
         if holder is None or not holder.winfo_exists():
             return
@@ -1075,29 +1229,43 @@ class App:
         self._sig_status_lbl = {}
         self._sig_shown = tuple(s['port'] for s in self._sigs)
         if not self._sigs:
-            tk.Label(holder, text='no services running', bg=CARD, fg=FAINT,
-                     font=(self.UI, 9)).pack(anchor='w')
+            self.sig_card.grid_remove()                   # nothing served -> the card gets out of the way
             return
+        self.sig_card.grid()
+        n = len(self._sigs)
+        self.lbl_sig_head.config(text=f'SIGNAL API — {n} running service{"s" if n > 1 else ""}  ·  '
+                                      f'live JSON on localhost  ·  refresh 15 min')
         for s in self._sigs:
             url = f'http://127.0.0.1:{s["port"]}/signal'
-            row = tk.Frame(holder, bg=CARD)
-            row.pack(fill='x', pady=(0, 9))
-            tk.Label(row, text=f'{s["label"]}  ·  {s["n_formulas"]} alpha(s)  ·  {s["n_tickers"]} pairs'
-                               f'  ·  refresh 15 min', bg=CARD, fg=TXT, font=(self.UI, 9, 'bold'),
-                     wraplength=530, justify='left').pack(anchor='w')
-            tk.Label(row, text=url, bg=CARD, fg=POS, font=(self.MONO, 10)).pack(anchor='w')
-            lbl = tk.Label(row, text=self._sig_health.get(s['port'], 'starting…'), bg=CARD, fg=MUT,
-                           font=(self.UI, 8), wraplength=530, justify='left')
-            lbl.pack(anchor='w')
-            self._sig_status_lbl[s['port']] = lbl
-            btns = tk.Frame(row, bg=CARD)
-            btns.pack(anchor='w', pady=(3, 0))
-            ttk.Button(btns, text='Copy URL', width=9,
+            row = ttk.Frame(holder, style='Card.TFrame')
+            row.pack(fill='x', pady=(0, 8))
+            btns = ttk.Frame(row, style='Card.TFrame')
+            btns.pack(side='right', anchor='n')
+            ttk.Button(btns, text='Copy URL', style='Mini.TButton',
                        command=lambda u=url: (self.root.clipboard_clear(),
                                               self.root.clipboard_append(u))).pack(side='left')
-            ttk.Button(btns, text='■ Stop', width=8, style='Stop.TButton',
-                       command=lambda e=s: (self._stop_signal(e), self._render_signal_rows())
-                       ).pack(side='left', padx=(6, 0))
+            ttk.Button(btns, text='Log', style='Mini.TButton',
+                       state=('normal' if s.get('log') else 'disabled'),
+                       command=lambda p=s.get('log'): self._open_folder(p)).pack(side='left', padx=(4, 0))
+            ttk.Button(btns, text='✕ Free port', style='MiniDanger.TButton',
+                       command=lambda e=s: self._stop_signal_ui(e)).pack(side='left', padx=(4, 0))
+            info = ttk.Frame(row, style='Card.TFrame')
+            info.pack(side='left', fill='x', expand=True)
+            head = (f'● {s["port"]}  ·  {s["label"]}  ·  {s["n_formulas"]} alpha(s)  ·  '
+                    f'{s["n_tickers"]} pairs')
+            if s.get('started'):
+                head += f'  ·  since {s["started"]}'
+            if s.get('adopted'):
+                head += '  ·  from an earlier session'
+            ttk.Label(info, text=head, style='Card.TLabel', font=(self.UI, 10, 'bold'),
+                      wraplength=620, justify='left').pack(anchor='w')
+            ttk.Label(info, text=url + (f'   ·   {s["log"]}' if s.get('log') else ''),
+                      style='Faint.TLabel', font=(self.MONO, 8), wraplength=620,
+                      justify='left').pack(anchor='w')
+            lbl = ttk.Label(info, text=self._sig_health.get(s['port'], 'starting…'), style='Mut.TLabel',
+                            font=(self.UI, 8), wraplength=620, justify='left')
+            lbl.pack(anchor='w')
+            self._sig_status_lbl[s['port']] = lbl
 
     def _sig_poll_worker(self, port):
         """Background: fetch /health for ONE service and stash the text. NO Tk here — Tk is not
@@ -1953,6 +2121,16 @@ class App:
         ttk.Button(row, text='Close', command=win.destroy).pack(side='right')
 
     def _open_folder(self, path):
+        """Open a file or a folder in the system viewer."""
+        if not path:
+            return
+        start = getattr(os, 'startfile', None)           # Windows
+        if start is not None:
+            try:
+                start(path)
+                return
+            except Exception:                            # noqa: BLE001
+                pass
         for opener in ('xdg-open', 'open'):
             try:
                 subprocess.Popen([opener, path])

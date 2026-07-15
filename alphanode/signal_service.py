@@ -20,7 +20,8 @@ Env:
 Endpoints (bound to 127.0.0.1 — a signal is private):
   GET /signal   -> {ok, name, formulas, as_of, leverage, positions:[{ticker,side,weight,weight_pct}],
                     updated_at, error}
-  GET /health   -> {ok, name, updated_at, age_secs, computing, error}
+  GET /health   -> {ok, name, pid, n_formulas, n_tickers, updated_at, age_secs, computing, error}
+                   pid/n_* let a restarted GUI re-adopt a service it no longer has a handle on.
 
 NOTE: this is an advisory SIGNAL feed, not execution. No orders, keys, limits or kill-switch —
 the consumer decides how (and whether) to trade it. Same disclaimer as the paper bundle.
@@ -51,7 +52,7 @@ DUST_W = 0.0005                                          # ignore weights below 
 
 # ---- shared state (the HTTP handler reads this; the refresh thread writes it) ----
 _STATE = {'lock': threading.Lock(), 'signal': None, 'updated': None, 'ts': 0.0,
-          'error': None, 'computing': False, 'name': 'signal', 'formulas': []}
+          'error': None, 'computing': False, 'name': 'signal', 'formulas': [], 'n_tickers': 0}
 
 
 # ---------------- live Binance klines (stdlib, no keys) ----------------
@@ -191,9 +192,12 @@ class Handler(http.server.BaseHTTPRequestHandler):
             sig, upd, ts = _STATE['signal'], _STATE['updated'], _STATE['ts']
             err, computing, name, forms = (_STATE['error'], _STATE['computing'],
                                            _STATE['name'], _STATE['formulas'])
+            n_tick = _STATE['n_tickers']
         age = round(time.time() - ts, 1) if ts else None
         if path == '/health':
-            self._send(200, {'ok': sig is not None, 'name': name, 'updated_at': upd,
+            # pid + counts: everything the GUI needs to re-adopt a service it lost the handle to
+            self._send(200, {'ok': sig is not None, 'name': name, 'pid': os.getpid(),
+                             'n_formulas': len(forms), 'n_tickers': n_tick, 'updated_at': upd,
                              'age_secs': age, 'computing': computing, 'error': err})
         elif path in ('/', '/signal'):
             if sig is None:
@@ -241,6 +245,7 @@ def main():
 
     _STATE['name'] = name
     _STATE['formulas'] = formulas
+    _STATE['n_tickers'] = len(tickers)
     stop = threading.Event()
     threading.Thread(target=refresh_loop,
                      args=(formulas, tickers, start, cfg['vol'], cfg['exec'], refresh, stop),
