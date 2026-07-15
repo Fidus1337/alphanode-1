@@ -59,8 +59,12 @@ def plot_signal(signals, splits, path, title):
     plt.close()
 
 
-def plot_equity(returns, basket, splits, path, title, figsize=(12, 7), dpi=150):
-    """returns: dict label -> pd.Series of net returns (full period)."""
+def plot_equity(returns, basket, splits, path, title, figsize=(12, 7), dpi=150,
+                facecolor='white', fg='#555', axline='black'):
+    """returns: dict label -> pd.Series of net returns (full period).
+
+    facecolor/fg/axline exist so a caller with its own theme (the GUI in dark mode) can hand in
+    colours that stay readable; the defaults are the light look every other caller expects."""
     plt.figure(figsize=figsize)
     ax = plt.gca()
     colors = ['#c62828', '#1565c0', '#2e7d32', '#6a1b9a', '#ef6c00', '#00838f']
@@ -74,13 +78,13 @@ def plot_equity(returns, basket, splits, path, title, figsize=(12, 7), dpi=150):
     va0, va1 = splits['val']
     te0, te1 = splits['test']
     for x in (va0, te0):
-        ax.axvline(x, color='black', ls='--', lw=1.2)
+        ax.axvline(x, color=axline, ls='--', lw=1.2)
     ax.axvspan(te0, beq.index[-1], color='grey', alpha=0.10)
     tr = ax.get_xaxis_transform()
     ax.text(tr0 + (va0 - tr0) / 2, 0.02, 'TRAIN\n(evolution)', transform=tr,
-            ha='center', va='bottom', fontsize=10, color='#555')
+            ha='center', va='bottom', fontsize=10, color=fg)
     ax.text(va0 + (te0 - va0) / 2, 0.02, 'VAL\n(robustness)', transform=tr,
-            ha='center', va='bottom', fontsize=10, color='#555')
+            ha='center', va='bottom', fontsize=10, color=fg)
     ax.text(te0 + (beq.index[-1] - te0) / 2, 0.02, 'TEST\n(held-out)', transform=tr,
             ha='center', va='bottom', fontsize=10, color='#c62828', fontweight='bold')
 
@@ -91,5 +95,5 @@ def plot_equity(returns, basket, splits, path, title, figsize=(12, 7), dpi=150):
     plt.legend(loc='upper left', fontsize=8)
     plt.grid(True, which='both', alpha=0.3)
     plt.tight_layout()
-    plt.savefig(path, dpi=dpi, facecolor='white')
+    plt.savefig(path, dpi=dpi, facecolor=facecolor)
     plt.close()

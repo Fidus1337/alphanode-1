@@ -127,12 +127,20 @@ def _selfcheck_body(out):
     out('paper QUANT :', paper_export.QUANT, os.path.isdir(paper_export.QUANT))
 
     if os.environ.get('DISPLAY') or sys.platform.startswith('win'):
-        import tkinter as tk
-        r = tk.Tk()
-        r.withdraw()
+        import customtkinter as ctk
         import alphanode_gui
-        alphanode_gui.App(r)                              # build the whole UI (window hidden)
-        out('gui build   : ok, child_cmd(node) =', alphanode_gui._child_cmd('node')[:2], '…')
+        # a CTk root, as main() builds: App styles it with CTk options a plain tk.Tk lacks.
+        # Building the UI in BOTH themes is the point — it exercises every widget twice and would
+        # catch a bundle whose customtkinter assets (themes/fonts) never made it into the build.
+        r = ctk.CTk()
+        r.withdraw()
+        app = alphanode_gui.App(r)
+        app._set_theme('dark' if app.cfg.get('theme') == 'light' else 'light')
+        r.update()
+        out('gui build   : ok, both themes, child_cmd(node) =',
+            alphanode_gui._child_cmd('node')[:2], '…')
+        out('ctk         :', ctk.__version__, '· theme assets',
+            os.path.isdir(os.path.join(os.path.dirname(ctk.__file__), 'assets', 'themes')))
         r.destroy()
     else:
         out('gui build   : skipped (no DISPLAY)')

@@ -61,7 +61,8 @@ cd evolution && ../.venv/bin/python run_evo.py --smoke
 
 ## How to use it
 
-**GUI** (`alphanode/alphanode_gui.py`) — a Tkinter window. Left: the full set of search settings
+**GUI** (`alphanode/alphanode_gui.py`) — a CustomTkinter window, light or dark (the switch is in the
+header; it follows the OS on first run). Left: the full set of search settings
 (resources, universe, GA params, fitness, TRAIN/VAL/TEST boundaries). Right: live status, a progress
 chart, and a **leaderboard** of the best alpha per family. Toggle ranking by honest fitness
 `min(train,val)` or by TEST OOS (⚠ the latter is a cherry-pick on held-out data — for viewing only),

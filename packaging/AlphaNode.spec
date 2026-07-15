@@ -18,7 +18,8 @@ hiddenimports = (
      'signal_service',
      'config', 'evolution', 'evaluator', 'fastsim', 'genome', 'primitives',
      'report', 'evolved_strategy', 'experiments',
-     'aiosonic', 'orjson', 'onecache', 'pytz']       # pytz: imported by quantpylib.wrappers.binance
+     'aiosonic', 'orjson', 'onecache', 'pytz',       # pytz: imported by quantpylib.wrappers.binance
+     'customtkinter', 'darkdetect']                  # GUI toolkit (assets come from the contrib hook)
     + collect_submodules('quantpylib')
 )
 

@@ -1,8 +1,9 @@
-orjson 
+orjson
 aiosonic
-requests 
+requests
 datetime
-seaborn 
-pandas 
+seaborn
+pandas
 statsmodels
 scipy
+customtkinter    # the desktop GUI (alphanode_gui) imports it at module level

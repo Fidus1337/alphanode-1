@@ -6,6 +6,10 @@ pandas>=2.0,<3    # pin to 2.x: pandas 3's Copy-on-Write returns read-only .to_n
                   # code handles it, but this keeps the build matching the validated 2.x bundle
 pytz              # quantpylib.wrappers.binance imports it directly (pandas 2.x no longer guarantees it)
 numba             # JIT-compiles the fast_sim fitness kernel (~4x node); optional at runtime (numpy fallback)
+customtkinter     # the GUI toolkit. NOT optional: alphanode_gui imports it at module level.
+                  # Its assets (themes/*.json, fonts) are data files — pyinstaller-hooks-contrib
+                  # ships hook-customtkinter.py, which collects them; --role selfcheck proves it.
+darkdetect        # customtkinter dep: reads the OS light/dark preference for the first run
 matplotlib>=3.6
 requests          # quantpylib.throttler.aiosonic imports requests
 aiosonic==0.31.1  # quantpylib is verified on 0.31.x (the API changed in 1.x)
