@@ -22,6 +22,9 @@ exports/
 evolution/experiments/
 paper_state.json
 paper_trades.csv
+# the leaderboard "CSV" export, saved wherever the user pointed the dialog
+library_*.csv
+leaderboard_top*.csv
 
 # ── Logs ────────────────────────────────────────────────
 *.log
