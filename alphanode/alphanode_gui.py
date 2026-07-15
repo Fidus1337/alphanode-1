@@ -24,6 +24,7 @@ Run:  python alphanode/alphanode_gui.py
 """
 import os
 import sys
+import csv
 import json
 import time
 import queue
@@ -290,7 +291,8 @@ class App:
         ctk.set_window_scaling(self.SCALE)
         self.root.title('AlphaNode')
         self.root.geometry('1100x860')                   # CTk scales this by window_scaling
-        self.root.minsize(int(980 * self.SCALE), int(680 * self.SCALE))
+        self.root.minsize(980, 680)                      # raw, like geometry: CTk scales it too, and
+        #                                                  pre-scaling made the floor 1.75x too big
 
     def _style(self):
         """Fonts + the ttk styles for the widgets CustomTkinter has no answer for (the leaderboard
@@ -808,7 +810,16 @@ class App:
         hrow.pack(fill='x', pady=(0, 8))
         self._lb_head_text = self._lb_head_text_for('fit')
         self.lbl_lb_head = self._head(hrow, self._lb_head_text)
+        # Packed BEFORE the heading: the heading is a long line, and whoever packs first wins the
+        # space — pack it first and the button gets squeezed to nothing on a narrow window.
+        # width/height are raw: CTk scales them itself (set_widget_scaling), unlike a tk pixel.
+        self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_visible, height=24, width=52)
+        self.btn_lb_csv.pack(side='right', padx=(10, 0))
         self.lbl_lb_head.pack(side='left', anchor='w')
+        self._tip(self.btn_lb_csv, 'Save the table as shown — same rows, same order, with the\n'
+                                   'trade stats (they exist only for rows on screen).\n'
+                                   'The WHOLE library (every alpha ever mined, no dedup, no\n'
+                                   'TEST filter) is in the right-click menu.')
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')
@@ -849,6 +860,9 @@ class App:
                              activeforeground=TXT, borderwidth=0, font=(self.UI, 13))
         self._menu.add_command(label='Copy formula', command=self._copy_formula)
         self._menu.add_command(label='Copy formula + metrics', command=self._copy_full)
+        self._menu.add_separator()
+        self._menu.add_command(label='Export table (CSV)…', command=self._export_visible)
+        self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
 
@@ -1878,12 +1892,16 @@ class App:
         finally:
             self._menu.grab_release()
 
+    def _flash_lb(self, msg, ms=1300):
+        """Say something in the leaderboard heading, then put the heading back."""
+        self.lbl_lb_head.configure(text=msg)
+        self.root.after(ms, lambda: self.lbl_lb_head.configure(text=self._lb_head_text))
+
     def _to_clipboard(self, text, msg):
         self.root.clipboard_clear()
         self.root.clipboard_append(text)
         self.root.update()                               # so the buffer is handed to the X server right away
-        self.lbl_lb_head.configure(text=msg)
-        self.root.after(1300, lambda: self.lbl_lb_head.configure(text=self._lb_head_text))
+        self._flash_lb(msg)
 
     def _copy_formula(self):
         c = self._selected_champ()
@@ -1906,6 +1924,101 @@ class App:
         c = self._selected_champ()
         if c:
             self._open_plot(c)
+
+    # ---------- LEADERBOARD: download the table ----------
+    @staticmethod
+    def _seg(champ, seg, key):
+        """One TRAIN/VAL/TEST number, or '' — an alpha may be missing a segment entirely."""
+        v = (champ.get(seg) if isinstance(champ.get(seg), dict) else {}).get(key)
+        return round(v, 4) if isinstance(v, (int, float)) else ''
+
+    def _save_csv(self, path, header, rows, what):
+        """csv.writer, not a join: every formula is full of commas (div(pmin(a,b),c)) and would
+        otherwise split into columns. newline='' is what the csv module requires of its file."""
+        try:
+            with open(path, 'w', newline='', encoding='utf-8') as fh:
+                w = csv.writer(fh)
+                w.writerow(header)
+                w.writerows(rows)
+        except OSError as e:
+            messagebox.showerror('Export', f'Could not write {path}:\n{e}', parent=self.root)
+            return
+        self._flash_lb(f'✓ {len(rows)} {what} saved to {os.path.basename(path)}', ms=2600)
+
+    def _export_visible(self):
+        """The table as shown: same rows, same order, same columns. The trade stats come from the
+        metrics cache, which only ever holds the rows on screen — hence the two separate exports."""
+        rows = list(self._shown)
+        if not rows:
+            messagebox.showinfo('Export table', 'The leaderboard is empty — nothing to export yet.',
+                                parent=self.root)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title='Export leaderboard', defaultextension='.csv',
+            initialfile=f'leaderboard_top{len(rows)}.csv',
+            filetypes=[('CSV', '*.csv'), ('All files', '*.*')])
+        if not path:
+            return
+        out = []
+        for i, c in enumerate(rows):
+            formula = c.get('formula', '')
+            m = self._metrics_cache.get(formula)
+            m = m if isinstance(m, dict) else {}          # None = still computing, 'err' = failed -> blanks
+            base = c.get('base')
+            out.append([i + 1,
+                        round(base, 4) if isinstance(base, (int, float)) else '',
+                        self._seg(c, 'train', 'sharpe'), self._seg(c, 'val', 'sharpe'),
+                        self._seg(c, 'test', 'sharpe'), self._seg(c, 'test', 'dd'),
+                        self._seg(c, 'test', 'cagr'),
+                        m.get('long', ''), m.get('short', ''),
+                        round(m['act'], 2) if 'act' in m else '',
+                        round(m['win'] * 100, 1) if 'win' in m else '',
+                        formula])
+        self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
+                              'test_dd', 'test_cagr', 'long', 'short', 'tr_yr_a', 'win_pct',
+                              'formula'), out, 'rows')
+
+    def _export_library(self):
+        """Everything the node has ever mined — no dedup, no TEST filter. The table on screen is a
+        diverse SLICE of this; here you get all of it, ordered by honest fitness min(train,val)."""
+        rows = []
+        try:
+            with open(os.path.join(STATE_DIR, 'library.jsonl'), encoding='utf-8') as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rows.append(json.loads(line))
+                    except json.JSONDecodeError:          # a half-written last line while the node appends
+                        pass
+        except OSError:
+            rows = []
+        if not rows:
+            messagebox.showinfo('Export library', 'The library is empty — the node has not mined '
+                                                  'anything yet.', parent=self.root)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title='Export full library', defaultextension='.csv',
+            initialfile=f'library_{len(rows)}.csv',
+            filetypes=[('CSV', '*.csv'), ('All files', '*.*')])
+        if not path:
+            return
+        rows.sort(key=lambda c: c.get('base') if isinstance(c.get('base'), (int, float)) else -1e9,
+                  reverse=True)
+        header = ['formula', 'size', 'fitness', 'round', 'found_at']
+        for seg in ('train', 'val', 'test'):
+            header += [f'{seg}_{k}' for k in ('sharpe', 'dd', 'cagr', 'n')]
+        out = []
+        for c in rows:
+            base = c.get('base')
+            r = [c.get('formula', ''), c.get('size', ''),
+                 round(base, 4) if isinstance(base, (int, float)) else '',
+                 c.get('round', ''), c.get('ts', '')]
+            for seg in ('train', 'val', 'test'):
+                r += [self._seg(c, seg, k) for k in ('sharpe', 'dd', 'cagr', 'n')]
+            out.append(r)
+        self._save_csv(path, header, out, 'alphas')
 
     # ---------- PORTFOLIO: combine top-N by TEST via the real engine ----------
     def _build_portfolio(self):

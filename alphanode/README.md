@@ -53,8 +53,16 @@ Enter/leaving the field applies it). The TEST filter works in both ranking modes
 **trades L/S** column (total number of long / short positions OPENED over the TEST period — a trade = crossing into
 long/short from flat or the opposite side) and **win%** (the share of days with a profit, daily hit-rate) are computed
 **on TEST (OOS)** for the current data and are filled in in the background (counted on target weights; the strategy
-rebalances daily, so high counts mean high turnover). A **double-click
-on a leaderboard row** opens a window with the alpha's equity curve
+rebalances daily, so high counts mean high turnover).
+
+**Download the table** — the **CSV** button in the leaderboard heading saves what is on screen: the same
+rows in the same order, with fitness, TRAIN/VAL/TEST Sharpe, TEST drawdown/CAGR, the trade stats and the
+formula (a stat still being computed, or one that failed, comes out blank). The right-click menu has both
+that and **"Export full library (CSV)"** — *every* alpha the node has ever mined (no dedup, no `TEST >`
+filter), ordered by honest fitness, with all four numbers (sharpe/dd/cagr/n) per segment. The table on
+screen is a deliberately diverse *slice* of the library; the second export is the whole thing.
+
+A **double-click on a leaderboard row** opens a window with the alpha's equity curve
 (growth of $1, log scale) with **TRAIN | VAL | TEST** zones and a comparison against a **buy & hold (EW)** basket —
 the same style as `evo_champions.png`.
 
