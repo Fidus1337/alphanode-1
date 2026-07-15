@@ -35,6 +35,7 @@ import threading
 import subprocess
 
 import tkinter as tk
+import tkinter.font as tkfont
 from tkinter import ttk, messagebox, filedialog
 
 import customtkinter as ctk
@@ -193,6 +194,7 @@ class App:
         self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
                            'ts': 0.0, 'computed': False, 'select': None}
         self._lb_target = 20                             # how many DISTINCT families to select
+        self._fonts = {}                                  # (family,size,weight) -> named Tk font
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
         self.cfg = dict(DEFAULTS)
@@ -290,7 +292,6 @@ class App:
     def _style(self):
         """Fonts + the ttk styles for the widgets CustomTkinter has no answer for (the leaderboard
         table and the numeric spinboxes). Everything else is styled per-widget from the palette."""
-        import tkinter.font as tkfont
         self.root.configure(fg_color=BG)
 
         fams = set(tkfont.families(self.root))
@@ -325,7 +326,7 @@ class App:
         # numeric spinboxes — CustomTkinter has no spinbox, so these stay ttk
         s.configure('TSpinbox', fieldbackground=CARD, background=CARD, foreground=TXT, arrowcolor=MUT,
                     bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, borderwidth=1,
-                    padding=int(4 * self.SCALE), insertcolor=TXT, font=(F, self._px(13)))
+                    padding=int(4 * self.SCALE), insertcolor=TXT, font=self._font(F, 13))
         s.map('TSpinbox', bordercolor=[('focus', ACC)], lightcolor=[('focus', ACC)],
               darkcolor=[('focus', ACC)])
 
@@ -345,14 +346,50 @@ class App:
                  [('Treeitem.padding', {'sticky': 'nswe', 'children':
                   [('Treeitem.text', {'side': 'left', 'sticky': ''})]})])
 
+    # ---------- cheap widgets ----------
+    # CustomTkinter draws everything on canvases: a CTkLabel is three X widgets (frame + canvas +
+    # label) and costs ~2x a tk.Label to create, for pixels that are identical when the background
+    # is flat. Widget count is what startup time tracks here, so CTk is reserved for the widgets
+    # whose look it actually changes — buttons, entry, slider, switch, checkbox, scrollbar, cards —
+    # and static text / plain containers use these.
+    def _font(self, family, size, weight='normal'):
+        """A NAMED font, created once per (family, size, weight) and referenced by name.
+
+        A font tuple makes Tk resolve the family again for every widget it is handed to; a named
+        font is resolved once. On this display that is ~2ms vs ~4ms per label — with ~70 labels it
+        is worth the cache. Names live in Tk, so the cache survives a theme rebuild."""
+        key = (family, size, weight)
+        f = self._fonts.get(key)
+        if f is None:
+            # Hold the Font OBJECT, not just its name: tkinter's Font.__del__ deletes the named font
+            # from Tk, and every widget still pointing at it silently falls back to the default.
+            f = tkfont.Font(name=f'AN{len(self._fonts)}', family=family, size=self._px(size),
+                            weight=weight, exists=False)
+            self._fonts[key] = f
+        return f
+
+    def _lbl(self, parent, text='', text_color=None, font=None, bg=None, **kw):
+        """Static text. Same call shape as CTkLabel, one X widget instead of three."""
+        fam, size, *rest = font if font else (self.UI, 13)
+        if 'wraplength' in kw:                           # CTk scales it for you; tk does not
+            kw['wraplength'] = int(kw['wraplength'] * self.SCALE)
+        kw.setdefault('anchor', 'w')                     # tk centres by default, so a label wider
+        kw.setdefault('justify', 'left')                 # than its slot loses BOTH ends, not one
+        return tk.Label(parent, text=text, fg=(text_color or TXT), bg=(bg or CARD),
+                        font=self._font(fam, size, rest[0] if rest else 'normal'), **kw)
+
+    def _box(self, parent, bg=None, **kw):
+        """A plain layout container (what CTkFrame(fg_color='transparent') was for)."""
+        return tk.Frame(parent, bg=(bg or CARD), **kw)
+
     def _card(self, parent, **kw):
-        """A card: the surface every panel sits on."""
+        """A card: the surface every panel sits on. Stays CTk — the rounded border is the point."""
         return ctk.CTkFrame(parent, fg_color=CARD, border_color=BORDER, border_width=1,
                             corner_radius=10, **kw)
 
     def _pad(self, card):
         """Inner padding frame for a card (CTkFrame has no padding option)."""
-        f = ctk.CTkFrame(card, fg_color='transparent')
+        f = self._box(card)
         f.pack(fill='both', expand=True, padx=16, pady=14)
         return f
 
@@ -360,21 +397,21 @@ class App:
     def _build(self):
         # Everything lives inside _shell so a theme switch can drop and rebuild the whole UI without
         # touching the root's other children (open dialogs, tooltips).
-        self._shell = ctk.CTkFrame(self.root, fg_color=BG, corner_radius=0)
+        self._shell = self._box(self.root, bg=BG)
         self._shell.pack(fill='both', expand=True)
-        ctk.CTkFrame(self._shell, fg_color=ACC, height=3, corner_radius=0).pack(fill='x')  # accent bar
-        top = ctk.CTkFrame(self._shell, fg_color='transparent')
+        self._box(self._shell, bg=ACC, height=3).pack(fill='x')          # accent bar
+        top = self._box(self._shell, bg=BG)
         top.pack(fill='x', padx=20, pady=(14, 11))
-        brand = ctk.CTkFrame(top, fg_color='transparent')
+        brand = self._box(top, bg=BG)
         brand.pack(side='left')
-        ctk.CTkLabel(brand, text='Alpha', font=(self.UI, 24, 'bold'), text_color=TXT).pack(side='left')
-        ctk.CTkLabel(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC).pack(side='left')
-        ctk.CTkLabel(top, text='background search for trading strategies', text_color=MUT,
+        self._lbl(brand, text='Alpha', font=(self.UI, 24, 'bold'), text_color=TXT).pack(side='left')
+        self._lbl(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC).pack(side='left')
+        self._lbl(top, text='background search for trading strategies', text_color=MUT,
                      font=(self.UI, 13)).pack(side='left', padx=(14, 0), pady=(6, 0))
         self._build_theme_pick(top)
-        ctk.CTkFrame(self._shell, fg_color=BORDER, height=1, corner_radius=0).pack(fill='x')  # hairline
+        self._box(self._shell, bg=BORDER, height=1).pack(fill='x')       # hairline
 
-        body = ctk.CTkFrame(self._shell, fg_color='transparent')
+        body = self._box(self._shell, bg=BG)
         body.pack(fill='both', expand=True, padx=20, pady=16)
         body.columnconfigure(0, weight=0, minsize=250)   # width refined by the content itself (see _sync)
         body.columnconfigure(1, weight=1)
@@ -436,7 +473,7 @@ class App:
         canvas.configure(yscrollcommand=vsb.set)
         canvas.pack(side='left', fill='both', expand=True, padx=(14, 0), pady=14)
         vsb.pack(side='right', fill='y', padx=(0, 6), pady=14)
-        inner = ctk.CTkFrame(canvas, fg_color=CARD)
+        inner = self._box(canvas)
         canvas.create_window((0, 0), window=inner, anchor='nw')
 
         def _sync(_e=None):     # width is set by the content ITSELF — correct even with HiDPI font scaling
@@ -447,10 +484,10 @@ class App:
         self._head(inner, 'SEARCH SETTINGS').pack(anchor='w', pady=(0, 10))
 
         # --- resources ---
-        ctk.CTkLabel(inner, text='Resources (CPU share)', text_color=MUT,
+        self._lbl(inner, text='Resources (CPU share)', text_color=MUT,
                      font=(self.UI, 13)).pack(anchor='w')
         self.v_cpu = tk.IntVar(value=self.cfg['cpu'])
-        self.lbl_cpu = ctk.CTkLabel(inner, text='', text_color=TXT, font=(self.UI, 15, 'bold'))
+        self.lbl_cpu = self._lbl(inner, text='', text_color=TXT, font=(self.UI, 15, 'bold'))
         self.lbl_cpu.pack(anchor='w', pady=(2, 0))
         sc = ctk.CTkSlider(inner, from_=5, to=95, variable=self.v_cpu, command=lambda e: self._cpu_lbl(),
                            button_color=ACC, button_hover_color=ACC_HI, progress_color=ACC,
@@ -462,7 +499,7 @@ class App:
         self._tip(sc, cpu_tip)
 
         # --- pairs universe ---
-        ctk.CTkLabel(inner, text='Which pairs to trade', text_color=MUT,
+        self._lbl(inner, text='Which pairs to trade', text_color=MUT,
                      font=(self.UI, 13)).pack(anchor='w', pady=(0, 2))
         self.v_uniall = tk.BooleanVar(value=self.cfg['universe_all'])
         rb1 = self._radio(inner, 'All loaded pairs', self.v_uniall, True)
@@ -478,11 +515,11 @@ class App:
         self._tip(self.e_uni, 'Your pairs, comma-separated, e.g. BTCUSDT,ETHUSDT,SOLUSDT.')
 
         # --- market data (Binance) ---
-        ctk.CTkLabel(inner, text='MARKET DATA (BINANCE)', text_color=ACC,
+        self._lbl(inner, text='MARKET DATA (BINANCE)', text_color=ACC,
                      font=(self.UI, 12, 'bold')).pack(anchor='w', pady=(14, 1))
-        ctk.CTkLabel(inner, text='daily candles the search runs on', text_color=MUT,
+        self._lbl(inner, text='daily candles the search runs on', text_color=MUT,
                      font=(self.UI, 11)).pack(anchor='w', pady=(0, 6))
-        g = ctk.CTkFrame(inner, fg_color='transparent')
+        g = self._box(inner)
         g.pack(fill='x')
         g.columnconfigure(0, weight=1)
         self.v_fetchn = self._num(g, 'How many pairs (top by turnover)', self.cfg.get('fetch_n', 150), 0, 5, 530, 10,
@@ -565,7 +602,7 @@ class App:
                                tip='End of the entire data period.')
 
         # --- buttons ---
-        btns = ctk.CTkFrame(inner, fg_color='transparent')
+        btns = self._box(inner)
         btns.pack(fill='x', pady=(16, 0))
         self.btn_start = self._btn(btns, '▶  Start node', self.start, kind='accent', height=38)
         self.btn_start.pack(fill='x', pady=(0, 6))
@@ -609,18 +646,18 @@ class App:
 
     def _head(self, parent, text):
         """A panel heading — the small caps line above every card's content."""
-        return ctk.CTkLabel(parent, text=text, text_color=FAINT, font=(self.UI, 12, 'bold'))
+        return self._lbl(parent, text=text, text_color=FAINT, font=(self.UI, 12, 'bold'))
 
     def _section(self, parent, title):
-        ctk.CTkLabel(parent, text=title, text_color=ACC,
+        self._lbl(parent, text=title, text_color=ACC,
                      font=(self.UI, 12, 'bold')).pack(anchor='w', pady=(14, 6))
-        f = ctk.CTkFrame(parent, fg_color='transparent')
+        f = self._box(parent)
         f.pack(fill='x')
         f.columnconfigure(0, weight=1)
         return f
 
     def _row(self, parent, label, row, widget, tip):
-        lbl = ctk.CTkLabel(parent, text=label, text_color=MUT, font=(self.UI, 13))
+        lbl = self._lbl(parent, text=label, text_color=MUT, font=(self.UI, 13))
         lbl.grid(row=row, column=0, sticky='w', pady=3)
         widget.grid(row=row, column=1, sticky='e', pady=3)
         if tip:
@@ -726,7 +763,7 @@ class App:
 
     # ---------- right panel: status / chart / leaderboard ----------
     def _build_status(self, body):
-        right = ctk.CTkFrame(body, fg_color='transparent')
+        right = self._box(body, bg=BG)
         right.grid(row=0, column=1, sticky='nsew')
         right.rowconfigure(3, weight=1)                  # the leaderboard takes the slack
         right.columnconfigure(0, weight=1)
@@ -734,19 +771,19 @@ class App:
         card = self._card(right)
         card.grid(row=0, column=0, sticky='ew')
         pad = self._pad(card)
-        head = ctk.CTkFrame(pad, fg_color='transparent')
+        head = self._box(pad)
         head.pack(fill='x')
-        self.lbl_state = ctk.CTkLabel(head, text='● stopped', font=(self.UI, 16, 'bold'), text_color=MUT)
+        self.lbl_state = self._lbl(head, text='● stopped', font=(self.UI, 16, 'bold'), text_color=MUT)
         self.lbl_state.pack(side='left')
-        self.lbl_res = ctk.CTkLabel(head, text='', text_color=MUT, font=(self.UI, 13))
+        self.lbl_res = self._lbl(head, text='', text_color=MUT, font=(self.UI, 13))
         self.lbl_res.pack(side='right')
 
-        stats = ctk.CTkFrame(pad, fg_color='transparent')
+        stats = self._box(pad)
         stats.pack(fill='x', pady=(14, 0))
         self.s_rounds = self._stat(stats, 'rounds', 0)
         self.s_trials = self._stat(stats, 'formulas tried', 1)
         self.s_found = self._stat(stats, 'alphas found', 2)
-        self.lbl_cur = ctk.CTkLabel(pad, text='', text_color=MUT, font=(self.MONO, 12),
+        self.lbl_cur = self._lbl(pad, text='', text_color=MUT, font=(self.MONO, 12),
                                     anchor='w', justify='left')
         self.lbl_cur.pack(anchor='w', fill='x', pady=(12, 0))
 
@@ -764,12 +801,12 @@ class App:
         card2 = self._card(right)
         card2.grid(row=3, column=0, sticky='nsew', pady=(16, 0))
         p2 = self._pad(card2)
-        hrow = ctk.CTkFrame(p2, fg_color='transparent')
+        hrow = self._box(p2)
         hrow.pack(fill='x', pady=(0, 8))
         self._lb_head_text = self._lb_head_text_for('fit')
         self.lbl_lb_head = self._head(hrow, self._lb_head_text)
         self.lbl_lb_head.pack(side='left', anchor='w')
-        wrap = ctk.CTkFrame(p2, fg_color='transparent')
+        wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
@@ -817,12 +854,12 @@ class App:
         card3.grid(row=4, column=0, sticky='ew', pady=(16, 0))
         self.pf_card = card3
         p3 = self._pad(card3)
-        hp = ctk.CTkFrame(p3, fg_color='transparent')
+        hp = self._box(p3)
         hp.pack(fill='x')
         self._head(hp, 'PORTFOLIO — top-N by TEST OOS, combined via the real engine').pack(side='left')
-        ctl = ctk.CTkFrame(hp, fg_color='transparent')
+        ctl = self._box(hp)
         ctl.pack(side='right')
-        ctk.CTkLabel(ctl, text='top', text_color=MUT, font=(self.UI, 13)).pack(side='left', padx=(0, 5))
+        self._lbl(ctl, text='top', text_color=MUT, font=(self.UI, 13)).pack(side='left', padx=(0, 5))
         self.v_pfn = tk.IntVar(value=6)
         ttk.Spinbox(ctl, from_=2, to=20, width=4, textvariable=self.v_pfn).pack(side='left', padx=(0, 8))
         self.btn_pf = self._btn(ctl, '▶ Build portfolio', self._build_portfolio, kind='accent')
@@ -848,12 +885,12 @@ class App:
                                    'combined live target positions as JSON on localhost. Each\n'
                                    'service takes the next free port from 8799 and appears in the\n'
                                    'SIGNAL API card above (URL, log, "free the port").')
-        self.lbl_pf = ctk.CTkLabel(p3, text_color=FAINT, font=(self.UI, 12), wraplength=900,
+        self.lbl_pf = self._lbl(p3, text_color=FAINT, font=(self.UI, 12), wraplength=900,
                                    anchor='w', justify='left',
                                    text='⚠ selecting by TEST inflates the number (cherry-pick); the '
                                         'diversification gain — combined ≫ any single alpha — is the real part.')
         self.lbl_pf.pack(anchor='w', fill='x', pady=(8, 2))
-        self.lbl_pf_m = ctk.CTkLabel(p3, text='', text_color=TXT, font=(self.UI, 16, 'bold'),
+        self.lbl_pf_m = self._lbl(p3, text='', text_color=TXT, font=(self.UI, 16, 'bold'),
                                      anchor='w')
         self.lbl_pf_m.pack(anchor='w')
         self.pf_img = tk.Label(p3, bg=CARD, borderwidth=0)
@@ -880,11 +917,11 @@ class App:
             b.configure(state='disabled')
 
     def _stat(self, parent, label, col):
-        f = ctk.CTkFrame(parent, fg_color='transparent')
+        f = self._box(parent)
         f.grid(row=0, column=col, sticky='w', padx=(0, 34))
-        val = ctk.CTkLabel(f, text='0', text_color=TXT, font=(self.UI, 30, 'bold'), anchor='w')
+        val = self._lbl(f, text='0', text_color=TXT, font=(self.UI, 30, 'bold'), anchor='w')
         val.pack(anchor='w')
-        ctk.CTkLabel(f, text=label.upper(), text_color=FAINT, font=(self.UI, 11),
+        self._lbl(f, text=label.upper(), text_color=FAINT, font=(self.UI, 11),
                      anchor='w').pack(anchor='w')
         return val
 
@@ -1030,7 +1067,7 @@ class App:
         self.s_trials.configure(text='0')
         self.s_found.configure(text='0')
         self.lbl_cur.configure(text='')
-        self.lbl_state.configure(text='● stopped', text_color=MUT)
+        self.lbl_state.configure(text='● stopped', fg=MUT)
         self._reset_portfolio_ui()                        # clear the Portfolio panel too
 
     def _apply_cfg_to_widgets(self):
@@ -1131,7 +1168,7 @@ class App:
         self.sig_card = card
         card.grid(row=1, column=0, sticky='ew', pady=(16, 0))
         pad = self._pad(card)
-        hs = ctk.CTkFrame(pad, fg_color='transparent')
+        hs = self._box(pad)
         hs.pack(fill='x')
         self.lbl_sig_head = self._head(hs, 'SIGNAL API — running services')
         self.lbl_sig_head.pack(side='left')
@@ -1139,7 +1176,7 @@ class App:
                                      kind='danger', height=26, width=118)
         self.btn_sig_all.pack(side='right')
         self._tip(self.btn_sig_all, 'Stop every running signal API and release its port.')
-        self._sig_rows = ctk.CTkFrame(pad, fg_color='transparent')
+        self._sig_rows = self._box(pad)
         self._sig_rows.pack(fill='x', pady=(8, 0))
         card.grid_remove()                               # shown only while something is being served
 
@@ -1407,9 +1444,9 @@ class App:
                                          f'live JSON on localhost  ·  refresh 15 min')
         for s in self._sigs:
             url = f'http://127.0.0.1:{s["port"]}/signal'
-            row = ctk.CTkFrame(holder, fg_color='transparent')
+            row = self._box(holder)
             row.pack(fill='x', pady=(0, 8))
-            btns = ctk.CTkFrame(row, fg_color='transparent')
+            btns = self._box(row)
             btns.pack(side='right', anchor='n')
             self._btn(btns, 'Copy URL', lambda u=url: (self.root.clipboard_clear(),
                                                        self.root.clipboard_append(u)),
@@ -1420,7 +1457,7 @@ class App:
             log_btn.pack(side='left', padx=(4, 0))
             self._btn(btns, '✕ Free port', lambda e=s: self._stop_signal_ui(e), kind='danger',
                       height=26, width=92).pack(side='left', padx=(4, 0))
-            info = ctk.CTkFrame(row, fg_color='transparent')
+            info = self._box(row)
             info.pack(side='left', fill='x', expand=True)
             head = (f'● {s["port"]}  ·  {s["label"]}  ·  {s["n_formulas"]} alpha(s)  ·  '
                     f'{s["n_tickers"]} pairs')
@@ -1428,12 +1465,12 @@ class App:
                 head += f'  ·  since {s["started"]}'
             if s.get('adopted'):
                 head += '  ·  from an earlier session'
-            ctk.CTkLabel(info, text=head, text_color=TXT, font=(self.UI, 13, 'bold'),
+            self._lbl(info, text=head, text_color=TXT, font=(self.UI, 13, 'bold'),
                          wraplength=620, justify='left', anchor='w').pack(anchor='w')
-            ctk.CTkLabel(info, text=url + (f'   ·   {s["log"]}' if s.get('log') else ''),
+            self._lbl(info, text=url + (f'   ·   {s["log"]}' if s.get('log') else ''),
                          text_color=FAINT, font=(self.MONO, 11), wraplength=620,
                          justify='left', anchor='w').pack(anchor='w')
-            lbl = ctk.CTkLabel(info, text=self._sig_health.get(s['port'], 'starting…'), text_color=MUT,
+            lbl = self._lbl(info, text=self._sig_health.get(s['port'], 'starting…'), text_color=MUT,
                                font=(self.UI, 11), wraplength=620, justify='left', anchor='w')
             lbl.pack(anchor='w')
             self._sig_status_lbl[s['port']] = lbl
@@ -1469,7 +1506,7 @@ class App:
         if st:
             state = st.get('state', '—')
             color = {'running': POS, 'starting': ACC}.get(state, MUT)
-            self.lbl_state.configure(text=f'● {"running" if state=="running" else state}', text_color=color)
+            self.lbl_state.configure(text=f'● {"running" if state=="running" else state}', fg=color)
             vol = st.get('target_vol')
             vol_s = f' · vol {vol:g}' if isinstance(vol, (int, float)) else ''
             self.lbl_res.configure(text=f'{st.get("cpu_percent","?")}% · {st.get("n_jobs","?")}/{st.get("cores","?")} cores '
@@ -1483,7 +1520,7 @@ class App:
             self._draw_chart()
         if not running and (not st or st.get('state') != 'running'):
             if not (self.proc and self.proc.poll() is None):
-                self.lbl_state.configure(text='● stopped', text_color=MUT)
+                self.lbl_state.configure(text='● stopped', fg=MUT)
         try:
             while True:
                 self.logq.get_nowait()
@@ -1507,7 +1544,7 @@ class App:
         last_test = next((p.get('best_test') for p in reversed(hist) if p.get('best_test') is not None), None)
         if len(pts) < 2:
             cv.create_text(w / 2, h / 2, text='chart will appear after a couple of rounds',
-                           fill=MUT, font=(self.UI, self._px(12)))
+                           fill=MUT, font=self._font(self.UI, 12))
             return
         ys = [v for _, v in pts]
         lo, hi = min(ys), max(ys)
@@ -1531,7 +1568,7 @@ class App:
             y = Y(val)
             cv.create_line(padL, y, w - padR, y, fill=GRID)
             cv.create_text(padL - 9 * S, y, text=f'{val:+.2f}', anchor='e', fill=FAINT,
-                           font=(self.UI, self._px(10)))
+                           font=self._font(self.UI, 10))
 
         line = []
         for i, (_, v) in enumerate(pts):
@@ -1542,14 +1579,14 @@ class App:
         r_ = 4 * S
         cv.create_oval(lx - r_, ly - r_, lx + r_, ly + r_, fill=ACC, outline=CARD, width=2)
         cv.create_text(w - padR, padT - 6 * S, text=f'fitness {ys[-1]:+.2f}', anchor='ne',
-                       fill=ACC, font=(self.UI, self._px(13), 'bold'))
+                       fill=ACC, font=self._font(self.UI, 13, 'bold'))
         cv.create_text(padL, h - 6 * S, text=f'round {pts[0][0]}', anchor='w', fill=FAINT,
-                       font=(self.UI, self._px(10)))
+                       font=self._font(self.UI, 10))
         cv.create_text(w - padR, h - 6 * S, text=f'round {pts[-1][0]}', anchor='e', fill=FAINT,
-                       font=(self.UI, self._px(10)))
+                       font=self._font(self.UI, 10))
         if last_test is not None:                        # honest held-out — bottom center, no collisions
             cv.create_text((padL + w - padR) / 2, h - 6 * S, text=f'champion TEST {last_test:+.2f} · held-out',
-                           anchor='s', fill=FAINT, font=(self.UI, self._px(10)))
+                           anchor='s', fill=FAINT, font=self._font(self.UI, 10))
 
     def _dedup(self, best, target=15):
         """Show DISTINCT alphas: strictly at first (max diversity), and if there are too few rows —
@@ -1889,7 +1926,7 @@ class App:
             return                                       # already building
         n = self._gi(self.v_pfn, 6)
         self.btn_pf.configure(state='disabled')
-        self.lbl_pf_m.configure(text='', text_color=MUT)
+        self.lbl_pf_m.configure(text='', fg=MUT)
         self.lbl_pf.configure(text=f'building portfolio from top-{n} by TEST (real engine, ~1–2 min)…')
         env = dict(os.environ)
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
@@ -1939,7 +1976,7 @@ class App:
         self.lbl_pf_m.configure(
             text=f'Sharpe {sh:+.2f}   ·   CAGR {m.get("cagr", 0) * 100:+.0f}%   ·   '
                  f'MaxDD {m.get("dd", 0) * 100:.0f}%      (vs buy&hold Sharpe {b.get("sharpe", 0):+.2f})',
-            text_color=(POS if (sh is not None and sh >= 0) else NEG))
+            fg=(POS if (sh is not None and sh >= 0) else NEG))
         threading.Thread(target=self._render_pf_equity, args=(doc, self._pf_width()),
                          daemon=True).start()
 
@@ -2061,7 +2098,7 @@ class App:
         win = self._dialog('Equity — ' + champ.get('formula', '')[:60],
                            f'{int((img_w + 44) / self.SCALE)}x{int((img_h + 200) / self.SCALE)}')
 
-        head = ctk.CTkFrame(win, fg_color='transparent')
+        head = self._box(win)
         head.pack(fill='x', padx=16, pady=(14, 6))
 
         def seg(name, m, accent=False):
@@ -2072,15 +2109,15 @@ class App:
                 txt += f'   CAGR {cg*100:+.0f}%'
             if dd is not None:
                 txt += f'   DD {dd*100:.0f}%'
-            ctk.CTkLabel(head, text=txt, text_color=(NEG if accent else TXT), anchor='w',
+            self._lbl(head, text=txt, text_color=(NEG if accent else TXT), anchor='w',
                          font=(self.UI, 11, 'bold' if accent else 'normal')).pack(anchor='w')
 
         seg('TRAIN', champ.get('train'))
         seg('VAL', champ.get('val'))
         seg('TEST (held-out)', champ.get('test'), accent=True)
-        ctk.CTkLabel(head, text=champ.get('formula', ''), text_color=MUT, justify='left', anchor='w',
+        self._lbl(head, text=champ.get('formula', ''), text_color=MUT, justify='left', anchor='w',
                      wraplength=img_w - 30, font=(self.MONO, 12)).pack(anchor='w', pady=(6, 0))
-        btnrow = ctk.CTkFrame(head, fg_color='transparent')
+        btnrow = self._box(head)
         btnrow.pack(anchor='w', pady=(10, 0))
         self._btn(btnrow, 'Paper Trade — build bundle', lambda: self._paper_trade(champ),
                   kind='accent', width=230).pack(side='left')
@@ -2091,9 +2128,9 @@ class App:
                   lambda: self._serve_signal([_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6]),
                   width=176).pack(side='left', padx=(8, 0))
 
-        body = ctk.CTkFrame(win, fg_color='transparent')
+        body = self._box(win)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 14))
-        status = ctk.CTkLabel(body, text='building equity (TRAIN | VAL | TEST + basket B&H)…',
+        status = self._lbl(body, text='building equity (TRAIN | VAL | TEST + basket B&H)…',
                               text_color=MUT, font=(self.UI, 15))
         status.pack(pady=40)
 
@@ -2221,29 +2258,29 @@ class App:
 
     def _signals_dialog(self, path, latest_date, positions, n_days):
         win = self._dialog('Portfolio signals', '460x580')
-        frm = ctk.CTkFrame(win, fg_color='transparent')
+        frm = self._box(win)
         frm.pack(fill='both', expand=True, padx=18, pady=16)
-        ctk.CTkLabel(frm, text='Signals saved', text_color=TXT,
+        self._lbl(frm, text='Signals saved', text_color=TXT,
                      font=(self.UI, 19, 'bold')).pack(anchor='w')
-        ctk.CTkLabel(frm, text=path, text_color=MUT, font=(self.MONO, 12), wraplength=400,
+        self._lbl(frm, text=path, text_color=MUT, font=(self.MONO, 12), wraplength=400,
                      justify='left', anchor='w').pack(anchor='w', pady=(2, 12))
-        ctk.CTkLabel(frm, text=f'What to hold on the last day ({latest_date}):', text_color=TXT,
+        self._lbl(frm, text=f'What to hold on the last day ({latest_date}):', text_color=TXT,
                      font=(self.UI, 15, 'bold')).pack(anchor='w')
-        ctk.CTkLabel(frm, text='+ long · − short · %  = share of portfolio', text_color=FAINT,
+        self._lbl(frm, text='+ long · − short · %  = share of portfolio', text_color=FAINT,
                      font=(self.UI, 12)).pack(anchor='w', pady=(0, 8))
-        tbl = ctk.CTkFrame(frm, fg_color='transparent')
+        tbl = self._box(frm)
         tbl.pack(fill='both', expand=True)
         for i, (t, w) in enumerate(positions[:16]):
             side, col = ('LONG', POS) if w > 0 else ('SHORT', NEG)
             rbg = STRIPE if i % 2 else CARD
-            r = ctk.CTkFrame(tbl, fg_color=rbg, corner_radius=5, height=24)
+            r = self._box(tbl, bg=rbg)
             r.pack(fill='x')
-            ctk.CTkLabel(r, text=side, text_color=col, font=(self.MONO, 13, 'bold'),
+            self._lbl(r, text=side, text_color=col, font=(self.MONO, 13, 'bold'),
                          width=52, anchor='w').pack(side='left', padx=(6, 0))
-            ctk.CTkLabel(r, text=t, text_color=TXT, font=(self.MONO, 13), anchor='w').pack(side='left')
-            ctk.CTkLabel(r, text=f'{w * 100:+.1f}%', text_color=col, font=(self.MONO, 13, 'bold'),
+            self._lbl(r, text=t, text_color=TXT, font=(self.MONO, 13), anchor='w').pack(side='left')
+            self._lbl(r, text=f'{w * 100:+.1f}%', text_color=col, font=(self.MONO, 13, 'bold'),
                          anchor='e').pack(side='right', padx=(0, 8))
-        ctk.CTkLabel(frm, text=f'Full history ({n_days} days) — in the CSV: date, ticker, side, weight_pct.',
+        self._lbl(frm, text=f'Full history ({n_days} days) — in the CSV: date, ticker, side, weight_pct.',
                      text_color=MUT, font=(self.UI, 12), wraplength=400, justify='left',
                      anchor='w').pack(anchor='w', pady=(10, 0))
         self._btn(frm, 'Close', win.destroy, width=80).pack(anchor='e', pady=(10, 0))
@@ -2285,19 +2322,19 @@ class App:
 
     def _paper_dialog(self, path, n):
         win = self._dialog('Paper-trading bundle ready', '660x300')
-        frm = ctk.CTkFrame(win, fg_color='transparent')
+        frm = self._box(win)
         frm.pack(fill='both', expand=True, padx=18, pady=16)
-        ctk.CTkLabel(frm, text='Bundle built', text_color=TXT,
+        self._lbl(frm, text='Bundle built', text_color=TXT,
                      font=(self.UI, 19, 'bold')).pack(anchor='w')
-        ctk.CTkLabel(frm, text=f'{n} pairs · engine + strategy.py + paper_trade.py + README.md',
+        self._lbl(frm, text=f'{n} pairs · engine + strategy.py + paper_trade.py + README.md',
                      text_color=MUT, font=(self.UI, 13)).pack(anchor='w', pady=(2, 10))
-        ctk.CTkLabel(frm, text=path, text_color=ACC, font=(self.MONO, 13), wraplength=600,
+        self._lbl(frm, text=path, text_color=ACC, font=(self.MONO, 13), wraplength=600,
                      justify='left', anchor='w').pack(anchor='w')
-        ctk.CTkLabel(frm, text='Run paper trading FORWARD on new data — that is the honest check. '
+        self._lbl(frm, text='Run paper trading FORWARD on new data — that is the honest check. '
                                'Live is not included in the bundle (see README).',
                      text_color=MUT, font=(self.UI, 13), wraplength=600, justify='left',
                      anchor='w').pack(anchor='w', pady=(10, 14))
-        row = ctk.CTkFrame(frm, fg_color='transparent')
+        row = self._box(frm)
         row.pack(fill='x')
         self._btn(row, 'Open folder', lambda: self._open_folder(path), width=124).pack(side='left')
         self._btn(row, '▶ Run now', lambda: (win.destroy(), self._run_bundle(path)),
@@ -2408,7 +2445,7 @@ class App:
             self.root.after(200, lambda: self._check_plot(win, holder, status, body))
             return
         if holder['err']:
-            status.configure(text='Error: ' + holder['err'], text_color=NEG)
+            status.configure(text='Error: ' + holder['err'], fg=NEG)
             return
         try:
             photo = tk.PhotoImage(file=holder['path'])
@@ -2417,7 +2454,7 @@ class App:
             lbl.image = photo                            # keep a reference, otherwise GC eats it
             lbl.pack(fill='both', expand=True)
         except Exception as e:                           # noqa: BLE001
-            status.configure(text=f'Failed to show the chart: {e}', text_color=NEG)
+            status.configure(text=f'Failed to show the chart: {e}', fg=NEG)
         finally:
             try:
                 os.remove(holder['out'])                 # png is already in PhotoImage memory
