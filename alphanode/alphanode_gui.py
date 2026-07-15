@@ -813,13 +813,13 @@ class App:
         # Packed BEFORE the heading: the heading is a long line, and whoever packs first wins the
         # space — pack it first and the button gets squeezed to nothing on a narrow window.
         # width/height are raw: CTk scales them itself (set_widget_scaling), unlike a tk pixel.
-        self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_visible, height=24, width=52)
+        self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_library, height=24, width=52)
         self.btn_lb_csv.pack(side='right', padx=(10, 0))
         self.lbl_lb_head.pack(side='left', anchor='w')
-        self._tip(self.btn_lb_csv, 'Save the table as shown — same rows, same order, with the\n'
-                                   'trade stats (they exist only for rows on screen).\n'
-                                   'The WHOLE library (every alpha ever mined, no dedup, no\n'
-                                   'TEST filter) is in the right-click menu.')
+        self._tip(self.btn_lb_csv, 'Download EVERY alpha the node has mined — the whole library,\n'
+                                   'no dedup, no TEST filter, with all TRAIN/VAL/TEST numbers.\n'
+                                   'The table below is only a diverse slice of it; to save that\n'
+                                   'slice instead (with its trade stats), use the right-click menu.')
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')

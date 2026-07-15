@@ -67,8 +67,8 @@ header; it follows the OS on first run). Left: the full set of search settings
 chart, and a **leaderboard** of the best alpha per family. Toggle ranking by honest fitness
 `min(train,val)` or by TEST OOS (⚠ the latter is a cherry-pick on held-out data — for viewing only),
 filter by a `TEST >` threshold, and see per-alpha long/short trade counts + daily win%. **CSV** downloads
-the table as shown; the right-click menu also exports the *whole* mined library. Double-click a
-row for its equity curve with TRAIN|VAL|TEST zones. Bottom: a **PORTFOLIO** panel that combines the
+the whole mined library (the table is only a diverse slice of it; right-click exports the slice itself).
+Double-click a row for its equity curve with TRAIN|VAL|TEST zones. Bottom: a **PORTFOLIO** panel that combines the
 top-N alphas through the real `Portfolio` engine and shows the diversified equity vs a buy & hold basket.
 
 **CLI** (`alphanode/cli.py`) — the same knobs as flags. Subcommands: `run`, `fetch`, `top`, `status`,

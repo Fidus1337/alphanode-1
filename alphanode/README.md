@@ -55,12 +55,13 @@ long/short from flat or the opposite side) and **win%** (the share of days with 
 **on TEST (OOS)** for the current data and are filled in in the background (counted on target weights; the strategy
 rebalances daily, so high counts mean high turnover).
 
-**Download the table** — the **CSV** button in the leaderboard heading saves what is on screen: the same
-rows in the same order, with fitness, TRAIN/VAL/TEST Sharpe, TEST drawdown/CAGR, the trade stats and the
-formula (a stat still being computed, or one that failed, comes out blank). The right-click menu has both
-that and **"Export full library (CSV)"** — *every* alpha the node has ever mined (no dedup, no `TEST >`
-filter), ordered by honest fitness, with all four numbers (sharpe/dd/cagr/n) per segment. The table on
-screen is a deliberately diverse *slice* of the library; the second export is the whole thing.
+**Download the alphas** — the **CSV** button in the leaderboard heading saves the **whole library**:
+*every* alpha the node has ever mined, no dedup and no `TEST >` filter, ordered by honest fitness
+`min(train,val)`, with all four numbers (sharpe/dd/cagr/n) for each of TRAIN/VAL/TEST plus size, round and
+the timestamp it was found. The table on screen is only a deliberately diverse *slice* of that library.
+To save the slice instead — same rows, same order, and the trade stats, which exist only for rows on
+screen — use **right-click → "Export table (CSV)"** (a stat still computing, or one that failed, comes out
+as a blank cell).
 
 A **double-click on a leaderboard row** opens a window with the alpha's equity curve
 (growth of $1, log scale) with **TRAIN | VAL | TEST** zones and a comparison against a **buy & hold (EW)** basket —
