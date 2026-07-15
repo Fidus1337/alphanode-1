@@ -37,13 +37,12 @@ NODE_PY = os.path.join(HERE, 'node.py')                 # dev: scripts via the r
 FETCH_PY = os.path.join(PROJ, 'fetch_data.py')
 PORTFOLIO_PY = os.path.join(HERE, 'portfolio_build.py')
 SIGNAL_PY = os.path.join(HERE, 'signal_service.py')     # local live-signal API
-SIGNAL_PORT = 8799
+SIGNAL_PORT = 8799                                      # BASE port: each service takes the next free one
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
 STATE_DIR = apppaths.state_dir()
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 PORTFOLIO_JSON = os.path.join(STATE_DIR, 'portfolio.json')
 PORTFOLIO_PNG = os.path.join(STATE_DIR, 'portfolio_equity.png')
-SIGNAL_LOG = os.path.join(STATE_DIR, 'signal.log')      # signal-service subprocess output
 SETTINGS = apppaths.settings_file()
 CORES = os.cpu_count() or 4
 
@@ -109,8 +108,11 @@ class App:
         self._metrics_seq = 0                             # to discard stale background computations
         self._row_items = {}                              # formula -> table row id (to update cells)
         self._pf_proc = None                              # portfolio-build subprocess
-        self._sig_proc = None                             # signal-API subprocess (one at a time)
-        self._sig_log = None                              # its stdout/stderr log handle
+        self._sigs = []                                   # running signal-API services (one per port)
+        self._sig_health = {}                             # port -> status text (written by poll workers)
+        self._sig_win = None                              # the "Signal API" manager window (single)
+        self._sig_status_lbl = {}                         # port -> status Label (main thread only)
+        self._sig_shown = None                            # ports currently rendered (rebuild only on change)
         self._pf_img_ref = None                           # keep a ref to the equity PhotoImage (else GC)
         self._pf_doc = None                               # last portfolio result (for re-render on resize)
         self._pf_resize_after = None                      # debounce id for resize re-render
@@ -924,11 +926,28 @@ class App:
         try:
             if self.proc and self.proc.poll() is None:
                 self.proc.terminate()
-            self._stop_signal()
+            self._stop_all_signals()
         finally:
             self.root.destroy()
 
     # ---------- local signal API (serve live positions of a formula / portfolio) ----------
+    # Several services run side by side: each takes the next free port from SIGNAL_PORT upward and
+    # shows up as a row in the "Signal API" manager window.
+    def _free_signal_port(self, tries=50):
+        """First free TCP port at/after SIGNAL_PORT that we aren't already using."""
+        import socket
+        busy = {s['port'] for s in self._sigs}
+        for p in range(SIGNAL_PORT, SIGNAL_PORT + tries):
+            if p in busy:
+                continue
+            with socket.socket() as sk:
+                try:
+                    sk.bind(('127.0.0.1', p))
+                    return p
+                except OSError:                           # taken by someone else — try the next
+                    continue
+        return None
+
     def _serve_signal(self, formulas, label):
         formulas = [f for f in (formulas or []) if f and f.strip()]
         if not formulas:
@@ -945,23 +964,32 @@ class App:
         if not tickers:
             messagebox.showwarning('Signal API', 'The pairs universe is empty.', parent=self.root)
             return
-        self._stop_signal()                               # one service at a time
+        if any(s['label'] == label for s in self._sigs):   # already serving this one — just show it
+            self._open_signal_manager()
+            return
+        port = self._free_signal_port()
+        if port is None:
+            messagebox.showerror('Signal API', 'No free port available.', parent=self.root)
+            return
         env = dict(os.environ)
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini(),
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
-                   ALPHANODE_SIGNAL_PORT=str(SIGNAL_PORT), ALPHANODE_SIGNAL_REFRESH='900')
+                   ALPHANODE_SIGNAL_PORT=str(port), ALPHANODE_SIGNAL_REFRESH='900')
         try:
-            self._sig_log = open(SIGNAL_LOG, 'w', buffering=1)   # capture the service's output/errors
-            self._sig_proc = subprocess.Popen(
+            log = open(os.path.join(STATE_DIR, f'signal_{port}.log'), 'w', buffering=1)
+            proc = subprocess.Popen(                       # each service logs to its own file
                 _child_cmd('signal'), env=env,
                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
-                stdout=self._sig_log, stderr=subprocess.STDOUT)
+                stdout=log, stderr=subprocess.STDOUT)
         except Exception as e:                            # noqa: BLE001
             messagebox.showerror('Signal API', f'Could not start the signal service: {e}', parent=self.root)
             return
-        self._signal_dialog(label, len(formulas), len(tickers))
+        self._sigs.append({'port': port, 'proc': proc, 'log': log, 'label': label,
+                           'n_formulas': len(formulas), 'n_tickers': len(tickers)})
+        self._sig_health[port] = 'starting — fetching live data, computing the first signal…'
+        self._open_signal_manager()
 
     def _pf_serve_signal(self):
         doc = self._pf_doc
@@ -971,62 +999,112 @@ class App:
             return
         self._serve_signal(list(formulas), f'portfolio_top{doc.get("n", len(formulas))}')
 
-    def _stop_signal(self):
-        p, self._sig_proc = self._sig_proc, None
+    def _stop_signal(self, entry):
+        """Stop ONE service and drop it from the registry."""
         try:
-            if p and p.poll() is None:
-                p.terminate()
+            if entry['proc'] and entry['proc'].poll() is None:
+                entry['proc'].terminate()
         except Exception:                                 # noqa: BLE001
             pass
         try:
-            if self._sig_log:
-                self._sig_log.close()
+            if entry['log']:
+                entry['log'].close()
         except Exception:                                 # noqa: BLE001
             pass
-        self._sig_log = None
+        self._sig_health.pop(entry['port'], None)
+        if entry in self._sigs:
+            self._sigs.remove(entry)
 
-    def _signal_dialog(self, label, n_formulas, n_tickers):
-        url = f'http://127.0.0.1:{SIGNAL_PORT}/signal'
+    def _stop_all_signals(self):
+        for entry in list(self._sigs):
+            self._stop_signal(entry)
+
+    def _open_signal_manager(self):
+        """The "Signal API" window — a live list of every running service (raised if already open)."""
+        win = self._sig_win
+        if win is not None and win.winfo_exists():
+            win.deiconify()
+            win.lift()
+            self._render_signal_rows()
+            return
         win = tk.Toplevel(self.root)
+        self._sig_win = win
         win.title('Signal API')
         win.configure(bg=CARD)
-        win.geometry('490x300')
+        win.geometry('580x360')
         frm = tk.Frame(win, bg=CARD)
         frm.pack(fill='both', expand=True, padx=18, pady=16)
-        tk.Label(frm, text='📡  Signal API running', bg=CARD, fg=TXT,
+        tk.Label(frm, text='📡  Signal API — running services', bg=CARD, fg=TXT,
                  font=(self.UI, 13, 'bold')).pack(anchor='w')
-        sub = f'portfolio · {n_formulas} alphas' if n_formulas > 1 else label
-        tk.Label(frm, text=f'{sub}  ·  {n_tickers} pairs  ·  live, refresh 15 min', bg=CARD, fg=MUT,
-                 font=(self.UI, 9), wraplength=440, justify='left').pack(anchor='w', pady=(2, 10))
-        tk.Label(frm, text=url, bg=CARD, fg=POS, font=(self.MONO, 11)).pack(anchor='w')
-        status = tk.Label(frm, text='starting — fetching live data, computing the first signal…',
-                          bg=CARD, fg=MUT, font=(self.UI, 9), wraplength=440, justify='left')
-        status.pack(anchor='w', pady=(10, 0))
-        btns = tk.Frame(frm, bg=CARD)
-        btns.pack(anchor='w', pady=(16, 0))
-        ttk.Button(btns, text='Copy URL',
-                   command=lambda: (self.root.clipboard_clear(), self.root.clipboard_append(url))
-                   ).pack(side='left')
-        ttk.Button(btns, text='■  Stop', style='Stop.TButton',
-                   command=lambda: (self._stop_signal(), status.config(text='stopped.'))).pack(side='left', padx=(8, 0))
-        ttk.Button(btns, text='Close', command=win.destroy).pack(side='left', padx=(8, 0))
-        tk.Label(frm, text='Closing this window keeps the API running; use Stop to stop it.\n'
-                           'Advisory signal — not execution. GET /health for status.',
-                 bg=CARD, fg=FAINT, font=(self.UI, 8), justify='left').pack(anchor='w', pady=(12, 0))
+        tk.Label(frm, text='Every formula / portfolio you serve gets its own port. Closing this '
+                           'window keeps the APIs running.', bg=CARD, fg=MUT, font=(self.UI, 9),
+                 wraplength=530, justify='left').pack(anchor='w', pady=(2, 10))
+        self._sig_rows = tk.Frame(frm, bg=CARD)
+        self._sig_rows.pack(fill='both', expand=True)
+        tk.Label(frm, text='Advisory signal — not execution. GET /health for status.',
+                 bg=CARD, fg=FAINT, font=(self.UI, 8), justify='left').pack(anchor='w', pady=(10, 0))
+        self._render_signal_rows()
 
-        def poll():
+        def tick():
             if not win.winfo_exists():
+                self._sig_win = None
                 return
-            threading.Thread(target=self._poll_signal_health, args=(status, win), daemon=True).start()
-            win.after(3000, poll)
-        win.after(1000, poll)
+            for s in self._sigs:
+                if s['proc'] and s['proc'].poll() is not None:      # the service died on its own
+                    self._sig_health[s['port']] = 'stopped (process exited)'
+                else:
+                    threading.Thread(target=self._sig_poll_worker, args=(s['port'],),
+                                     daemon=True).start()
+            ports = tuple(s['port'] for s in self._sigs)
+            if ports != self._sig_shown:                  # the set changed -> rebuild the rows
+                self._render_signal_rows()
+            else:                                         # same set -> only refresh the status text
+                for p, lbl in list(self._sig_status_lbl.items()):
+                    if lbl.winfo_exists():
+                        lbl.config(text=self._sig_health.get(p, 'starting…'))
+            win.after(3000, tick)
+        win.after(400, tick)
 
-    def _poll_signal_health(self, status, win):
-        if self._sig_proc is None:
+    def _render_signal_rows(self):
+        """Rebuild the service list. Main thread only."""
+        holder = getattr(self, '_sig_rows', None)
+        if holder is None or not holder.winfo_exists():
             return
+        for w in holder.winfo_children():
+            w.destroy()
+        self._sig_status_lbl = {}
+        self._sig_shown = tuple(s['port'] for s in self._sigs)
+        if not self._sigs:
+            tk.Label(holder, text='no services running', bg=CARD, fg=FAINT,
+                     font=(self.UI, 9)).pack(anchor='w')
+            return
+        for s in self._sigs:
+            url = f'http://127.0.0.1:{s["port"]}/signal'
+            row = tk.Frame(holder, bg=CARD)
+            row.pack(fill='x', pady=(0, 9))
+            tk.Label(row, text=f'{s["label"]}  ·  {s["n_formulas"]} alpha(s)  ·  {s["n_tickers"]} pairs'
+                               f'  ·  refresh 15 min', bg=CARD, fg=TXT, font=(self.UI, 9, 'bold'),
+                     wraplength=530, justify='left').pack(anchor='w')
+            tk.Label(row, text=url, bg=CARD, fg=POS, font=(self.MONO, 10)).pack(anchor='w')
+            lbl = tk.Label(row, text=self._sig_health.get(s['port'], 'starting…'), bg=CARD, fg=MUT,
+                           font=(self.UI, 8), wraplength=530, justify='left')
+            lbl.pack(anchor='w')
+            self._sig_status_lbl[s['port']] = lbl
+            btns = tk.Frame(row, bg=CARD)
+            btns.pack(anchor='w', pady=(3, 0))
+            ttk.Button(btns, text='Copy URL', width=9,
+                       command=lambda u=url: (self.root.clipboard_clear(),
+                                              self.root.clipboard_append(u))).pack(side='left')
+            ttk.Button(btns, text='■ Stop', width=8, style='Stop.TButton',
+                       command=lambda e=s: (self._stop_signal(e), self._render_signal_rows())
+                       ).pack(side='left', padx=(6, 0))
+
+    def _sig_poll_worker(self, port):
+        """Background: fetch /health for ONE service and stash the text. NO Tk here — Tk is not
+        thread-safe; the main-thread tick renders from _sig_health."""
         try:
             import urllib.request
-            with urllib.request.urlopen(f'http://127.0.0.1:{SIGNAL_PORT}/health', timeout=3) as r:
+            with urllib.request.urlopen(f'http://127.0.0.1:{port}/health', timeout=3) as r:
                 h = json.load(r)
             if h.get('ok'):
                 age = h.get('age_secs')
@@ -1037,21 +1115,8 @@ class App:
             else:
                 txt = 'computing the first signal…'
         except Exception:                                 # noqa: BLE001
-            txt = 'starting…' if (self._sig_proc and self._sig_proc.poll() is None) else 'not running'
-        # Tk is NOT thread-safe: touch widgets ONLY on the main thread. Marshal the WHOLE update —
-        # including the winfo_exists guard — via root.after. Calling win.winfo_exists() straight from
-        # this worker thread corrupted the Tcl interpreter and segfaulted the GUI (the crash surfaced
-        # later, on the main thread's next widget creation).
-        def apply():
-            try:
-                if win.winfo_exists() and status.winfo_exists():
-                    status.config(text=txt)
-            except tk.TclError:
-                pass
-        try:
-            self.root.after(0, apply)
-        except (RuntimeError, tk.TclError):
-            pass
+            txt = 'starting…'
+        self._sig_health[port] = txt
 
     # ---------- status polling ----------
     def _poll(self):
