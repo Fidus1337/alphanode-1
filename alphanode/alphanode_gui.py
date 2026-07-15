@@ -54,6 +54,7 @@ NODE_PY = os.path.join(HERE, 'node.py')                 # dev: scripts via the r
 FETCH_PY = os.path.join(PROJ, 'fetch_data.py')
 PORTFOLIO_PY = os.path.join(HERE, 'portfolio_build.py')
 SIGNAL_PY = os.path.join(HERE, 'signal_service.py')     # local live-signal API
+METRICS_PY = os.path.join(HERE, 'metrics_worker.py')    # leaderboard trade stats (own process)
 SIGNAL_PORT = 8799                                      # BASE port: each service takes the next free one
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
 STATE_DIR = apppaths.state_dir()
@@ -70,7 +71,8 @@ def _child_cmd(role):
     --role, in dev — the real python with the script."""
     if apppaths.FROZEN:
         return [sys.executable, '--role', role]
-    script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY, 'signal': SIGNAL_PY}[role]
+    script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY,
+              'signal': SIGNAL_PY, 'metrics': METRICS_PY}[role]
     return [sys.executable, '-u', script]
 
 DEFAULTS = {
@@ -174,7 +176,8 @@ class App:
         self._plot_lock = threading.Lock()               # pyplot is global -> build one at a time
         self._plot_seq = 0
         self._metrics_cache = {}                          # formula -> {'long','short','win'} (on TEST)
-        self._metrics_lock = threading.Lock()             # heavy computation — one at a time
+        self._metrics_lock = threading.Lock()             # one worker batch at a time
+        self._metrics_proc = None                         # the metrics child process
         self._metrics_seq = 0                             # to discard stale background computations
         self._row_items = {}                              # formula -> table row id (to update cells)
         self._pf_proc = None                              # portfolio-build subprocess
@@ -1155,6 +1158,8 @@ class App:
                     self._sig_save()
             if self.proc and self.proc.poll() is None:
                 self.proc.terminate()
+            if self._metrics_proc and self._metrics_proc.poll() is None:
+                self._metrics_proc.terminate()           # a batch can outlive the window otherwise
         finally:
             self.root.destroy()
 
@@ -1783,63 +1788,15 @@ class App:
         seq = self._metrics_seq
         threading.Thread(target=self._compute_metrics, args=(todo, seq), daemon=True).start()
 
-    def _metrics_ctx(self):
-        """Prepared context for trade-stat computation: panel/market, the TEST mask, and the
-        universe size + span used for the activity rate. Built once per pass; may raise if the
-        data/config is unavailable (callers fail open)."""
-        import numpy as np
-        cfg = self._build_plot_cfg()
-        _tk, panel, market, _basket = self._get_market(cfg)
-        ts0, ts1 = cfg['splits']['test']                 # TEST (OOS) window
-        tmask = (market['index'] >= ts0) & (market['index'] < ts1)
-        elig = market['base_elig']
-        n_assets = int(elig[tmask].any(axis=0).sum()) or int(elig.shape[1])   # assets live on TEST
-        years = max(float(np.count_nonzero(tmask)) / 365.0, 1e-9)
-        return {'panel': panel, 'market': market, 'V': market['V'], 'elig': elig, 'tmask': tmask,
-                'n_assets': max(1, n_assets), 'years': years, 'vol': cfg['vol'], 'exec': cfg['exec']}
-
-    def _trade_stats(self, formula, ctx):
-        """{long, short, win, act} for one formula on TEST — act = trades per asset per year
-        (relative activity, universe/period independent). 'err' if it doesn't parse or never trades."""
-        import numpy as np
-        import pandas as pd
-        from genome import parse
-        from evaluator import eval_alpha_panel
-        from fastsim import fast_sim
-        market, V, elig, tmask = ctx['market'], ctx['V'], ctx['elig'], ctx['tmask']
-        try:
-            raw = eval_alpha_panel(parse(formula), ctx['panel'])[market['tk']].to_numpy(dtype=np.float64)
-            A = pd.DataFrame(raw).ffill().to_numpy()
-            E = elig & np.isfinite(A)
-            fc = np.where(E, np.where(E, A, 0.0) / V, 0.0)
-            chips = np.nansum(np.abs(fc), axis=1, keepdims=True)
-            W = fc / np.where(chips == 0.0, 1.0, chips)                      # + long / − short
-            side = np.where(W > 0.0005, 1, np.where(W < -0.0005, -1, 0))     # daily side [T,N]
-            if not np.abs(side[tmask]).any():                               # no positions on TEST — invalid
-                return 'err'
-            # a "trade" = opening a position: cross into long/short from flat/opposite
-            prev = np.vstack([np.zeros((1, side.shape[1])), side[:-1]])      # previous calendar day
-            long_tr = int(((side == 1) & (prev != 1))[tmask].sum())         # long entries in TEST
-            short_tr = int(((side == -1) & (prev != -1))[tmask].sum())      # short entries in TEST
-            rt = fast_sim(raw, market, ctx['vol'], ctx['exec']).to_numpy()[tmask]
-            active = np.abs(rt) > 1e-9                                       # days when something happened
-            win = float((rt[active] > 0).mean()) if active.any() else 0.0
-            act = (long_tr + short_tr) / ctx['n_assets'] / ctx['years']     # trades / asset / year
-            return {'long': long_tr, 'short': short_tr, 'win': win, 'act': act}
-        except Exception:                                                   # noqa: BLE001
-            return 'err'
-
     def _compute_metrics(self, champs, seq):
         with self._metrics_lock:
+            todo = [c['formula'] for c in champs
+                    if not isinstance(self._metrics_cache.get(c.get('formula', '')), dict)]
             try:
-                ctx = self._metrics_ctx()
-                for c in champs:
-                    if seq != self._metrics_seq:         # the list changed — drop the stale computation
-                        return
-                    formula = c['formula']
-                    m = self._metrics_cache.get(formula)
-                    if not (isinstance(m, dict) and 'act' in m):     # not already done by the filter
-                        self._metrics_cache[formula] = self._trade_stats(formula, ctx)
+                if todo and seq == self._metrics_seq:
+                    got = self._run_metrics_worker(todo)
+                    for f in todo:
+                        self._metrics_cache[f] = got.get(f, 'err')
             except Exception:                            # noqa: BLE001  (no data/config — quietly)
                 for c in champs:
                     self._metrics_cache.setdefault(c.get('formula', ''), 'err')
@@ -1848,6 +1805,36 @@ class App:
                     self.root.after(0, lambda s=seq: self._apply_metrics(s))
                 except (RuntimeError, tk.TclError):      # window already closed / no loop
                     pass
+
+    def _run_metrics_worker(self, formulas):
+        """Hand the batch to a child process and wait on its pipe.
+
+        This is the whole point of the worker: the computation is GIL-bound Python, and running it
+        in-process (thread or not) starves the Tk main loop — status polls went from ~14ms to
+        ~800ms and the window stalled while the table filled in. Waiting on a pipe releases the GIL.
+        Returns {formula: stats|'err'}; raises if the worker could not produce a batch at all."""
+        c = self.cfg
+        payload = {
+            'formulas': list(formulas),
+            'instruments': (None if c.get('universe_all', True) else
+                            [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]),
+            'vol': float(c.get('target_vol', 0.25)), 'exec': float(c.get('exec_cost', 0.001)),
+            'train_start': c.get('train_start'), 'test_start': c.get('test_start'),
+            'test_end': c.get('test_end'),
+        }
+        env = dict(os.environ)
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
+                   ALPHANODE_CONFIG_INI=apppaths.config_ini())
+        proc = subprocess.Popen(_child_cmd('metrics'), env=env,
+                                cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
+                                stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, text=True)
+        self._metrics_proc = proc
+        out, _ = proc.communicate(json.dumps(payload), timeout=600)
+        doc = json.loads(out.strip().splitlines()[-1])   # the engine may print warnings first
+        if not doc.get('ok'):
+            raise RuntimeError(doc.get('error', 'metrics worker failed'))
+        return doc.get('metrics') or {}
 
     def _apply_metrics(self, seq):
         """Set the computed long/short/win cells into the already shown rows (main thread)."""

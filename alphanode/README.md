@@ -30,8 +30,8 @@ Controlled by: `ALPHANODE_SEED_FROM_LIBRARY` (1/0), `ALPHANODE_EXPLORE_EVERY` (N
 ```bash
 .venv/bin/python alphanode/alphanode_gui.py
 ```
-A Tkinter window (stdlib, no new dependencies). On the left — the **full set of search settings**
-(scrollable), grouped into sections:
+A CustomTkinter window, light or dark (the switch is in the header; it follows the OS on first run).
+On the left — the **full set of search settings** (scrollable), grouped into sections:
 - **Resources / universe** — CPU slider (5–95% → workers), the set of pairs;
 - **Search** — population, generations, seed, pause, port;
 - **Node mode** — `EXPLORE_EVERY` (how often to explore from scratch), warm-start on/off,
@@ -81,7 +81,7 @@ installed on the target machine):
 - **Windows** → `AlphaNode-Setup.exe` (installer) + portable zip — via CI
   ([`.github/workflows/build.yml`](../.github/workflows/build.yml), run manually or by tag `vX.Y.Z`).
 
-Details, internals (the `--role node/fetch/runpy` roles, the user data folder) and manual
+Details, internals (the `--role node/fetch/signal/metrics/runpy` roles, the user data folder) and manual
 builds — in [`packaging/README.md`](../packaging/README.md). The run-from-source mode is unchanged.
 
 ## CLI (no GUI — for server/ssh/Docker)

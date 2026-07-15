@@ -180,7 +180,7 @@ bash packaging/build_deb.sh       # → alphanode_*.deb (Ubuntu/Debian, menu ent
 # Windows → AlphaNode-Setup.exe + portable zip, via .github/workflows (run by tag vX.Y.Z)
 ```
 
-Internals (the `--role node/fetch/cli/portfolio/runpy` dispatch, the user-data folder, manual builds)
+Internals (the `--role node/fetch/cli/portfolio/signal/metrics/runpy` dispatch, the user-data folder, manual builds)
 are documented in `packaging/README.md`.
 
 ---

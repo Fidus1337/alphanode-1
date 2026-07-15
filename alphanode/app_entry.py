@@ -170,6 +170,9 @@ def main():
     elif role == 'signal':
         import signal_service
         signal_service.main()                            # local live-signal HTTP API (JSON, localhost)
+    elif role == 'metrics':
+        import metrics_worker
+        metrics_worker.main()                            # leaderboard trade stats (JSON on stdin/stdout)
     elif role == 'cli':
         import cli
         cli.main(argv[1:])                               # remaining argv -> CLI subcommands
