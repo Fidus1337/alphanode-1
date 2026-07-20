@@ -38,6 +38,9 @@ on the real engine.
 
 ---
 
+> **New here?** [`docs/GUIDE.md`](docs/GUIDE.md) is the start-to-finish walkthrough — how it works, and how
+> to use it from first launch to acting on a mined alpha.
+
 ## Quickstart (run from source)
 
 Needs Python 3.10+, a virtualenv with `numpy` / `pandas` / `matplotlib`, and `python3-tk` for the GUI
@@ -188,6 +191,7 @@ are documented in `packaging/README.md`.
 
 ## More detail
 
+- **[`docs/GUIDE.md`](docs/GUIDE.md) — the full user guide: how it works + a start-to-finish walkthrough.**
 - `alphanode/README.md` — the node, GUI, CLI, Docker, and paper trading in depth.
 - `evolution/README.md` — the search engine, the DSL grammar, overfitting discipline, and reuse
   (re-scoring the library / warm-start).
