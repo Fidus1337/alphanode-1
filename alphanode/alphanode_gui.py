@@ -99,6 +99,7 @@ DEFAULTS = {
     'test_start': '2023-01-01', 'test_end': '2026-07-05',
     # appearance
     'theme': '',            # 'light' | 'dark' | '' = follow the OS on first run
+    'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
 }
 
 # --- design palette: Linear/Stripe style, light + dark ---
@@ -195,14 +196,17 @@ class App:
         self._sort_col = 'fit'                            # leaderboard sort column (click a header)
         self._sort_desc = True                            # descending (best first)
         self._lb_select = 'fit'                           # POPULATION key: 'fit' = min(train,val); 'test' = held-out OOS
-        self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'computed': False, 'select': None}
-        self._lb_target = 20                             # how many DISTINCT families to select
+        self._lb_mode = 'all'                            # 'all' = every alpha | 'families' = best per family
+        self._lib_cache = {'mtime': None, 'all': [], 'families': [], 'computing': False,
+                           'dirty': False, 'ts': 0.0, 'computed': False, 'select': None}
+        self._lb_target = 20                             # 'families' mode: how many DISTINCT families to keep
+        self._vis_after = None                           # debounce handle for lazy per-viewport metrics
         self._fonts = {}                                  # (family,size,weight) -> named Tk font
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
         self.cfg = dict(DEFAULTS)
         self._load()
+        self._lb_mode = self.cfg.get('lb_mode') or 'all'   # remembered across restarts
         self.cfg['theme'] = _apply_palette(self.cfg.get('theme') or _system_theme())
         self._init_window()
         self._style()
@@ -815,11 +819,22 @@ class App:
         # width/height are raw: CTk scales them itself (set_widget_scaling), unlike a tk pixel.
         self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_library, height=24, width=52)
         self.btn_lb_csv.pack(side='right', padx=(10, 0))
+        # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
+        # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
+        # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
+        self.v_lbfam = tk.BooleanVar(value=(self._lb_mode == 'families'))
+        self.sw_lbfam = ctk.CTkSwitch(hrow, text='families only', variable=self.v_lbfam,
+                                      command=self._toggle_lb_mode, onvalue=True, offvalue=False,
+                                      font=(self.UI, 11), text_color=MUT, progress_color=ACC,
+                                      button_color=TXT, fg_color=HEAD_BG, switch_width=34,
+                                      switch_height=16)
+        self.sw_lbfam.pack(side='right', padx=(0, 4))
         self.lbl_lb_head.pack(side='left', anchor='w')
         self._tip(self.btn_lb_csv, 'Download EVERY alpha the node has mined — the whole library,\n'
-                                   'no dedup, no TEST filter, with all TRAIN/VAL/TEST numbers.\n'
-                                   'The table below is only a diverse slice of it; to save that\n'
-                                   'slice instead (with its trade stats), use the right-click menu.')
+                                   'no dedup, no TEST filter, with all TRAIN/VAL/TEST numbers.')
+        self._tip(self.sw_lbfam, 'OFF: show every alpha in the library (scroll the full list).\n'
+                                 'ON: collapse to the best alpha per family (distinct formulas),\n'
+                                 'the old compact view. Sorting by any column works in both.')
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')
@@ -849,7 +864,8 @@ class App:
         self.tree.tag_configure('even', background=CARD)
         vsb = ctk.CTkScrollbar(wrap, orientation='vertical', command=self.tree.yview, fg_color=CARD,
                                button_color=BORDER, button_hover_color=FAINT, width=14)
-        self.tree.configure(yscrollcommand=vsb.set)
+        self._vsb = vsb
+        self.tree.configure(yscrollcommand=self._on_tree_scroll)   # scroll -> load metrics for the viewport
         self.tree.pack(side='left', fill='both', expand=True)
         vsb.pack(side='right', fill='y', padx=(4, 0))
         self.tree.bind('<Double-1>', self._on_row_open)
@@ -1076,8 +1092,8 @@ class App:
             self.tree.delete(i)
         self._treesig = None
         self._shown = []
-        self._lib_cache = {'mtime': None, 'diverse': [], 'computing': False, 'dirty': False,
-                           'ts': 0.0, 'computed': False}
+        self._lib_cache = {'mtime': None, 'all': [], 'families': [], 'computing': False,
+                           'dirty': False, 'ts': 0.0, 'computed': False, 'select': None}
         self._history = []
         self._draw_chart()
         self.s_rounds.configure(text='0')
@@ -1607,20 +1623,18 @@ class App:
             cv.create_text((padL + w - padR) / 2, h - 6 * S, text=f'champion TEST {last_test:+.2f} · held-out',
                            anchor='s', fill=FAINT, font=self._font(self.UI, 10))
 
-    def _dedup(self, best, target=15):
-        """Show DISTINCT alphas: strictly at first (max diversity), and if there are too few rows —
-        more loosely, so the table isn't empty (for a monoculture it shows variants of one family)."""
-        result = list(best)
-        for thresh in (0.80, 0.88, 0.95):
-            kept = []
-            for c in best:
-                f = c.get('formula', '')
-                if all(difflib.SequenceMatcher(None, f, k.get('formula', '')).ratio() < thresh for k in kept):
-                    kept.append(c)
-            result = kept
+    def _families(self, rows, target):
+        """The best alpha per family: walk `rows` (already best-first) and keep one representative
+        per formula shape (SequenceMatcher < 0.80), until `target` distinct families. The scan is
+        capped so the O(N²) similarity can't freeze the GUI on a huge library."""
+        kept = []
+        for c in rows[:500]:
+            f = c.get('formula', '')
+            if all(difflib.SequenceMatcher(None, f, k.get('formula', '')).ratio() < 0.80 for k in kept):
+                kept.append(c)
             if len(kept) >= target:
                 break
-        return result
+        return kept
 
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
@@ -1659,11 +1673,11 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt + arrow)
 
-    @staticmethod
-    def _lb_head_text_for(select):
-        src = ('TOP by TEST OOS — held-out, cherry-picked ⚠' if select == 'test'
-               else 'top by fitness min(train,val)')
-        return (f'LEADERBOARD — best alpha per family ({src})  ·  '
+    def _lb_head_text_for(self, select):
+        scope = 'every alpha' if self._lb_mode == 'all' else 'best alpha per family'
+        src = ('by TEST OOS — held-out, cherry-picked ⚠' if select == 'test'
+               else 'by fitness min(train,val)')
+        return (f'LEADERBOARD — {scope}, {src}  ·  '
                 'click a column to sort  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
 
     def _sort_by(self, col):
@@ -1685,7 +1699,7 @@ class App:
             self.lbl_lb_head.configure(text=self._lb_head_text)
             self._start_lb_compute(force=True)
         else:
-            self._render_lb(self._lib_cache.get('diverse') or self._shown)
+            self._render_lb(self._lb_rows())
 
     def _start_lb_compute(self, force=False):
         lib = os.path.join(STATE_DIR, 'library.jsonl')
@@ -1700,14 +1714,20 @@ class App:
             return
         cache['computing'] = True
         cache['ts'] = time.time()
-        threading.Thread(target=self._compute_diverse, args=(lib, mt), daemon=True).start()
+        threading.Thread(target=self._compute_lb, args=(lib, mt), daemon=True).start()
+
+    def _lb_rows(self):
+        """The set the table should show for the current toggle: every alpha, or best-per-family."""
+        c = self._lib_cache
+        return c['families'] if self._lb_mode == 'families' else c['all']
 
     def _render_lb(self, best):
         self._fill_tree(best)
 
     def _refresh_leaderboard(self, status_best):
-        """Into the table — the best alpha FROM EACH family (across the whole library), not the top-20 clones.
-        Computed in the background and cached by (mtime, sort mode, threshold) — otherwise O(N²) similarity would freeze the GUI."""
+        """Into the table — EVERY alpha in the library (or best-per-family when the toggle is on).
+        Read + sorted in the background and cached by mtime/population key: the whole library can be
+        thousands of rows, and the family dedup is O(N²), so neither runs on the Tk thread."""
         cache = self._lib_cache
         now = time.time()
         stale_select = cache.get('select') != self._lb_select    # a header click changed the population key
@@ -1716,15 +1736,15 @@ class App:
         if cache['dirty']:
             cache['dirty'] = False
             self._treesig = None                         # force a redraw after recompute
-            self._render_lb(cache['diverse'])
+            self._render_lb(self._lb_rows())
         elif not cache.get('computed'):
             self._fill_tree(status_best)                 # until computed — the top from the node (as before)
 
-    def _compute_diverse(self, path, mtime):
-        """Select the top-N DIVERSE families FROM THE WHOLE library, ranked by the active population
-        key: 'fit' = fitness min(train,val) (honest), or 'test' = held-out TEST OOS (explicit
-        cherry-pick, chosen by clicking the TEST OOS header). Picks only WHICH alphas show; the row
-        order is set client-side in _sorted."""
+    def _compute_lb(self, path, mtime):
+        """Load the WHOLE library, ranked by the active population key: 'fit' = fitness min(train,val)
+        (honest), or 'test' = held-out TEST OOS (cherry-pick, chosen by clicking the TEST OOS header).
+        Produces both sets — every alpha ('all') and best-per-family ('families') — so the toggle is
+        instant. Row order in the table is set client-side in _sorted."""
         select = self._lb_select
         rows = []
         try:
@@ -1734,7 +1754,7 @@ class App:
                     continue
                 try:
                     rows.append(json.loads(line))
-                except json.JSONDecodeError:
+                except json.JSONDecodeError:             # a half-written last line while the node appends
                     pass
         except OSError:
             self._lib_cache['computing'] = False
@@ -1745,23 +1765,19 @@ class App:
         else:
             rows = [c for c in rows if c.get('base') is not None]
             rows.sort(key=lambda c: c.get('base'), reverse=True)  # top by honest fitness min(train,val)
-        kept = []
-        for c in rows[:500]:
-            f = c.get('formula', '')
-            if all(difflib.SequenceMatcher(None, f, k.get('formula', '')).ratio() < 0.80 for k in kept):
-                kept.append(c)
-            if len(kept) >= self._lb_target:
-                break
-        self._lib_cache.update(diverse=kept, mtime=mtime, select=select,
+        families = self._families(rows, self._lb_target)
+        self._lib_cache.update(all=rows, families=families, mtime=mtime, select=select,
                                computing=False, dirty=True, computed=True)
 
     def _fill_tree(self, best):
-        best = self._sorted(self._dedup(best))           # pick diverse families, then order by the clicked column
-        sig = (self._sort_col, self._sort_desc, len(best), best[0]['formula'] if best else '')
+        best = self._sorted(best)                        # order by the clicked column (no dedup — see the toggle)
+        sig = (self._lb_mode, self._sort_col, self._sort_desc, len(best),
+               best[0]['formula'] if best else '')
         if getattr(self, '_treesig', None) == sig:
             return
         self._treesig = sig
         self._shown = best                               # for clicks: row -> champion
+        top = self.tree.yview()[0] if self.tree.get_children() else 0.0   # keep the viewport across redraws
         for i in self.tree.get_children():
             self.tree.delete(i)
         self._row_items = {}
@@ -1780,7 +1796,54 @@ class App:
                 f'{ts:+.2f}' if ts is not None else '—', ls, act, win, f),
                 tags=(sign, stripe))
             self._row_items[formula] = item
-        self._start_metrics(best)                        # compute long/short/win in the background
+        if top:
+            self.tree.yview_moveto(top)                  # a background recompute must not yank you to the top
+        self.root.after_idle(self._pump_metrics)         # trade stats for what is actually on screen
+
+    def _toggle_lb_mode(self):
+        """All ↔ families. Both sets are already cached, so this is instant — just re-render."""
+        self._lb_mode = 'families' if self.v_lbfam.get() else 'all'
+        self.cfg['lb_mode'] = self._lb_mode
+        self._save()
+        self._lb_head_text = self._lb_head_text_for(self._lb_select)   # 'every alpha' vs 'best per family'
+        self.lbl_lb_head.configure(text=self._lb_head_text)
+        self._treesig = None                             # force a redraw with the other set
+        self._render_lb(self._lb_rows())
+
+    def _on_tree_scroll(self, first, last):
+        """Tk's yscrollcommand: keep the scrollbar in sync AND (debounced) load metrics for the rows
+        that just scrolled into view. Trade stats are computed per viewport, not for the whole
+        library — that is what keeps scrolling a 600-row table smooth."""
+        self._vsb.set(first, last)
+        if self._vis_after:
+            try:
+                self.root.after_cancel(self._vis_after)
+            except (ValueError, tk.TclError):
+                pass
+        self._vis_after = self.root.after(140, lambda: self._start_metrics(self._visible_champs()))
+
+    def _visible_champs(self):
+        """The champions in (or just around) the current viewport — the batch whose trade stats we
+        compute next. Bounded, so a not-yet-laid-out yview of (0,1) can't request the whole library."""
+        n = len(self._shown)
+        if not n:
+            return []
+        try:
+            first, last = self.tree.yview()
+        except tk.TclError:
+            first, last = 0.0, 1.0
+        lo = max(0, int(first * n) - 3)
+        hi = min(n, int(round(last * n)) + 3)
+        hi = min(hi, lo + 60)
+        return self._shown[lo:hi]
+
+    def _pump_metrics(self):
+        """After a redraw: compute the visible rows' stats. Sorting BY a stat column is the one case
+        that needs every value at once (else the order is wrong), so there we compute the full set."""
+        if self._sort_col in ('ls', 'act', 'win'):
+            self._start_metrics(self._shown)
+        else:
+            self._start_metrics(self._visible_champs())
 
     @staticmethod
     def _fmt_metrics(m):
@@ -1863,7 +1926,7 @@ class App:
             self.tree.set(item, 'win', win)
         if self._sort_col in ('ls', 'act', 'win'):       # metrics just arrived -> reorder by them
             self._treesig = None
-            self._render_lb(self._lib_cache.get('diverse') or self._shown)
+            self._render_lb(self._lb_rows() or self._shown)
 
     # ---------- equity chart on click (TRAIN|VAL|TEST + B&H) ----------
     def _on_row_open(self, event):

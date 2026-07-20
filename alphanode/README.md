@@ -42,26 +42,25 @@ On the left — the **full set of search settings** (scrollable), grouped into s
 - **Fitness** — complexity penalty, correlation threshold/penalty, Hall of Fame size;
 - **Date segments** — TRAIN / VAL / TEST boundaries.
 
-On the right — live status, a **progress chart** (best TEST by round) and a **leaderboard** of the best
-alpha from each family. The **"rank by: fitness / TEST OOS"** toggle above the table changes the ordering:
-by default it is **by the honest fitness `min(train,val)`** (the same criterion the node selects on), or
-**"top by TEST OOS"** — just to see who does best on held-out data. ⚠ The second mode is a
-**cherry-pick on held-out**: alphas chosen this way have an inflated TEST (a selection effect), so it is
-for viewing, not a selection criterion (as the caption warns). Next to it — a **"TEST >"** field:
-a threshold on held-out Sharpe (e.g. `1` — keep only alphas with TEST OOS > 1; empty — no filter,
-Enter/leaving the field applies it). The TEST filter works in both ranking modes. The
-**trades L/S** column (total number of long / short positions OPENED over the TEST period — a trade = crossing into
-long/short from flat or the opposite side) and **win%** (the share of days with a profit, daily hit-rate) are computed
-**on TEST (OOS)** for the current data and are filled in in the background (counted on target weights; the strategy
-rebalances daily, so high counts mean high turnover).
+On the right — live status, a **progress chart** (best TEST by round) and a **leaderboard**. By default it
+lists **every alpha** in the library, scrollable; the **"families only"** switch in the heading collapses it
+to the best alpha per family (distinct formula shapes) — the old compact view — for when the near-duplicates
+get noisy. **Click a column header to sort** (repeat click flips the direction): **fitness** and **TEST OOS**
+also re-rank the population by that key, the others just reorder the rows.
+**Fitness** is the honest `min(train,val)` (the criterion the node selects on); **TEST OOS** is held-out — sorting
+by it is a ⚠ **cherry-pick** (the top alphas have an inflated TEST by selection effect), so it is for viewing,
+not selection. The **trades L/S** column (total number of long / short positions OPENED over the TEST period — a
+trade = crossing into long/short from flat or the opposite side) and **win%** (the share of days with a profit,
+daily hit-rate) are computed **on TEST (OOS)** for the current data — **lazily, only for the rows on screen**, so
+the full list scrolls smoothly; they fill in as you scroll (counted on target weights; the strategy rebalances
+daily, so high counts mean high turnover). Sorting *by* a stat column computes it for the whole set first.
 
-**Download the alphas** — the **CSV** button in the leaderboard heading saves the **whole library**:
-*every* alpha the node has ever mined, no dedup and no `TEST >` filter, ordered by honest fitness
-`min(train,val)`, with all four numbers (sharpe/dd/cagr/n) for each of TRAIN/VAL/TEST plus size, round and
-the timestamp it was found. The table on screen is only a deliberately diverse *slice* of that library.
-To save the slice instead — same rows, same order, and the trade stats, which exist only for rows on
-screen — use **right-click → "Export table (CSV)"** (a stat still computing, or one that failed, comes out
-as a blank cell).
+**Download the alphas** — the **CSV** button in the leaderboard heading saves the **whole library** straight
+from disk: *every* alpha the node has ever mined, ordered by honest fitness `min(train,val)`, with all four
+numbers (sharpe/dd/cagr/n) for each of TRAIN/VAL/TEST plus size, round and the timestamp it was found — the
+same whether the table is on "all" or "families only". To save the **table as shown** instead — the current
+rows in the current order, plus the trade stats (which exist only for rows you have scrolled past) — use
+**right-click → "Export table (CSV)"** (a stat still computing, or one that failed, comes out as a blank cell).
 
 A **double-click on a leaderboard row** opens a window with the alpha's equity curve
 (growth of $1, log scale) with **TRAIN | VAL | TEST** zones and a comparison against a **buy & hold (EW)** basket —

@@ -64,10 +64,10 @@ cd evolution && ../.venv/bin/python run_evo.py --smoke
 **GUI** (`alphanode/alphanode_gui.py`) — a CustomTkinter window, light or dark (the switch is in the
 header; it follows the OS on first run). Left: the full set of search settings
 (resources, universe, GA params, fitness, TRAIN/VAL/TEST boundaries). Right: live status, a progress
-chart, and a **leaderboard** of the best alpha per family. Toggle ranking by honest fitness
-`min(train,val)` or by TEST OOS (⚠ the latter is a cherry-pick on held-out data — for viewing only),
-filter by a `TEST >` threshold, and see per-alpha long/short trade counts + daily win%. **CSV** downloads
-the whole mined library (the table is only a diverse slice of it; right-click exports the slice itself).
+chart, and a scrollable **leaderboard** of **every mined alpha** (a **"families only"** switch collapses it to
+the best per family). Click a column to sort — by honest fitness `min(train,val)` or by TEST OOS (⚠ the latter
+is a cherry-pick on held-out data — for viewing only) — and see per-alpha long/short trade counts + daily win%,
+computed lazily for the rows on screen so the full list stays smooth. **CSV** downloads the whole mined library.
 Double-click a row for its equity curve with TRAIN|VAL|TEST zones. Bottom: a **PORTFOLIO** panel that combines the
 top-N alphas through the real `Portfolio` engine and shows the diversified equity vs a buy & hold basket.
 
