@@ -28,6 +28,7 @@ import csv
 import json
 import time
 import queue
+from datetime import datetime
 import signal
 import pickle
 import difflib
@@ -56,6 +57,7 @@ FETCH_PY = os.path.join(PROJ, 'fetch_data.py')
 PORTFOLIO_PY = os.path.join(HERE, 'portfolio_build.py')
 SIGNAL_PY = os.path.join(HERE, 'signal_service.py')     # local live-signal API
 METRICS_PY = os.path.join(HERE, 'metrics_worker.py')    # leaderboard trade stats (own process)
+PDF_PY = os.path.join(HERE, 'pdf_worker.py')            # analytics PDF dashboard (own process)
 SIGNAL_PORT = 8799                                      # BASE port: each service takes the next free one
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
 STATE_DIR = apppaths.state_dir()
@@ -73,7 +75,7 @@ def _child_cmd(role):
     if apppaths.FROZEN:
         return [sys.executable, '--role', role]
     script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY,
-              'signal': SIGNAL_PY, 'metrics': METRICS_PY}[role]
+              'signal': SIGNAL_PY, 'metrics': METRICS_PY, 'pdfreport': PDF_PY}[role]
     return [sys.executable, '-u', script]
 
 DEFAULTS = {
@@ -909,6 +911,12 @@ class App:
         self.btn_pf_sig = self._btn(ctl, 'Serve', self._pf_serve_signal, width=86)
         self.btn_pf_sig.configure(state='disabled')
         self.btn_pf_sig.pack(side='left', padx=(6, 0))
+        self.btn_pf_pdf = self._btn(ctl, 'PDF', self._pf_pdf_report, width=64)
+        self.btn_pf_pdf.configure(state='disabled')
+        self.btn_pf_pdf.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_pf_pdf, 'Аналитический дашборд портфеля в PDF: KPI, equity,\n'
+                                   'экспозиция и обороты, структура весов, помесячные\n'
+                                   'доходности и выводы (период TEST).')
         self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
                                    'weight per asset per day on TEST (same as for a single alpha).')
         self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
@@ -2130,6 +2138,7 @@ class App:
         self.btn_pf_csv.configure(state=('normal' if doc.get('weights') else 'disabled'))
         self.btn_pf_paper.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         self.btn_pf_sig.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
+        self.btn_pf_pdf.configure(state=('normal' if doc.get('weights') else 'disabled'))
         m = doc.get('metrics') or {}
         b = doc.get('basket') or {}
         self.lbl_pf.configure(text=f'top-{doc.get("n")} by TEST OOS combined via the engine  ·  '
@@ -2290,6 +2299,11 @@ class App:
         self._btn(btnrow, 'Serve signal (API)',
                   lambda: self._serve_signal([_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6]),
                   width=176).pack(side='left', padx=(8, 0))
+        pdf_btn = self._btn(btnrow, 'PDF report', lambda: self._pdf_report_alpha(champ), width=110)
+        pdf_btn.pack(side='left', padx=(8, 0))
+        self._tip(pdf_btn, 'Аналитический дашборд в PDF: KPI, equity и просадка,\n'
+                           'экспозиция и обороты, структура весов, помесячные\n'
+                           'доходности, разбивка TRAIN/VAL/TEST и выводы.')
 
         body = self._box(win)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 14))
@@ -2301,6 +2315,23 @@ class App:
         self.root.after(200, lambda: self._check_plot(win, holder, status, body))
 
     # ---------- download portfolio signals (CSV) ----------
+    def _alpha_weights_wide(self, formula, cfg, market, panel):
+        """Target-weight table of one alpha over the whole panel — the same inverse-vol +
+        chips normalization the engine trades with. Shared by the CSV export and the PDF report."""
+        import numpy as np
+        import pandas as pd
+        from genome import parse
+        from evaluator import eval_alpha_panel
+        ap = eval_alpha_panel(parse(formula), panel)
+        A = pd.DataFrame(ap[market['tk']].to_numpy(dtype=np.float64)).ffill().to_numpy()
+        V = market['V']
+        E = market['base_elig'] & np.isfinite(A)                # eligible & has a signal
+        fc = np.where(E, A, 0.0) / V                            # inverse-vol (as in the engine)
+        fc = np.where(E, fc, 0.0)
+        chips = np.nansum(np.abs(fc), axis=1, keepdims=True)    # normalization by "chips"
+        W = fc / np.where(chips == 0.0, 1.0, chips)             # target weight: + long / − short
+        return pd.DataFrame(np.round(W, 6), index=market['index'], columns=market['tk'])
+
     def _download_signals(self, champ):
         formula = champ.get('formula', '')
         if not formula:
@@ -2313,22 +2344,9 @@ class App:
         if not path:
             return
         try:
-            import numpy as np
-            import pandas as pd
-            from genome import parse
-            from evaluator import eval_alpha_panel
             cfg = self._build_plot_cfg()
             _tk, panel, market, _basket = self._get_market(cfg)
-            ap = eval_alpha_panel(parse(formula), panel)
-            A = pd.DataFrame(ap[market['tk']].to_numpy(dtype=np.float64)).ffill().to_numpy()
-            V = market['V']
-            E = market['base_elig'] & np.isfinite(A)                # eligible & has a signal
-            fc = np.where(E, A, 0.0) / V                            # inverse-vol (as in the engine)
-            fc = np.where(E, fc, 0.0)
-            chips = np.nansum(np.abs(fc), axis=1, keepdims=True)    # normalization by "chips"
-            W = fc / np.where(chips == 0.0, 1.0, chips)             # target weight: + long / − short
-
-            wide = pd.DataFrame(np.round(W, 6), index=market['index'], columns=market['tk'])
+            wide = self._alpha_weights_wide(formula, cfg, market, panel)
             self._signals_from_wide(wide, cfg['splits'], path)
         except Exception as e:                                     # noqa: BLE001
             messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
@@ -2355,6 +2373,128 @@ class App:
         pos = sorted([(t, float(v)) for t, v in last.items() if abs(v) > 0.0005],
                      key=lambda kv: -abs(kv[1]))
         self._signals_dialog(path, wide.index[-1].date(), pos, len(wide))
+
+    # ---------- PDF analytics report (single alpha and the portfolio) ----------
+    def _worker_cfg(self):
+        """The engine settings (universe, vol/fee, TRAIN/VAL/TEST dates) a worker process needs to
+        reproduce what the leaderboard searched with. Shared by the PDF worker payloads."""
+        c = self.cfg
+        return {
+            'instruments': (None if c.get('universe_all', True) else
+                            [x.strip().upper() for x in c.get('universe_list', '').split(',')
+                             if x.strip()] or None),
+            'vol': float(c.get('target_vol', 0.25)), 'exec': float(c.get('exec_cost', 0.001)),
+            'train_start': c.get('train_start'), 'val_start': c.get('val_start'),
+            'test_start': c.get('test_start'), 'test_end': c.get('test_end'),
+        }
+
+    def _run_pdf_report(self, payload, out_path):
+        """Build the report in a CHILD process (pdf_worker) and wait on its pipe from a background
+        thread. matplotlib's FreeType text rasterization segfaults when it runs while Tk's main loop
+        is live — both drive Xft/FreeType and the X error lands asynchronously as a SIGSEGV. A
+        subprocess has its own address space (no shared FreeType) and its own GIL, so the GUI merely
+        waits on a pipe. Same pattern as the leaderboard metrics worker.
+
+        The thread only writes into `holder`; the MAIN thread polls it via after() and shows the
+        dialog — Tk is not thread-safe, so we never touch a widget from the worker thread (this is
+        exactly how the equity chart delivers its result, see _open_plot/_check_plot)."""
+        payload = dict(payload, out=out_path)
+        holder = {'done': False, 'info': None, 'err': None}
+
+        def work():
+            try:
+                env = dict(os.environ)
+                env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
+                           ALPHANODE_CONFIG_INI=apppaths.config_ini())
+                proc = subprocess.Popen(_child_cmd('pdfreport'), env=env,
+                                        cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
+                                        stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                        stderr=subprocess.DEVNULL, text=True)
+                try:
+                    out, _ = proc.communicate(json.dumps(payload), timeout=600)
+                except Exception:
+                    proc.kill()                          # don't leave a runaway child behind
+                    raise
+                doc = json.loads(out.strip().splitlines()[-1]) if out.strip() else {}
+                if not doc.get('ok'):
+                    raise RuntimeError(doc.get('error', 'pdf worker failed'))
+                holder['info'] = doc.get('info') or {}
+            except Exception as e:                       # noqa: BLE001
+                holder['err'] = f'{type(e).__name__}: {e}'
+            finally:
+                holder['done'] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        self.root.after(150, lambda: self._check_pdf(holder, out_path))
+
+    def _check_pdf(self, holder, out_path):
+        """Main-thread poll of the PDF worker; show the result dialog when it finishes."""
+        if not holder['done']:
+            self.root.after(150, lambda: self._check_pdf(holder, out_path))
+            return
+        if holder['err']:
+            messagebox.showerror('PDF report', f'Failed to build report: {holder["err"]}',
+                                 parent=self.root)
+        else:
+            self._pdf_done_dialog(out_path, holder['info'])
+
+    def _pdf_done_dialog(self, path, info):
+        win = self._dialog('PDF report', '440x190')
+        frm = self._box(win)
+        frm.pack(fill='both', expand=True, padx=18, pady=16)
+        self._lbl(frm, text='Report saved', text_color=TXT,
+                     font=(self.UI, 19, 'bold')).pack(anchor='w')
+        self._lbl(frm, text=path, text_color=MUT, font=(self.MONO, 12), wraplength=390,
+                     justify='left', anchor='w').pack(anchor='w', pady=(2, 6))
+        self._lbl(frm, text=f'{(info or {}).get("pages", "?")} pages · '
+                            f'{(info or {}).get("days", "?")} trading days',
+                     text_color=FAINT, font=(self.UI, 12)).pack(anchor='w', pady=(0, 10))
+        row = self._box(frm)
+        row.pack(anchor='w')
+        self._btn(row, 'Open folder', lambda: self._open_folder(path), width=120).pack(side='left')
+        self._btn(row, 'Close', win.destroy, width=90).pack(side='left', padx=(8, 0))
+
+    def _pdf_report_alpha(self, champ, status_lbl=None):
+        formula = champ.get('formula', '')
+        if not formula:
+            return
+        name = 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title='Save PDF report', defaultextension='.pdf',
+            initialfile=f'report_{name}.pdf', filetypes=[('PDF', '*.pdf')])
+        if not path:
+            return
+        if status_lbl is not None:
+            status_lbl.configure(text='building PDF report…')
+        seg = {k: dict(champ[k]) for k in ('train', 'val', 'test')
+               if isinstance(champ.get(k), dict)}
+        payload = {'kind': 'alpha', 'formula': formula, 'seg_metrics': seg,
+                   'title': 'AlphaNode — отчёт по альфе', 'subtitle': formula,
+                   'stamp': f'AlphaNode · {datetime.now():%d.%m.%Y %H:%M} · {name}',
+                   **self._worker_cfg()}
+        self._run_pdf_report(payload, path)
+
+    def _pf_pdf_report(self):
+        doc = self._pf_doc
+        if not doc or not doc.get('weights'):
+            messagebox.showinfo('PDF report',
+                                'Build the portfolio first (rebuild it if it was built by an '
+                                'older version).', parent=self.root)
+            return
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title='Save PDF report', defaultextension='.pdf',
+            initialfile=f'report_portfolio_top{doc.get("n", "")}.pdf',
+            filetypes=[('PDF', '*.pdf')])
+        if not path:
+            return
+        slim = {k: doc.get(k) for k in ('weights', 'equity', 'test', 'metrics', 'n')}
+        payload = {'kind': 'portfolio', 'doc': slim,
+                   'title': f'AlphaNode — портфель top-{doc.get("n", "?")}',
+                   'subtitle': ' + '.join(doc.get('formulas', []))[:110],
+                   'stamp': f'AlphaNode · {datetime.now():%d.%m.%Y %H:%M} · portfolio '
+                            f'top-{doc.get("n", "?")} · TEST {doc.get("test", "")}',
+                   **self._worker_cfg()}
+        self._run_pdf_report(payload, path)
 
     # ---------- PORTFOLIO: CSV signals + paper-trade bundle (same as a single alpha) ----------
     def _pf_download_signals(self):

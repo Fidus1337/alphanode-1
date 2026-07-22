@@ -100,7 +100,9 @@ def _selfcheck_body(out):
     # transitive dep (e.g. pytz) fails the build in CI instead of shipping a broken --role fetch.
     import fetch_data                                      # noqa: F401
     import signal_service                                  # noqa: F401
-    out('fetch/signal imports: ok')
+    import pdf_report                                       # noqa: F401  (--role pdfreport worker)
+    import pdf_worker                                       # noqa: F401
+    out('fetch/signal/pdf imports: ok')
 
     # exercise the fast fitness kernel on a tiny synthetic market: forces numba to compile inside the
     # frozen process, so a bundle that failed to include numba is visible here (as a graceful numpy
@@ -173,6 +175,9 @@ def main():
     elif role == 'metrics':
         import metrics_worker
         metrics_worker.main()                            # leaderboard trade stats (JSON on stdin/stdout)
+    elif role == 'pdfreport':
+        import pdf_worker
+        pdf_worker.main()                                # analytics PDF dashboard (own process: no Tk/FreeType clash)
     elif role == 'cli':
         import cli
         cli.main(argv[1:])                               # remaining argv -> CLI subcommands
