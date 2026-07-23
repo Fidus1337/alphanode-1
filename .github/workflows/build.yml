@@ -40,6 +40,11 @@ jobs:
           }
           if ($p.ExitCode -ne 0) { throw "selfcheck failed ($($p.ExitCode))" }
 
+      # one real search round (multiprocessing pool inside a windowed frozen exe — the classic
+      # Windows breakage) + the PDF analytics worker end-to-end via piped stdio
+      - name: Smoke (frozen node round + PDF worker)
+        run: python packaging/ci_smoke.py packaging/dist/AlphaNode/AlphaNode.exe
+
       - name: Portable zip
         shell: pwsh
         run: Compress-Archive -Path packaging/dist/AlphaNode/* -DestinationPath packaging/dist/AlphaNode-windows-portable.zip
@@ -84,12 +89,11 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: '1'      # runners without FUSE mounting -> extract-and-run
         run: bash packaging/build_linux.sh
 
-      - name: Selfcheck + one node round (frozen)
+      - name: Selfcheck + smoke (frozen node round + PDF worker)
         run: |
           BIN=packaging/dist/AlphaNode/AlphaNode
           "$BIN" --role selfcheck || (cat packaging/dist/AlphaNode/selfcheck.log; exit 1)
-          ALPHANODE_MAX_ROUNDS=1 ALPHANODE_POP=20 ALPHANODE_GENS=2 ALPHANODE_PAUSE=0 \
-          ALPHANODE_STATE_DIR="$RUNNER_TEMP/an" ALPHANODE_STATUS_PORT=8799 "$BIN" --role node
+          python packaging/ci_smoke.py "$BIN"
 
       - uses: actions/upload-artifact@v4
         with:

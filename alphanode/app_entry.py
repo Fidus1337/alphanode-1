@@ -100,9 +100,27 @@ def _selfcheck_body(out):
     # transitive dep (e.g. pytz) fails the build in CI instead of shipping a broken --role fetch.
     import fetch_data                                      # noqa: F401
     import signal_service                                  # noqa: F401
-    import pdf_report                                       # noqa: F401  (--role pdfreport worker)
-    import pdf_worker                                       # noqa: F401
+    import pdf_worker                                       # noqa: F401  (--role pdfreport worker)
     out('fetch/signal/pdf imports: ok')
+
+    # render a REAL 4-page analytics PDF on synthetic data: exercises matplotlib Agg + FreeType
+    # (incl. Cyrillic labels) + PdfPages inside the frozen bundle — the same code path the GUI's
+    # "PDF report" buttons reach via --role pdfreport. A bundle with broken fonts/backend fails
+    # HERE in CI instead of on the user's first click.
+    import tempfile
+    import pdf_report
+    _rng = numpy.random.default_rng(7)
+    _pidx = pandas.date_range('2023-01-01', periods=120, freq='D', tz='UTC')
+    _pw = pandas.DataFrame(_rng.normal(0, 1, (120, 4)), index=_pidx,
+                           columns=['AUSDT', 'BUSDT', 'CUSDT', 'DUSDT'])
+    _pw = _pw.div(_pw.abs().sum(axis=1), axis=0)
+    _pr = (_pw.shift(1) * _rng.normal(0.001, 0.02, (120, 4))).sum(axis=1)
+    _pdf = os.path.join(tempfile.gettempdir(), 'alphanode_selfcheck.pdf')
+    _pinfo = pdf_report.build_report(_pdf, title='AlphaNode — selfcheck', subtitle='synthetic',
+                                     wide=_pw, rets=_pr, stamp='selfcheck')
+    assert _pinfo['pages'] == 4, f'pdf selfcheck: {_pinfo["pages"]} pages'
+    out('pdf render  : 4 pages,', os.path.getsize(_pdf) // 1024, 'KB')
+    os.remove(_pdf)
 
     # exercise the fast fitness kernel on a tiny synthetic market: forces numba to compile inside the
     # frozen process, so a bundle that failed to include numba is visible here (as a graceful numpy
