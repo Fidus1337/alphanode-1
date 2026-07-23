@@ -39,3 +39,6 @@ Thumbs.db
 
 # ── market data snapshot (binary, 4.6MB, refreshed by the fetcher — not for git) ──
 data.pickle
+
+# ── local research scratch (notebooks etc.) — not for git ──
+research/

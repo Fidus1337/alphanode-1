@@ -162,9 +162,8 @@ Everything the engine understands is configurable, in three layers (later overri
 | `evolution/` | The genetic-programming search engine (primitives, genome, evaluator, GA loop, fastsim). See `evolution/README.md`. |
 | `quantpylib/` | Vendored simulation engine — the `Alpha` / `Portfolio` objects that turn a signal into a NET-of-fees equity curve. |
 | `fetch_data.py` | Binance OHLCV fetcher → `data.pickle`. |
-| `data.pickle` | Bundled OHLCV snapshot (50 pairs) so the app runs out of the box. |
+| `data.pickle` | Local OHLCV snapshot written by the data fetcher (not in git; the app offers to download it on first run). |
 | `strategies.py`, `paper_trade.py`, `run_paper.sh` | Legacy hand-coded strategies (Bollinger/MA/Donchian/RSI) + a standalone daily paper trader. |
-| `research/` | Jupyter experiments (e.g. a direction-classifier study). |
 | `packaging/` | Build tooling: AppImage (`build_linux.sh`), `.deb` (`build_deb.sh`), the PyInstaller spec, Windows installer, icons. |
 | `Dockerfile`, `docker-compose.yml`, `docker/` | Headless container — search node + web status, fetch, portfolio, signal API. See **[Run with Docker](#run-with-docker)**. |
 | `.github/` | CI — the Windows build workflow. |
