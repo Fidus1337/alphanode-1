@@ -34,6 +34,9 @@ MIN_BARS = 30                                      # final backstop: completely 
 YEAR_SECS = 365.25 * 24 * 3600
 # bar size -> the qt wrapper's (granularity, multiplier); keep in sync with evolution/timeframe.py
 INTERVALS = {'5m': ('m', 5), '15m': ('m', 15), '1h': ('h', 1), '4h': ('h', 4), '1d': ('d', 1)}
+# default per-PAIR timeout by interval: intraday majors need MANY paginated requests (BTC 1h from
+# 2019 ≈ 40+ x 1490-bar pages through a shared rate limiter). A flat 120s silently DROPS them.
+TIMEOUTS = {'1d': 120, '4h': 360, '1h': 900, '15m': 2400, '5m': 6000}
 
 
 def save_pickle(path, obj):
@@ -110,17 +113,36 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
 
     got = {}
     done = 0
+    pending = set(chosen)
+
+    async def heartbeat():
+        """Intraday pairs take minutes each with no per-request output — show signs of life so the
+        GUI console doesn't look frozen while the majors paginate through years of bars."""
+        t0 = asyncio.get_event_loop().time()
+        while pending:
+            await asyncio.sleep(20)
+            if not pending:
+                break
+            names = ', '.join(sorted(pending)[:6]) + (' …' if len(pending) > 6 else '')
+            print(f'  … still downloading {len(pending)} pairs ({names}) — '
+                  f'{asyncio.get_event_loop().time() - t0:.0f}s elapsed', flush=True)
+
+    hb = asyncio.ensure_future(heartbeat())
     for coro in asyncio.as_completed([one(s) for s in chosen]):
         sym, res = await coro
         done += 1
+        pending.discard(sym)
         if isinstance(res, Exception):
-            print(f'  [{done}/{len(chosen)}] {sym}: ! {type(res).__name__} {res}', flush=True)
+            hint = (' — re-run, or raise --timeout / lower --top' if isinstance(res, TimeoutError)
+                    else '')
+            print(f'  [{done}/{len(chosen)}] {sym}: ! {type(res).__name__} {res}{hint}', flush=True)
             continue
         n = 0 if res is None else len(res)
         ok = res is not None and not res.empty and n >= MIN_BARS
         print(f'  [{done}/{len(chosen)}] {sym}: {n} bars{"" if ok else "  (skip)"}', flush=True)
         if ok:
             got[sym] = res
+    hb.cancel()
 
     tickers = [s for s in chosen if s in got]                 # order by volume
     ohlcvs = [got[s] for s in tickers]
@@ -148,10 +170,14 @@ def main():
                     help='where to write (default: data.pickle for 1d, data_<interval>.pickle otherwise)')
     ap.add_argument('--quote', default='USDT', help='quote currency (USDT)')
     ap.add_argument('--concurrency', type=int, default=6, help='how many pairs to download in parallel')
-    ap.add_argument('--timeout', type=float, default=120, help='timeout per pair, sec')
+    ap.add_argument('--timeout', type=float, default=None,
+                    help='timeout per pair, sec (default scales with --interval: 120 for 1d, '
+                         '900 for 1h, … — intraday needs many paginated requests per pair)')
     ap.add_argument('--interval', default='1d', choices=sorted(INTERVALS),
                     help='bar size (5m|15m|1h|4h|1d); intraday is written to its own data_<tf>.pickle')
     args = ap.parse_args()
+    if args.timeout is None:
+        args.timeout = TIMEOUTS[args.interval]
     if args.out is None:
         suffix = '' if args.interval == '1d' else f'_{args.interval}'
         args.out = os.path.join(HERE, f'data{suffix}.pickle')
