@@ -887,24 +887,36 @@ class App:
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
 
-        # ---- PORTFOLIO panel (combine top-N by TEST via the real engine) ----
+        # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
         card3 = self._card(right)
         card3.grid(row=4, column=0, sticky='ew', pady=(16, 0))
         self.pf_card = card3
         p3 = self._pad(card3)
         hp = self._box(p3)
         hp.pack(fill='x')
-        self._head(hp, 'PORTFOLIO — top-N by TEST OOS, combined via the real engine').pack(side='left')
+        self._head(hp, 'PORTFOLIO — top-N combined via the real engine').pack(side='left')
         ctl = self._box(hp)
         ctl.pack(side='right')
         self._lbl(ctl, text='top', text_color=MUT, font=(self.UI, 13)).pack(side='left', padx=(0, 5))
         self.v_pfn = tk.IntVar(value=6)
         ttk.Spinbox(ctl, from_=2, to=20, width=4, textvariable=self.v_pfn).pack(side='left', padx=(0, 8))
+        self._lbl(ctl, text='by', text_color=MUT, font=(self.UI, 13)).pack(side='left', padx=(0, 5))
+        self.v_pfsel = tk.StringVar(value='TEST')
+        sel_box = ttk.Combobox(ctl, textvariable=self.v_pfsel, values=('TEST', 'fitness'),
+                               state='readonly', width=7)
+        sel_box.pack(side='left', padx=(0, 8))
+        self._tip(sel_box, 'How the top-N members are picked from the library:\n'
+                           '• TEST — by held-out TEST Sharpe: what actually worked on 2023+.\n'
+                           '  ⚠ the shown combined TEST becomes optimistic (the same window\n'
+                           '  picked the members) — validate with Paper before trusting it.\n'
+                           '• fitness — by min(train,val): TEST never enters selection, so\n'
+                           '  the combined TEST numbers are honest out-of-sample.')
         self.btn_pf = self._btn(ctl, '▶ Build portfolio', self._build_portfolio, kind='accent')
         self.btn_pf.pack(side='left')
-        self._tip(self.btn_pf, 'Runs the top-N alphas by TEST Sharpe through the project Portfolio\n'
-                               'engine (real simulation, ~1–2 min in the background) and shows the\n'
-                               'combined dollar-neutral equity on TEST.')
+        self._tip(self.btn_pf, 'Runs the top-N library alphas (ranked per the "by" selector)\n'
+                               'through the project Portfolio engine (real simulation, ~1–2 min\n'
+                               'in the background) and shows the combined dollar-neutral equity\n'
+                               'on TEST.')
         self.btn_pf_csv = self._btn(ctl, 'CSV', self._pf_download_signals, width=76)
         self.btn_pf_csv.configure(state='disabled')
         self.btn_pf_csv.pack(side='left', padx=(8, 0))
@@ -2094,20 +2106,24 @@ class App:
             out.append(r)
         self._save_csv(path, header, out, 'alphas')
 
-    # ---------- PORTFOLIO: combine top-N by TEST via the real engine ----------
+    # ---------- PORTFOLIO: combine top-N via the real engine (TEST- or fitness-ranked) ----------
     def _build_portfolio(self):
         if self._pf_proc and self._pf_proc.poll() is None:
             return                                       # already building
         n = self._gi(self.v_pfn, 6)
+        sel = 'base' if self.v_pfsel.get() == 'fitness' else 'test'
         self.btn_pf.configure(state='disabled')
         self.lbl_pf_m.configure(text='', fg=MUT)
-        self.lbl_pf.configure(text=f'building portfolio from top-{n} by TEST (real engine, ~1–2 min)…')
+        self.lbl_pf.configure(text=f'building portfolio from top-{n} by '
+                                   f'{"TEST" if sel == "test" else "fitness min(train,val)"} '
+                                   '(real engine, ~1–2 min)…')
         env = dict(os.environ)
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini())
         try:
             self._pf_proc = subprocess.Popen(
-                _child_cmd('portfolio') + ['--top', str(n), '--out', PORTFOLIO_JSON], env=env,
+                _child_cmd('portfolio') + ['--top', str(n), '--select', sel,
+                                           '--out', PORTFOLIO_JSON], env=env,
                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         except Exception as e:                           # noqa: BLE001
@@ -2144,11 +2160,12 @@ class App:
         self.btn_pf_pdf.configure(state=('normal' if doc.get('weights') else 'disabled'))
         m = doc.get('metrics') or {}
         b = doc.get('basket') or {}
-        if doc.get('sel') == 'base':                     # new builds: selection never saw TEST
+        if doc.get('sel') == 'base':                     # selection never saw TEST
             note = 'TEST held out of selection — the numbers below are honest OOS'
             picked = 'by fitness min(train,val)'
-        else:                                            # docs built before the honest-selection fix
-            note = '⚠ selected by TEST (optimistic) — rebuild the portfolio for honest numbers'
+        else:                                            # 'test' or legacy docs without 'sel'
+            note = ('⚠ members picked by TEST — its numbers are optimistic (cherry-pick); '
+                    'validate with Paper')
             picked = 'by TEST OOS'
         self.lbl_pf.configure(text=f'top-{doc.get("n")} {picked} combined via the engine  ·  '
                                 f'TEST {doc.get("test", "")}  ·  built in '

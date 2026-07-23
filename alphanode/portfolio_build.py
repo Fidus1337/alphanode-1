@@ -1,15 +1,17 @@
-"""Build a combined PORTFOLIO from the top-N alphas by fitness base = min(TRAIN, VAL) Sharpe,
-using the project's real `Portfolio` engine (quantpylib), and write metrics + equity to JSON for
-the GUI panel.
+"""Build a combined PORTFOLIO from the top-N library alphas, using the project's real
+`Portfolio` engine (quantpylib), and write metrics + equity to JSON for the GUI panel.
 
-Selection deliberately does NOT look at TEST (it used to sort by TEST Sharpe — a held-out peek
-that made the combined TEST number a self-fulfilling cherry-pick). With selection on base, the
-reported TEST metrics of the combined book are a genuine out-of-sample evaluation.
+Two selection modes (--select):
+  test  (default) — top-N by held-out TEST Sharpe: picks what actually worked on the recent
+        out-of-sample window. ⚠ The combined TEST metrics are then OPTIMISTIC (the same window
+        picked the members — a cherry-pick); treat them as a shortlist, validate forward/paper.
+  base  — top-N by fitness min(TRAIN, VAL) Sharpe: TEST never enters selection, so the combined
+        TEST metrics are a genuine out-of-sample evaluation.
 
 The per-alpha simulations are run in parallel processes (the real engine loop is slow); the
 combined book is then produced by the real Portfolio object.
 
-    python alphanode/portfolio_build.py --top 6 --out state/portfolio.json
+    python alphanode/portfolio_build.py --top 6 --select test --out state/portfolio.json
 """
 import os
 import sys
@@ -36,8 +38,7 @@ def _state_dir():
 
 
 def _basesh(c):
-    """Selection key: base = min(train,val) Sharpe — same fitness the search optimized.
-    TEST stays out of selection (held-out evaluation only)."""
+    """Fitness key: base = min(train,val) Sharpe — the same number the search optimized."""
     b = c.get('base')
     if b is None:
         tr = (c.get('train') or {}).get('sharpe')
@@ -46,8 +47,15 @@ def _basesh(c):
     return b
 
 
-def _pick_top(n):
-    """Top-N alphas by base=min(train,val) from the library (diverse, no near-clones)."""
+def _testsh(c):
+    """Held-out TEST Sharpe (selection by it = cherry-pick; see the module docstring)."""
+    t = c.get('test') if isinstance(c.get('test'), dict) else {}
+    return t.get('sharpe')
+
+
+def _pick_top(n, select='test'):
+    """Top-N alphas by the chosen key from the library (diverse, no near-clones)."""
+    key = _basesh if select == 'base' else _testsh
     lib = os.path.join(_state_dir(), 'library.jsonl')
     rows = []
     for line in open(lib, encoding='utf-8'):
@@ -57,8 +65,8 @@ def _pick_top(n):
                 rows.append(json.loads(line))
             except json.JSONDecodeError:
                 pass
-    rows = [c for c in rows if _basesh(c) is not None]
-    rows.sort(key=_basesh, reverse=True)
+    rows = [c for c in rows if key(c) is not None]
+    rows.sort(key=key, reverse=True)
     kept, top = [], []
     for c in rows[:500]:
         f = c['formula']
@@ -109,7 +117,7 @@ def _metrics(capital_ret, lo, hi):
             'dd': float((eq / eq.cummax() - 1).min()), 'n': int(len(r))}
 
 
-def build(top_n, sim_start, jobs, out_path):
+def build(top_n, sim_start, jobs, out_path, select='test'):
     from config import load_config
     from evaluator import build_panel, basket_returns
     from quantpylib.simulator.alpha import Portfolio
@@ -121,12 +129,13 @@ def build(top_n, sim_start, jobs, out_path):
     start = pd.Timestamp(sim_start, tz='UTC').tz_localize(None).to_pydatetime()
     end = te.tz_localize(None).to_pydatetime()
 
-    top = _pick_top(top_n)
+    top = _pick_top(top_n, select)
     if len(top) < 2:
-        raise RuntimeError('need at least 2 alphas with a TEST score in the library')
+        raise RuntimeError('need at least 2 scored alphas in the library')
     formulas = [c['formula'] for c in top]
-    print(f'· combining top-{len(formulas)} by base=min(train,val) — TEST stays held out '
-          f'(real engine, {jobs} workers)…', flush=True)
+    how = ('by TEST Sharpe (⚠ cherry-pick: combined TEST is optimistic)' if select != 'base'
+           else 'by base=min(train,val) — TEST stays held out')
+    print(f'· combining top-{len(formulas)} {how} (real engine, {jobs} workers)…', flush=True)
 
     items = list(enumerate(formulas))
     results = {}
@@ -159,8 +168,8 @@ def build(top_n, sim_start, jobs, out_path):
     weights = {'dates': [d.strftime('%Y-%m-%d') for d in cw.index], 'tickers': present,
                'W': [[round(float(x), 5) for x in row] for row in cw.to_numpy()]}
 
-    doc = {'ok': True, 'n': len(formulas), 'sel': 'base',   # selection key; docs without 'sel'
-           'sim_start': str(pd.Timestamp(start).date()),    # were built by the old TEST-sorted picker
+    doc = {'ok': True, 'n': len(formulas), 'sel': select,   # 'test' | 'base'; docs without 'sel'
+           'sim_start': str(pd.Timestamp(start).date()),    # predate the selectable picker (=test)
            'test': f'{ts.date()}..{te.date()}',
            'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
            'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
@@ -179,15 +188,18 @@ def build(top_n, sim_start, jobs, out_path):
 
 def main():
     ap = argparse.ArgumentParser(
-        description='Build a combined Portfolio from top-N alphas by base=min(train,val)')
+        description='Build a combined Portfolio from the top-N library alphas')
     ap.add_argument('--top', type=int, default=6)
+    ap.add_argument('--select', choices=('test', 'base'), default='test',
+                    help='ranking for the top-N: held-out TEST Sharpe (optimistic cherry-pick) '
+                         'or fitness min(train,val) (TEST stays a clean evaluation)')
     ap.add_argument('--sim-start', default='2022-06-01', help='warm-up start before TEST (speed)')
     ap.add_argument('--jobs', type=int, default=0, help='parallel workers (0 = auto)')
     ap.add_argument('--out', default=os.path.join(_state_dir(), 'portfolio.json'))
     args = ap.parse_args()
     jobs = args.jobs if args.jobs > 0 else max(1, min(args.top, (os.cpu_count() or 4) - 2))
     try:
-        rc = build(args.top, args.sim_start, jobs, args.out)
+        rc = build(args.top, args.sim_start, jobs, args.out, args.select)
     except Exception as e:                                 # noqa: BLE001
         print(f'✗ portfolio build failed: {type(e).__name__}: {e}', flush=True)
         try:
