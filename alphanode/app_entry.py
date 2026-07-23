@@ -178,6 +178,9 @@ def main():
     elif role == 'pdfreport':
         import pdf_worker
         pdf_worker.main()                                # analytics PDF dashboard (own process: no Tk/FreeType clash)
+    elif role == 'rescore':
+        import rescore_library
+        rescore_library.main()                           # re-score library.jsonl with current metrics
     elif role == 'cli':
         import cli
         cli.main(argv[1:])                               # remaining argv -> CLI subcommands

@@ -94,7 +94,7 @@ def save_status():
         pass
 
 
-# ---- library (dedup by formula) + leaderboard by TEST + round history ----
+# ---- library (dedup by formula) + leaderboard by fitness base=min(train,val) + round history ----
 seen = set()
 leaderboard = []
 history = []
@@ -139,7 +139,16 @@ def load_existing():
                     history.append(json.loads(line))
                 except json.JSONDecodeError:
                     pass
-    status['rounds'] = max((c.get('round', 0) for c in leaderboard), default=0)
+    # resume the round counter from HISTORY (every round is logged there), not from the trimmed
+    # top-KEEP leaderboard: evolve() is seed-deterministic, so rewinding the counter to a stale
+    # leaderboard round would replay every round since with identical seeds for zero new alphas.
+    status['rounds'] = max(max((e.get('round', 0) for e in history), default=0),
+                           max((c.get('round', 0) for c in leaderboard), default=0))
+    try:                                               # keep the lifetime trials counter across restarts
+        with open(STATUS_FILE, encoding='utf-8') as f:
+            status['trials_total'] = int(json.load(f).get('trials_total', 0) or 0)
+    except (OSError, ValueError, json.JSONDecodeError):
+        pass
     status['found'] = len(seen)
     status['best'] = leaderboard[:KEEP]
     if leaderboard:                                    # honest champion metrics right at startup
@@ -289,6 +298,10 @@ def main():
     threading.Thread(target=serve, daemon=True).start()
     print(f'AlphaNode: {CPU_PERCENT}% -> {N_JOBS}/{CORES} cores | universe={UNIVERSE} '
           f'pop={POP} gens={GENS} | status: http://localhost:{STATUS_PORT}')
+    if SEED_FROM_LIB and EXPLORE_EVERY == 1:
+        # rnd % 1 != 0 is never true -> the refine branch below is unreachable
+        print('WARNING: explore_every=1 makes EVERY round a from-scratch exploration — '
+              'warm-start refinement of library champions never runs. Set explore_every to 3-4.')
     status['state'] = 'running'
     save_status()
 

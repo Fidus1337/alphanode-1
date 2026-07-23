@@ -5,7 +5,8 @@ Against overfitting (the main risk of searching through millions of formulas):
     its WORST training segment is (rewarding robustness, not curve-fitting);
   * a complexity penalty (parsimony) — simple beats complex;
   * a penalty/dedup for correlation with already-found champions (a diverse Hall of Fame);
-  * the TEST segment is HELD-OUT: it plays no part in the fitness, computed once at the very end.
+  * the TEST segment is HELD-OUT: it plays no part in fitness, selection or seeding — its
+    metrics are carried along for reporting only and are first LOOKED AT after the run.
 """
 import multiprocessing as mp
 import random

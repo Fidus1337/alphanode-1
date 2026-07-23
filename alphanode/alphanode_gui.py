@@ -75,7 +75,8 @@ def _child_cmd(role):
     if apppaths.FROZEN:
         return [sys.executable, '--role', role]
     script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY,
-              'signal': SIGNAL_PY, 'metrics': METRICS_PY, 'pdfreport': PDF_PY}[role]
+              'signal': SIGNAL_PY, 'metrics': METRICS_PY, 'pdfreport': PDF_PY,
+              'rescore': os.path.join(HERE, 'rescore_library.py')}[role]
     return [sys.executable, '-u', script]
 
 DEFAULTS = {
@@ -557,7 +558,9 @@ class App:
         # --- node mode ---
         g = self._section(inner, 'NODE MODE (continuous search)')
         self.v_explore = self._num(g, 'Explore every N-th', self.cfg['explore_every'], 0, 1, 100, 1,
-                                   tip='Every N-th round — a search from scratch (for diversity). Lower N — more diverse.')
+                                   tip='Every N-th round — a search from scratch (for diversity); the other\n'
+                                       'rounds refine the library champions (warm-start). N=1 means EVERY\n'
+                                       'round explores from scratch and refinement never runs. Recommended: 3-4.')
         self.v_maxrounds = self._num(g, 'Max. rounds (0=∞)', self.cfg['max_rounds'], 1, 0, 999999, 1,
                                      tip='How many rounds to run before stopping. 0 — run forever.')
         self.v_leader = self._num(g, 'Leaderboard size', self.cfg['leaderboard'], 2, 1, 200, 1,
@@ -2141,9 +2144,15 @@ class App:
         self.btn_pf_pdf.configure(state=('normal' if doc.get('weights') else 'disabled'))
         m = doc.get('metrics') or {}
         b = doc.get('basket') or {}
-        self.lbl_pf.configure(text=f'top-{doc.get("n")} by TEST OOS combined via the engine  ·  '
-                                f'TEST {doc.get("test", "")}  ·  built in {doc.get("built_secs", "?")}s  ·  '
-                                '⚠ selected by TEST (optimistic); diversification gain is the robust part')
+        if doc.get('sel') == 'base':                     # new builds: selection never saw TEST
+            note = 'TEST held out of selection — the numbers below are honest OOS'
+            picked = 'by fitness min(train,val)'
+        else:                                            # docs built before the honest-selection fix
+            note = '⚠ selected by TEST (optimistic) — rebuild the portfolio for honest numbers'
+            picked = 'by TEST OOS'
+        self.lbl_pf.configure(text=f'top-{doc.get("n")} {picked} combined via the engine  ·  '
+                                f'TEST {doc.get("test", "")}  ·  built in '
+                                f'{doc.get("built_secs", "?")}s  ·  {note}')
         sh = m.get('sharpe')
         self.lbl_pf_m.configure(
             text=f'Sharpe {sh:+.2f}   ·   CAGR {m.get("cagr", 0) * 100:+.0f}%   ·   '

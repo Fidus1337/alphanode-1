@@ -1,9 +1,13 @@
-"""Build a combined PORTFOLIO from the top-N alphas by TEST Sharpe, using the project's real
-`Portfolio` engine (quantpylib), and write metrics + equity to JSON for the GUI panel.
+"""Build a combined PORTFOLIO from the top-N alphas by fitness base = min(TRAIN, VAL) Sharpe,
+using the project's real `Portfolio` engine (quantpylib), and write metrics + equity to JSON for
+the GUI panel.
+
+Selection deliberately does NOT look at TEST (it used to sort by TEST Sharpe — a held-out peek
+that made the combined TEST number a self-fulfilling cherry-pick). With selection on base, the
+reported TEST metrics of the combined book are a genuine out-of-sample evaluation.
 
 The per-alpha simulations are run in parallel processes (the real engine loop is slow); the
-combined book is then produced by the real Portfolio object. Selection is by held-out TEST Sharpe —
-that makes the combined TEST number optimistic (cherry-pick), but the diversification gain is real.
+combined book is then produced by the real Portfolio object.
 
     python alphanode/portfolio_build.py --top 6 --out state/portfolio.json
 """
@@ -31,13 +35,19 @@ def _state_dir():
     return os.environ.get('ALPHANODE_STATE_DIR') or os.path.join(HERE, 'state')
 
 
-def _testsh(c):
-    t = c.get('test') if isinstance(c.get('test'), dict) else {}
-    return t.get('sharpe')
+def _basesh(c):
+    """Selection key: base = min(train,val) Sharpe — same fitness the search optimized.
+    TEST stays out of selection (held-out evaluation only)."""
+    b = c.get('base')
+    if b is None:
+        tr = (c.get('train') or {}).get('sharpe')
+        va = (c.get('val') or {}).get('sharpe')
+        b = min(tr, va) if (tr is not None and va is not None) else None
+    return b
 
 
 def _pick_top(n):
-    """Top-N alphas by TEST Sharpe from the library (diverse, no near-clones)."""
+    """Top-N alphas by base=min(train,val) from the library (diverse, no near-clones)."""
     lib = os.path.join(_state_dir(), 'library.jsonl')
     rows = []
     for line in open(lib, encoding='utf-8'):
@@ -47,8 +57,8 @@ def _pick_top(n):
                 rows.append(json.loads(line))
             except json.JSONDecodeError:
                 pass
-    rows = [c for c in rows if _testsh(c) is not None]
-    rows.sort(key=_testsh, reverse=True)
+    rows = [c for c in rows if _basesh(c) is not None]
+    rows.sort(key=_basesh, reverse=True)
     kept, top = [], []
     for c in rows[:500]:
         f = c['formula']
@@ -115,7 +125,8 @@ def build(top_n, sim_start, jobs, out_path):
     if len(top) < 2:
         raise RuntimeError('need at least 2 alphas with a TEST score in the library')
     formulas = [c['formula'] for c in top]
-    print(f'· combining top-{len(formulas)} by TEST Sharpe (real engine, {jobs} workers)…', flush=True)
+    print(f'· combining top-{len(formulas)} by base=min(train,val) — TEST stays held out '
+          f'(real engine, {jobs} workers)…', flush=True)
 
     items = list(enumerate(formulas))
     results = {}
@@ -148,7 +159,8 @@ def build(top_n, sim_start, jobs, out_path):
     weights = {'dates': [d.strftime('%Y-%m-%d') for d in cw.index], 'tickers': present,
                'W': [[round(float(x), 5) for x in row] for row in cw.to_numpy()]}
 
-    doc = {'ok': True, 'n': len(formulas), 'sim_start': str(pd.Timestamp(start).date()),
+    doc = {'ok': True, 'n': len(formulas), 'sel': 'base',   # selection key; docs without 'sel'
+           'sim_start': str(pd.Timestamp(start).date()),    # were built by the old TEST-sorted picker
            'test': f'{ts.date()}..{te.date()}',
            'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
            'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
@@ -166,7 +178,8 @@ def build(top_n, sim_start, jobs, out_path):
 
 
 def main():
-    ap = argparse.ArgumentParser(description='Build a combined Portfolio from top-N alphas by TEST')
+    ap = argparse.ArgumentParser(
+        description='Build a combined Portfolio from top-N alphas by base=min(train,val)')
     ap.add_argument('--top', type=int, default=6)
     ap.add_argument('--sim-start', default='2022-06-01', help='warm-up start before TEST (speed)')
     ap.add_argument('--jobs', type=int, default=0, help='parallel workers (0 = auto)')

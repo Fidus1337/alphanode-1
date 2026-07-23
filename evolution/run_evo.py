@@ -2,7 +2,7 @@
 
 Each genome is an alpha-signal formula; the engine turns it into positions with vol-targeting
 and fees. Evolution selects ROBUST formulas (fitness = min(train,val) Sharpe),
-penalizes complexity and clones, and touches the TEST segment only once, at the very end.
+penalizes complexity and clones; TEST is never used for selection and is only reported at the end.
 
 All settings live in config.ini (see the config.py module). CLI flags override the file.
 
@@ -94,7 +94,8 @@ def main():
         print('\nNo champions found (all genomes degenerate). Increase pop/gens.')
         return
 
-    # ---- final honest evaluation of champions (TEST is computed HERE, for the first time) ----
+    # ---- final report: TEST is REVEALED here (it was computed alongside but never consumed
+    # by fitness/selection/seeding — see evaluator.evaluate / hof_update) ----
     print('\n' + '=' * 74)
     print(f'HALL OF FAME — {len(hof)} champions (out of {n_trials} unique formulas)')
     print('=' * 74)

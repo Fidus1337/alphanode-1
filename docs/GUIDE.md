@@ -205,11 +205,13 @@ bundle) or **📥 Download signals (CSV)** — see [Act on a result](#6-act-on-a
 
 ### 4.5 — Combine into a portfolio
 
-The **PORTFOLIO** panel at the bottom: **▶ Build portfolio** runs the top-N alphas by TEST Sharpe through the
+The **PORTFOLIO** panel at the bottom: **▶ Build portfolio** runs the top-N alphas by fitness
+`min(train,val)` (TEST stays held out — selecting by TEST would cherry-pick it) through the
 real `Portfolio` engine (a couple of minutes in the background) and shows the **combined dollar-neutral
-equity on TEST** plus Sharpe / CAGR / MaxDD vs a buy & hold basket. Diversifying across decorrelated alphas
-beats any single one. (⚠ selecting by TEST inflates the number; the *diversification gain* is the robust
-part.) From here you can also export the portfolio's signals, paper-trade it, or serve it as one signal.
+equity on TEST** plus Sharpe / CAGR / MaxDD vs a buy & hold basket. Because selection never touches
+TEST, the combined TEST numbers are a genuine out-of-sample evaluation, and diversifying across
+decorrelated alphas beats any single one. From here you can also export the portfolio's signals,
+paper-trade it, or serve it as one signal.
 
 ---
 

@@ -133,18 +133,24 @@ STD_FLOOR = 1e-9        # variance floor: exact ==0 misses a near-constant serie
 
 
 # ---------------- metrics ----------------
+# CALENDAR convention: flat (zero-return) days STAY in the series. Dropping them (the old
+# behavior) inflated Sharpe by ~1/sqrt(active_fraction) and CAGR far more, so the GA fitness
+# systematically preferred sparse long-warm-up genomes (a strategy flat for 2/3 of TRAIN got a
+# ~1.7x Sharpe bonus for it). Now every genome is measured over the same segment calendar:
+# "what would $1 in this strategy have done over the whole segment" — comparable across genomes.
+# `n` still reports ACTIVE days (a coverage/activity stat, not the metric window).
 def _sharpe(r):
-    r = r[r != 0]
+    act = (r != 0).sum()
     s = r.std()
-    if len(r) < 5 or not np.isfinite(s) or s < STD_FLOOR:
+    if act < 5 or not np.isfinite(s) or s < STD_FLOOR:
         return np.nan
     return (r.mean() * ANN) / (s * np.sqrt(ANN))
 
 
 def _metrics(r):
-    r = r[r != 0]
+    act = int((r != 0).sum())
     s = r.std()
-    if len(r) < 5 or not np.isfinite(s) or s < STD_FLOOR:
+    if act < 5 or not np.isfinite(s) or s < STD_FLOOR:
         return None
     eq = (1 + r).cumprod()
     yrs = len(r) / ANN
@@ -153,7 +159,7 @@ def _metrics(r):
         'sharpe': (r.mean() * ANN) / (s * np.sqrt(ANN)),
         'dd': float((eq / eq.cummax() - 1).min()),
         'cagr': (last ** (1 / yrs) - 1) if (yrs > 0 and last > 0) else np.nan,  # wiped-out capital -> NaN, not complex
-        'n': int(len(r)),
+        'n': act,
     }
 
 
