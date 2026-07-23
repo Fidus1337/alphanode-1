@@ -44,7 +44,7 @@ def load_config(path=None):
     else:
         instruments = [x.strip().upper() for x in uni_raw.replace('\n', ',').split(',') if x.strip()]
 
-    tf_name = cp.get('timeframe', 'tf', fallback='1d')
+    tf_name = os.environ.get('ALPHANODE_TF') or cp.get('timeframe', 'tf', fallback='1d')
     if _resolve_tf is not None:
         _tf = _resolve_tf(tf_name)
         tf_fields = {'tf': _tf.name, 'ann': _tf.periods_per_year, 'freq': _tf.pandas_freq,
@@ -54,8 +54,17 @@ def load_config(path=None):
         tf_fields = {'tf': '1d', 'ann': 365.0, 'freq': 'D', 'vol_window': 30,
                      'ewma_lambda': 0.06, 'binance_interval': '1d'}
 
+    # Per-timeframe data snapshot. An explicit ALPHANODE_DATA always wins (the GUI/workers pass
+    # the right file); otherwise 1d keeps the historical data.pickle and intraday gets its own
+    # data_<tf>.pickle — so switching timeframes never clobbers another timeframe's history.
+    if os.environ.get('ALPHANODE_DATA'):
+        data = DATA
+    else:
+        suffix = '' if tf_fields['tf'] == '1d' else f'_{tf_fields["tf"]}'
+        data = os.path.join(PROJ, f'data{suffix}.pickle')
+
     return {
-        'data': DATA,
+        'data': data,
         'instruments': instruments,
         **tf_fields,
         'start': datetime.fromisoformat(seg['train_start'].strip()),

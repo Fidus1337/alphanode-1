@@ -34,7 +34,9 @@ warnings.filterwarnings('ignore'); np.seterr(all='ignore')
 
 
 def build_ctx(opt):
-    """Panel/market + the TEST mask, exactly as the GUI's _metrics_ctx built them."""
+    """Panel/market + the TEST mask, exactly as the GUI's _metrics_ctx built them.
+    Timeframe-aware: the grid freq / vol window / bars-per-year come from load_config
+    (which honors ALPHANODE_TF), so intraday libraries get intraday-correct stats."""
     from config import load_config
     from evaluator import build_panel, make_market
     cfg = load_config()
@@ -42,18 +44,21 @@ def build_ctx(opt):
         cfg['instruments'] = list(opt['instruments'])
     vol = float(opt.get('vol', cfg['vol']))
     ex = float(opt.get('exec', cfg['exec']))
+    ann = float(cfg.get('ann', 365.0))
     tr = pd.Timestamp(opt['train_start'], tz='UTC')
     te = pd.Timestamp(opt['test_start'], tz='UTC')
     en = pd.Timestamp(opt['test_end'], tz='UTC')
     tk, raw, panel = build_panel(cfg['data'], tr.tz_localize(None).to_pydatetime(),
-                                 en.tz_localize(None).to_pydatetime(), cfg.get('instruments'))
-    market = make_market(panel, tk, raw)
+                                 en.tz_localize(None).to_pydatetime(), cfg.get('instruments'),
+                                 freq=cfg.get('freq', 'D'))
+    market = make_market(panel, tk, raw, vol_window=cfg.get('vol_window', 30))
     tmask = (market['index'] >= te) & (market['index'] < en)
     elig = market['base_elig']
     n_assets = int(elig[tmask].any(axis=0).sum()) or int(elig.shape[1])   # assets live on TEST
-    years = max(float(np.count_nonzero(tmask)) / 365.0, 1e-9)
+    years = max(float(np.count_nonzero(tmask)) / ann, 1e-9)
     return {'panel': panel, 'market': market, 'V': market['V'], 'elig': elig, 'tmask': tmask,
-            'n_assets': max(1, n_assets), 'years': years, 'vol': vol, 'exec': ex}
+            'n_assets': max(1, n_assets), 'years': years, 'vol': vol, 'exec': ex,
+            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06))}
 
 
 def trade_stats(formula, ctx):
@@ -77,7 +82,8 @@ def trade_stats(formula, ctx):
         prev = np.vstack([np.zeros((1, side.shape[1])), side[:-1]])      # previous calendar day
         long_tr = int(((side == 1) & (prev != 1))[tmask].sum())         # long entries in TEST
         short_tr = int(((side == -1) & (prev != -1))[tmask].sum())      # short entries in TEST
-        rt = fast_sim(raw, market, ctx['vol'], ctx['exec']).to_numpy()[tmask]
+        rt = fast_sim(raw, market, ctx['vol'], ctx['exec'],
+                      ann=ctx['ann'], ewma_lambda=ctx['ewma']).to_numpy()[tmask]
         active = np.abs(rt) > 1e-9                                       # days when something happened
         win = float((rt[active] > 0).mean()) if active.any() else 0.0
         act = (long_tr + short_tr) / ctx['n_assets'] / ctx['years']     # trades / asset / year

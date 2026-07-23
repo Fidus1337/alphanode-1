@@ -38,16 +38,18 @@ _G = {}
 def _winit():
     from config import load_config
     from evaluator import build_panel, make_market
-    cfg = load_config()
+    cfg = load_config()                                  # timeframe fields honor ALPHANODE_TF
     uni = os.environ.get('ALPHANODE_UNIVERSE', 'all')
     if uni.lower() not in ('all', '*', ''):
         cfg['instruments'] = [x.strip().upper() for x in uni.split(',') if x.strip()]
-    tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'))
+    tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'),
+                                 freq=cfg.get('freq', 'D'))
     try:
         os.nice(10)
     except (AttributeError, OSError):
         pass
-    _G.update(cfg=cfg, tk=tk, panel=panel, market=make_market(panel, tk, raw))
+    _G.update(cfg=cfg, tk=tk, panel=panel,
+              market=make_market(panel, tk, raw, vol_window=cfg.get('vol_window', 30)))
 
 
 def _rescore_one(row):
@@ -56,7 +58,8 @@ def _rescore_one(row):
     cfg = _G['cfg']
     try:
         res = evaluate(parse(row['formula']), _G['tk'], _G['panel'], _G['market'],
-                       cfg['splits'], cfg['vol'], cfg['exec'])
+                       cfg['splits'], cfg['vol'], cfg['exec'],
+                       ann=cfg.get('ann', 365.0), ewma_lambda=cfg.get('ewma_lambda', 0.06))
     except Exception:                                    # noqa: BLE001
         res = None
     if res is None:                                      # degenerate under honest rules
@@ -69,7 +72,9 @@ def _rescore_one(row):
 
 
 def main():
-    lib = os.path.join(_state_dir(), 'library.jsonl')
+    tf = (os.environ.get('ALPHANODE_TF') or '1d').strip().lower()
+    suffix = '' if tf == '1d' else f'_{tf}'
+    lib = os.path.join(_state_dir(), f'library{suffix}.jsonl')
     if not os.path.exists(lib):
         print(f'no library at {lib} — nothing to rescore')
         return

@@ -69,6 +69,11 @@ SETTINGS = apppaths.settings_file()
 CORES = os.cpu_count() or 4
 
 
+def _tf_suffix(tf):
+    """File suffix for per-timeframe state: '' for the historical daily files, '_1h' etc. else."""
+    return '' if (tf or '1d') == '1d' else f'_{tf}'
+
+
 def _child_cmd(role):
     """Command for the child process of role `role`: in the frozen build — the exe itself with
     --role, in dev — the real python with the script."""
@@ -87,6 +92,7 @@ DEFAULTS = {
     'pop': 200, 'gens': 25, 'seed': 1, 'pause': 5, 'port': 8787,
     # data
     'fetch_n': 150, 'fetch_years': 3,
+    'timeframe': '1d',      # bar size for the whole pipeline: 1d | 4h | 1h | 15m | 5m
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
     # simulation
@@ -250,6 +256,7 @@ class App:
             seed=self._gi(self.v_seed, d['seed']), pause=self._gi(self.v_pause, d['pause']),
             port=self._gi(self.v_port, d['port']), fetch_n=self._gi(self.v_fetchn, d['fetch_n']),
             fetch_years=self._gi(self.v_minyears, d['fetch_years']),
+            timeframe=(self.v_tf.get() or '1d'),
             explore_every=max(1, self._gi(self.v_explore, d['explore_every'])),
             seed_from_lib=bool(self.v_seedlib.get()),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
@@ -529,7 +536,7 @@ class App:
         # --- market data (Binance) ---
         self._lbl(inner, text='MARKET DATA (BINANCE)', text_color=ACC,
                      font=(self.UI, 12, 'bold')).pack(anchor='w', pady=(14, 1))
-        self._lbl(inner, text='daily candles the search runs on', text_color=MUT,
+        self._lbl(inner, text='candles the search runs on (pick the bar size below)', text_color=MUT,
                      font=(self.UI, 11)).pack(anchor='w', pady=(0, 6))
         g = self._box(inner)
         g.pack(fill='x')
@@ -538,9 +545,24 @@ class App:
                                   tip='How many of the most liquid pairs to download from Binance.')
         self.v_minyears = self._num(g, 'Min. history (years)', self.cfg.get('fetch_years', 3), 1, 0, 7, 1,
                                     tip='Take only pairs older than N years — young ones have too little data.')
+        tfrow = self._box(inner)
+        tfrow.pack(fill='x', pady=(6, 0))
+        self._lbl(tfrow, text='Timeframe (bar size)', text_color=TXT,
+                     font=(self.UI, 13)).pack(side='left')
+        self.v_tf = tk.StringVar(value=self.cfg.get('timeframe', '1d'))
+        tf_box = ttk.Combobox(tfrow, textvariable=self.v_tf, values=('1d', '4h', '1h', '15m', '5m'),
+                              state='readonly', width=6)
+        tf_box.pack(side='right')
+        self._tip(tf_box, 'Bar size for the WHOLE pipeline: search, metrics, signals.\n'
+                          '1d — the classic daily engine. Intraday (4h/1h/15m/5m):\n'
+                          '• each timeframe keeps its own data snapshot (data_<tf>.pickle)\n'
+                          '  and its own alpha library — download data for it first;\n'
+                          '• set LATER date segments (intraday history is shorter/heavier);\n'
+                          '• portfolio build and paper-trade are daily-only for now.')
         self.btn_fetch = self._btn(inner, 'Download fresh data from Binance', self._fetch_data)
         self.btn_fetch.pack(fill='x', pady=(10, 0))
-        self._tip(self.btn_fetch, 'Download fresh daily candles from Binance (overwrites current data).')
+        self._tip(self.btn_fetch, 'Download fresh candles at the selected timeframe from Binance\n'
+                                  '(overwrites that timeframe\'s current data).')
 
         # --- search ---
         g = self._section(inner, 'SEARCH')
@@ -1010,8 +1032,8 @@ class App:
                                    'Stop the node first (it writes to these files), then clear.',
                                    parent=self.root)
             return
-        n_alphas = self._count_lines(os.path.join(STATE_DIR, 'library.jsonl'))
-        n_rounds = self._count_lines(os.path.join(STATE_DIR, 'history.jsonl'))
+        n_alphas = self._count_lines(self._lib_file())
+        n_rounds = self._count_lines(os.path.join(STATE_DIR, f'history{_tf_suffix(self._tf())}.jsonl'))
         if not (n_alphas or n_rounds or os.path.exists(STATUS_FILE)):
             messagebox.showinfo('Empty', 'History is already empty — nothing to clear.', parent=self.root)
             return
@@ -1026,7 +1048,10 @@ class App:
             return
         import glob
         removed = 0
-        for name in ('library.jsonl', 'history.jsonl', 'status.json', 'portfolio.json'):
+        wipe = ['status.json', 'portfolio.json']         # every timeframe's library/history goes too
+        for pat in ('library*.jsonl', 'history*.jsonl'):
+            wipe += [os.path.basename(p) for p in glob.glob(os.path.join(STATE_DIR, pat))]
+        for name in wipe:
             try:
                 os.remove(os.path.join(STATE_DIR, name))
                 removed += 1
@@ -1055,8 +1080,9 @@ class App:
         if not messagebox.askyesno(
                 'Download fresh data',
                 f'Download the {n} highest-turnover Binance pairs (only those with history ≥ {yrs} years) '
-                'and update the market data?\n\n'
-                'Current data will be replaced. It will take a few minutes and needs internet.\n'
+                f'as {self._tf()} candles and update the market data?\n\n'
+                f'The current {self._tf()} snapshot will be replaced. It will take a few minutes '
+                '(intraday: longer, much more data) and needs internet.\n'
                 'After the update the pairs universe will change — clear history and restart the search.',
                 icon='warning', default='no', parent=self.root):
             return
@@ -1075,7 +1101,8 @@ class App:
         add(f'Downloading the {n} highest-turnover Binance pairs (history ≥ {yrs} years)…\n\n')
         try:
             proc = subprocess.Popen(_child_cmd('fetch') + ['--top', str(n),
-                                     '--min-years', str(yrs), '--out', DATA_PICKLE],
+                                     '--min-years', str(yrs), '--interval', self._tf(),
+                                     '--out', self._data_file()],
                                     cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         except Exception as e:                       # noqa: BLE001
@@ -1133,6 +1160,7 @@ class App:
         self.v_pop.set(c['pop']); self.v_gens.set(c['gens']); self.v_seed.set(c['seed'])
         self.v_pause.set(c['pause']); self.v_port.set(c['port'])
         self.v_fetchn.set(c['fetch_n']); self.v_minyears.set(c['fetch_years'])
+        self.v_tf.set(c.get('timeframe', '1d'))
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
@@ -1148,6 +1176,32 @@ class App:
         self.btn_start.configure(state='disabled' if running else 'normal')
         self.btn_stop.configure(state='normal' if running else 'disabled')
 
+    # ---------- timeframe-aware paths ----------
+    def _tf(self):
+        """The configured bar size ('1d','4h','1h','15m','5m'); the whole pipeline follows it."""
+        return (self.cfg.get('timeframe') or '1d').strip().lower()
+
+    def _data_file(self):
+        """Per-timeframe data snapshot: the classic data.pickle for 1d, data_<tf>.pickle else."""
+        root, ext = os.path.splitext(apppaths.data_path())
+        return f'{root}{_tf_suffix(self._tf())}{ext}'
+
+    def _lib_file(self):
+        """Per-timeframe alpha library: alphas mined on different bar sizes never mix."""
+        return os.path.join(STATE_DIR, f'library{_tf_suffix(self._tf())}.jsonl')
+
+    def _tf_gate(self, what):
+        """True (and explains itself) when `what` is daily-only and an intraday tf is active."""
+        if self._tf() == '1d':
+            return False
+        messagebox.showinfo(
+            'Daily only (for now)',
+            f'{what} runs through the real quantpylib engine, which is tuned for daily bars — '
+            f'on {self._tf()} its numbers would be silently wrong.\n\n'
+            'On intraday timeframes use the search, the leaderboard, equity charts, CSV signals '
+            'and PDF reports. Portfolio/paper support is the next phase.', parent=self.root)
+        return True
+
     # ---------- start/stop ----------
     def start(self):
         if self.proc and self.proc.poll() is None:
@@ -1155,6 +1209,15 @@ class App:
         self._save()
         c = self.cfg
         os.makedirs(STATE_DIR, exist_ok=True)
+        if self._tf() != '1d' and not os.path.exists(self._data_file()):
+            messagebox.showinfo(
+                'No data for ' + self._tf(),
+                f'There is no {self._tf()} snapshot yet ({os.path.basename(self._data_file())}).\n'
+                'Download it first: MARKET DATA → "Download fresh data from Binance" '
+                '(it fetches at the selected timeframe).\n\n'
+                'Also set LATER date segments — intraday history is shorter, and TRAIN/VAL '
+                'dates outside the data leave the search nothing to evaluate.', parent=self.root)
+            return
         env = dict(os.environ)
         env.update(
             ALPHANODE_CPU_PERCENT=str(c['cpu']),
@@ -1162,7 +1225,8 @@ class App:
             ALPHANODE_POP=str(c['pop']), ALPHANODE_GENS=str(c['gens']),
             ALPHANODE_SEED=str(c['seed']), ALPHANODE_PAUSE=str(c['pause']),
             ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_STATUS_PORT=str(c['port']),
-            ALPHANODE_DATA=apppaths.data_path(),   # current snapshot (fresh/bundled)
+            ALPHANODE_TF=self._tf(),
+            ALPHANODE_DATA=self._data_file(),      # per-timeframe snapshot (fresh/bundled)
             ALPHANODE_CONFIG_INI=apppaths.config_ini(),
             ALPHANODE_EXPLORE_EVERY=str(c['explore_every']),
             ALPHANODE_SEED_FROM_LIBRARY=('1' if c['seed_from_lib'] else '0'),
@@ -1368,6 +1432,8 @@ class App:
         return None
 
     def _serve_signal(self, formulas, label):
+        if self._tf_gate('The live signal API'):
+            return
         formulas = [f for f in (formulas or []) if f and f.strip()]
         if not formulas:
             return
@@ -1391,7 +1457,8 @@ class App:
             messagebox.showerror('Signal API', 'No free port available.', parent=self.root)
             return
         env = dict(os.environ)
-        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
+                   ALPHANODE_TF=self._tf(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini(),
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
@@ -1725,7 +1792,7 @@ class App:
             self._render_lb(self._lb_rows())
 
     def _start_lb_compute(self, force=False):
-        lib = os.path.join(STATE_DIR, 'library.jsonl')
+        lib = self._lib_file()
         try:
             mt = os.path.getmtime(lib)
         except OSError:
@@ -1923,7 +1990,8 @@ class App:
             'test_end': c.get('test_end'),
         }
         env = dict(os.environ)
-        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
+                   ALPHANODE_TF=self._tf(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini())
         proc = subprocess.Popen(_child_cmd('metrics'), env=env,
                                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
@@ -2069,7 +2137,7 @@ class App:
         diverse SLICE of this; here you get all of it, ordered by honest fitness min(train,val)."""
         rows = []
         try:
-            with open(os.path.join(STATE_DIR, 'library.jsonl'), encoding='utf-8') as fh:
+            with open(self._lib_file(), encoding='utf-8') as fh:
                 for line in fh:
                     line = line.strip()
                     if not line:
@@ -2108,6 +2176,8 @@ class App:
 
     # ---------- PORTFOLIO: combine top-N via the real engine (TEST- or fitness-ranked) ----------
     def _build_portfolio(self):
+        if self._tf_gate('The portfolio builder'):
+            return
         if self._pf_proc and self._pf_proc.poll() is None:
             return                                       # already building
         n = self._gi(self.v_pfn, 6)
@@ -2118,7 +2188,8 @@ class App:
                                    f'{"TEST" if sel == "test" else "fitness min(train,val)"} '
                                    '(real engine, ~1–2 min)…')
         env = dict(os.environ)
-        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
+                   ALPHANODE_TF=self._tf(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini())
         try:
             self._pf_proc = subprocess.Popen(
@@ -2257,6 +2328,15 @@ class App:
             cfg['instruments'] = lst or cfg.get('instruments')
         cfg['vol'] = float(c.get('target_vol', cfg['vol']))
         cfg['exec'] = float(c.get('exec_cost', cfg['exec']))
+        # the GUI's timeframe selector wins over config.ini (load_config in THIS process only
+        # sees the ini/env, not the widget), and the data snapshot follows the timeframe
+        if cfg.get('tf', '1d') != self._tf():
+            from timeframe import resolve as _rtf
+            _t = _rtf(self._tf())
+            cfg.update(tf=_t.name, ann=_t.periods_per_year, freq=_t.pandas_freq,
+                       vol_window=_t.vol_window, ewma_lambda=_t.ewma_lambda,
+                       binance_interval=_t.binance_interval)
+        cfg['data'] = self._data_file()
         try:
             tr = pd.Timestamp(c['train_start'], tz='UTC'); va = pd.Timestamp(c['val_start'], tz='UTC')
             te = pd.Timestamp(c['test_start'], tz='UTC'); en = pd.Timestamp(c['test_end'], tz='UTC')
@@ -2270,11 +2350,14 @@ class App:
     def _get_market(self, cfg):
         from evaluator import build_panel, make_market, basket_returns
         key = (tuple(cfg['instruments']) if cfg.get('instruments') else 'all',
-               str(cfg['start']), str(cfg['end']))
+               str(cfg['start']), str(cfg['end']), cfg.get('tf', '1d'))
         cached = self._panel_cache.get(key)
         if cached is None:
-            tk_, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'))
-            cached = (tk_, panel, make_market(panel, tk_, raw), basket_returns(panel))
+            tk_, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'],
+                                          cfg.get('instruments'), freq=cfg.get('freq', 'D'))
+            cached = (tk_, panel, make_market(panel, tk_, raw,
+                                              vol_window=cfg.get('vol_window', 30)),
+                      basket_returns(panel))
             self._panel_cache = {key: cached}            # keep only the last one (memory)
         return cached
 
@@ -2430,7 +2513,8 @@ class App:
         def work():
             try:
                 env = dict(os.environ)
-                env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=apppaths.data_path(),
+                env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
+                   ALPHANODE_TF=self._tf(),
                            ALPHANODE_CONFIG_INI=apppaths.config_ini())
                 proc = subprocess.Popen(_child_cmd('pdfreport'), env=env,
                                         cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
@@ -2547,6 +2631,8 @@ class App:
             messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
 
     def _pf_paper_trade(self):
+        if self._tf_gate('Paper trading'):
+            return
         doc = self._pf_doc
         formulas = (doc or {}).get('formulas_full')
         if not formulas:
@@ -2616,6 +2702,8 @@ class App:
 
     # ---------- paper trade: export the bundle + run ----------
     def _paper_trade(self, champ):
+        if self._tf_gate('Paper trading'):
+            return
         formula = champ.get('formula', '')
         if not formula:
             return
@@ -2745,7 +2833,9 @@ class App:
                 import report
                 cfg = self._build_plot_cfg()
                 tk_, panel, market, basket = self._get_market(cfg)
-                r = simulate_returns(parse(champ['formula']), tk_, panel, market, cfg['vol'], cfg['exec'])
+                r = simulate_returns(parse(champ['formula']), tk_, panel, market, cfg['vol'],
+                                     cfg['exec'], ann=cfg.get('ann', 365.0),
+                                     ewma_lambda=cfg.get('ewma_lambda', 0.06))
                 if r is None:
                     holder['err'] = 'the formula yields no valid returns on this data'
                 else:

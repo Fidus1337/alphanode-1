@@ -54,10 +54,15 @@ EXPLORE_EVERY = max(1, int(env('EXPLORE_EVERY', '4')))  # every Nth round — pu
 STATE_DIR = env('STATE_DIR', os.path.join(HERE, 'state'))
 STATUS_PORT = int(env('STATUS_PORT', '8787'))
 KEEP = int(env('LEADERBOARD', '20'))
+TF = (env('TF', '') or '1d').strip().lower()           # bar size; also read by load_config (ALPHANODE_TF)
 
 os.makedirs(STATE_DIR, exist_ok=True)
-LIB = os.path.join(STATE_DIR, 'library.jsonl')
-HIST = os.path.join(STATE_DIR, 'history.jsonl')        # one line per round (for the progress chart)
+# per-timeframe library/history: alphas mined on different bar sizes are NOT comparable
+# (different annualization, different dynamics) and must never mix in one leaderboard.
+# 1d keeps the historical file names.
+_SUF = '' if TF == '1d' else f'_{TF}'
+LIB = os.path.join(STATE_DIR, f'library{_SUF}.jsonl')
+HIST = os.path.join(STATE_DIR, f'history{_SUF}.jsonl')  # one line per round (for the progress chart)
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 CORES = os.cpu_count() or 4
 N_JOBS = max(1, round(CPU_PERCENT / 100 * CORES))      # resources -> number of parallel workers
@@ -80,7 +85,7 @@ for _s in (signal.SIGTERM, signal.SIGINT):
 
 status = {'app': 'AlphaNode', 'state': 'starting', 'started': iso(), 'updated': iso(),
           'rounds': 0, 'trials_total': 0, 'found': 0, 'cpu_percent': CPU_PERCENT, 'n_jobs': N_JOBS,
-          'cores': CORES, 'universe': UNIVERSE, 'pop': POP, 'gens': GENS,
+          'cores': CORES, 'universe': UNIVERSE, 'tf': TF, 'pop': POP, 'gens': GENS,
           'explore_every': EXPLORE_EVERY, 'seed_from_lib': SEED_FROM_LIB,
           'current': '', 'gen': '', 'best': []}
 
@@ -296,7 +301,7 @@ def main():
     load_existing()
     status['target_vol'] = build_cfg(BASE_SEED).get('vol')   # effective target vol (env or config.ini)
     threading.Thread(target=serve, daemon=True).start()
-    print(f'AlphaNode: {CPU_PERCENT}% -> {N_JOBS}/{CORES} cores | universe={UNIVERSE} '
+    print(f'AlphaNode: {CPU_PERCENT}% -> {N_JOBS}/{CORES} cores | universe={UNIVERSE} tf={TF} '
           f'pop={POP} gens={GENS} | status: http://localhost:{STATUS_PORT}')
     if SEED_FROM_LIB and EXPLORE_EVERY == 1:
         # rnd % 1 != 0 is never true -> the refine branch below is unreachable

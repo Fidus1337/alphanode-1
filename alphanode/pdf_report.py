@@ -25,7 +25,8 @@ from matplotlib.colors import TwoSlopeNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import FancyBboxPatch
 
-ANN = 365                     # crypto trades every day — annualize like the engine (evaluator.ANN)
+ANN = 365                     # bars/year; crypto trades 24/7 (evaluator.ANN). build_report(ann=...)
+                              # overrides it for intraday timeframes (bars, not days).
 
 # palette of the reference dashboard (light: a PDF is a print artefact)
 INK = '#14181F'
@@ -229,7 +230,7 @@ def _page_returns(pdf, title, subtitle, meta_line, stamp, npages, ws, rs, basket
 
     # per-segment metric lines
     y = 0.205
-    fig.text(0.08, y, 'Метрики по сегментам (NET, движок, ANN=365):', fontsize=8,
+    fig.text(0.08, y, f'Метрики по сегментам (NET, движок, ANN={ANN:g}):', fontsize=8,
              color=INK, fontweight='bold')
     y -= 0.022
     for key, label in (('train', 'TRAIN'), ('val', 'VAL'), ('test', 'TEST (held-out)')):
@@ -473,18 +474,22 @@ def _page_segments(pdf, title, stamp, npages, ws, rs_full, splits, seg_metrics, 
 
 # ------------------------------------------------------------------ entry ----
 def build_report(out_pdf, *, title, subtitle, wide, rets=None, basket=None, splits=None,
-                 seg_metrics=None, asset_rets=None, exec_cost=0.001, stamp=''):
+                 seg_metrics=None, asset_rets=None, exec_cost=0.001, stamp='', ann=None):
     """Render the 4-page dashboard.
 
     wide       : DataFrame of target weights (index=dates, cols=tickers)
-    rets       : Series of daily NET strategy returns (optional but expected)
-    basket     : Series of daily buy&hold basket returns (optional)
+    rets       : Series of per-bar NET strategy returns (optional but expected)
+    basket     : Series of per-bar buy&hold basket returns (optional)
     splits     : {'train': (a, b), 'val': ..., 'test': ...} — omit for TEST-only (portfolio)
     seg_metrics: {'train': {'sharpe','cagr','dd',['win','n']}, ...} — champion numbers if known;
                  anything missing is computed from `rets`
-    asset_rets : DataFrame of per-asset daily returns for the attribution page (optional)
+    asset_rets : DataFrame of per-asset per-bar returns for the attribution page (optional)
+    ann        : bars per year (365 daily; intraday timeframes pass theirs)
     Returns a small summary dict for the caller's dialog.
     """
+    global ANN
+    if ann:                       # the worker is a fresh process per report — module state is fine
+        ANN = float(ann)
     ws = weight_stats(wide)
     idx = ws['wide'].index
 

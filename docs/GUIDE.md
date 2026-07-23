@@ -128,7 +128,17 @@ perpetuals by 24h turnover (public Binance endpoints, no keys):
 
 ```bash
 .venv/bin/python fetch_data.py --top 150 --min-years 3    # atomically overwrites data.pickle
+.venv/bin/python fetch_data.py --top 60 --interval 1h --start 2024-01-01   # intraday snapshot
 ```
+
+**Timeframes.** The whole pipeline can run on `1d | 4h | 1h | 15m | 5m` bars — pick the bar size in
+the GUI (MARKET DATA → *Timeframe*) or `config.ini [timeframe]`. Each timeframe keeps its **own**
+data snapshot (`data_<tf>.pickle`) and its **own** alpha library (`library_<tf>.jsonl`) — alphas
+mined on different bar sizes are never mixed. For intraday: download data at that interval first,
+set **later date segments** (intraday history is shorter and much denser), and note that the
+portfolio builder / paper-trading remain daily-only for now (the real engine is tuned for daily
+bars); the search, leaderboard, equity charts, CSV signals and PDF reports are fully
+timeframe-aware.
 
 or the **⟳ Update data.pickle** button in the GUI. Young listings are filtered out (`--min-years`) so the
 search window isn't mostly NaN. **After changing the universe, clear the history and restart the search** —

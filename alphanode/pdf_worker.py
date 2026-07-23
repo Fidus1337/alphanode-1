@@ -68,23 +68,25 @@ def _build_alpha(opt, pdf_report):
     from config import load_config
     from evaluator import build_panel, make_market, basket_returns, simulate_returns
     from genome import parse
-    cfg = load_config()
+    cfg = load_config()                                  # timeframe fields honor ALPHANODE_TF
     instruments = opt.get('instruments') or cfg.get('instruments')
     vol = float(opt.get('vol', cfg['vol']))
     ex = float(opt.get('exec', cfg['exec']))
+    ann = float(cfg.get('ann', 365.0))
     splits, span = _splits(opt)
     start, end = (span[0].tz_localize(None).to_pydatetime(),
                   span[1].tz_localize(None).to_pydatetime()) if span else (cfg['start'], cfg['end'])
-    tk, raw, panel = build_panel(cfg['data'], start, end, instruments)
-    market = make_market(panel, tk, raw)
+    tk, raw, panel = build_panel(cfg['data'], start, end, instruments, freq=cfg.get('freq', 'D'))
+    market = make_market(panel, tk, raw, vol_window=cfg.get('vol_window', 30))
     wide = _alpha_weights(opt['formula'], market, panel)
-    r = simulate_returns(parse(opt['formula']), tk, panel, market, vol, ex)
+    r = simulate_returns(parse(opt['formula']), tk, panel, market, vol, ex,
+                         ann=ann, ewma_lambda=float(cfg.get('ewma_lambda', 0.06)))
     basket = basket_returns(panel)
     return pdf_report.build_report(
         opt['out'], title=opt.get('title', 'AlphaNode'), subtitle=opt.get('subtitle', ''),
         wide=wide, rets=r, basket=basket, splits=splits,
         seg_metrics=opt.get('seg_metrics') or {}, asset_rets=panel['ret'][tk],
-        exec_cost=ex, stamp=opt.get('stamp', ''))
+        exec_cost=ex, stamp=opt.get('stamp', ''), ann=ann)
 
 
 def _build_portfolio(opt, pdf_report):
@@ -121,11 +123,16 @@ def _build_portfolio(opt, pdf_report):
         asset_rets = panel['ret'][cols]
     except Exception:                                    # noqa: BLE001
         pass
+    try:                                                 # bars/year for the current timeframe
+        from config import load_config
+        ann = float(load_config().get('ann', 365.0))
+    except Exception:                                    # noqa: BLE001
+        ann = None
     return pdf_report.build_report(
         opt['out'], title=opt.get('title', 'AlphaNode'), subtitle=opt.get('subtitle', ''),
         wide=wide, rets=rets, basket=basket_r, splits=splits,
         seg_metrics={'test': dict(doc.get('metrics') or {})}, asset_rets=asset_rets,
-        exec_cost=float(opt.get('exec', 0.001)), stamp=opt.get('stamp', ''))
+        exec_cost=float(opt.get('exec', 0.001)), stamp=opt.get('stamp', ''), ann=ann)
 
 
 def main():

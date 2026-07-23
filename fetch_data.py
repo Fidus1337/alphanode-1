@@ -1,12 +1,14 @@
-"""Download daily OHLCV from Binance USD-M (perpetual) and write data.pickle.
+"""Download OHLCV from Binance USD-M (perpetual) and write a data snapshot pickle.
 
 Takes the top-N USDT perps BY 24H VOLUME among those with history >= MIN_YEARS years (by the
-onboardDate listing date), downloads daily bars, and atomically overwrites data.pickle in the
-(tickers, ohlcvs) format — exactly what evolution/ and AlphaNode read. Public endpoints, no keys needed.
+onboardDate listing date), downloads bars at --interval (1d default; 5m|15m|1h|4h intraday),
+and atomically overwrites the snapshot in the (tickers, ohlcvs) format — exactly what
+evolution/ and AlphaNode read. 1d writes data.pickle; an intraday interval writes its own
+data_<tf>.pickle, so timeframes never clobber each other. Public endpoints, no keys needed.
 
   python fetch_data.py --top 150
   python fetch_data.py --top 100 --min-years 3 --start 2019-09-05
-  python fetch_data.py --top 200 --min-years 2 --out data.pickle
+  python fetch_data.py --top 60 --interval 1h --start 2023-01-01
 
 Why the years filter: young coins (listed recently) would give almost solid NaN in the search
 window and would break the data fetcher (the wrapper walks the pre-listing period one day at a time
@@ -30,6 +32,8 @@ from quantpylib.wrappers.binance import Binance   # noqa: E402
 
 MIN_BARS = 30                                      # final backstop: completely empty ones — skip
 YEAR_SECS = 365.25 * 24 * 3600
+# bar size -> the qt wrapper's (granularity, multiplier); keep in sync with evolution/timeframe.py
+INTERVALS = {'5m': ('m', 5), '15m': ('m', 15), '1h': ('h', 1), '4h': ('h', 4), '1d': ('d', 1)}
 
 
 def save_pickle(path, obj):
@@ -57,7 +61,8 @@ def _onboard_ts(sym_info):
         return None
 
 
-async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, timeout):
+async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, timeout, interval='1d'):
+    gran, mult = INTERVALS[interval]
     bn = Binance()
 
     print('· pulling instrument list (exchangeInfo)…', flush=True)
@@ -82,7 +87,7 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
     chosen = aged[:top_n]
     print(f'  taking top-{len(chosen)}: {", ".join(chosen[:12])}{" …" if len(chosen) > 12 else ""}', flush=True)
 
-    print(f'· downloading daily bars up to {end.date()} '
+    print(f'· downloading {interval} bars up to {end.date()} '
           f'(each pair starts from its listing; {concurrency} in parallel)…', flush=True)
     sem = asyncio.Semaphore(concurrency)
 
@@ -95,7 +100,8 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
                 s_start = ob_dt                                # without a day-by-day walk of the pre-listing period
         async with sem:
             try:
-                df = await asyncio.wait_for(bn.get_trade_bars(sym, s_start, end, 'd', 1), timeout=timeout)
+                df = await asyncio.wait_for(bn.get_trade_bars(sym, s_start, end, gran, mult),
+                                            timeout=timeout)
                 return sym, df
             except asyncio.TimeoutError:
                 return sym, TimeoutError(f'timeout {timeout}s')
@@ -138,11 +144,20 @@ def main():
     ap.add_argument('--min-years', type=float, default=3.0, help='minimum years of history (by listing date)')
     ap.add_argument('--start', default='2019-09-05', help='history start YYYY-MM-DD')
     ap.add_argument('--end', default=None, help='history end YYYY-MM-DD (default today)')
-    ap.add_argument('--out', default=os.path.join(HERE, 'data.pickle'), help='where to write')
+    ap.add_argument('--out', default=None,
+                    help='where to write (default: data.pickle for 1d, data_<interval>.pickle otherwise)')
     ap.add_argument('--quote', default='USDT', help='quote currency (USDT)')
     ap.add_argument('--concurrency', type=int, default=6, help='how many pairs to download in parallel')
     ap.add_argument('--timeout', type=float, default=120, help='timeout per pair, sec')
+    ap.add_argument('--interval', default='1d', choices=sorted(INTERVALS),
+                    help='bar size (5m|15m|1h|4h|1d); intraday is written to its own data_<tf>.pickle')
     args = ap.parse_args()
+    if args.out is None:
+        suffix = '' if args.interval == '1d' else f'_{args.interval}'
+        args.out = os.path.join(HERE, f'data{suffix}.pickle')
+    if args.interval in ('5m', '15m') and args.top > 60:
+        print(f'note: {args.interval} bars are heavy (~{86400 // (300 if args.interval == "5m" else 900)}'
+              f'/day/pair) — consider --top <= 60 and a later --start', flush=True)
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
     end = (datetime.fromisoformat(args.end) if args.end else datetime.now(timezone.utc)).replace(tzinfo=timezone.utc)
@@ -152,7 +167,8 @@ def main():
     loop.set_exception_handler(lambda _l, _c: None)      # silence the cosmetic aiosonic teardown
     try:
         rc = loop.run_until_complete(fetch(args.top, start, end, args.out, args.quote,
-                                           args.min_years, args.concurrency, args.timeout))
+                                           args.min_years, args.concurrency, args.timeout,
+                                           interval=args.interval))
     except KeyboardInterrupt:
         rc = 130
     sys.stdout.flush()
