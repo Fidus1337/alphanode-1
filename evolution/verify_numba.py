@@ -16,7 +16,7 @@ from genome import Node, random_tree
 import fastsim
 from fastsim import precompute_market, _sim_kernel_impl
 
-VOL, EXEC, INERTIA = 0.30, 0.001, 0.10
+VOL, EXEC, INERTIA, ANN, LAMBDA = 0.30, 0.001, 0.10, 365, 0.06
 
 
 def _prep(node, tk, panel, market):
@@ -58,13 +58,13 @@ def main():
     jit = fastsim._kernel_jit
     # prep everything first, and warm up the JIT (first call compiles) so timing is fair
     prepped = [(name, *_prep(g, tk, panel, market)) for name, g in genomes]
-    jit(prepped[0][1], C, R, V, prepped[0][2], VOL, EXEC, INERTIA)
+    jit(prepped[0][1], C, R, V, prepped[0][2], VOL, EXEC, INERTIA, ANN, LAMBDA)
 
     worst_corr, worst_diff = 1.0, 0.0
     t_py = t_jit = 0.0
     for name, A, E in prepped:
-        t0 = time.perf_counter(); cap_py = _sim_kernel_impl(A, C, R, V, E, VOL, EXEC, INERTIA)
-        t1 = time.perf_counter(); cap_jit = jit(A, C, R, V, E, VOL, EXEC, INERTIA)
+        t0 = time.perf_counter(); cap_py = _sim_kernel_impl(A, C, R, V, E, VOL, EXEC, INERTIA, ANN, LAMBDA)
+        t1 = time.perf_counter(); cap_jit = jit(A, C, R, V, E, VOL, EXEC, INERTIA, ANN, LAMBDA)
         t2 = time.perf_counter()
         t_py += t1 - t0; t_jit += t2 - t1
         rp, rj = _returns(cap_py, idx), _returns(cap_jit, idx)

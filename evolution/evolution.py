@@ -21,14 +21,15 @@ from evaluator import build_panel, make_market, evaluate
 _G = {}
 
 
-def _winit(data, start, end, splits, vol, exec_rate, instruments):
-    tk, raw, panel = build_panel(data, start, end, instruments)
-    _G.update(tk=tk, panel=panel, market=make_market(panel, tk, raw),
-              splits=splits, vol=vol, exec=exec_rate)
+def _winit(data, start, end, splits, vol, exec_rate, instruments, freq, vol_window, ann, ewma_lambda):
+    tk, raw, panel = build_panel(data, start, end, instruments, freq=freq)
+    _G.update(tk=tk, panel=panel, market=make_market(panel, tk, raw, vol_window=vol_window),
+              splits=splits, vol=vol, exec=exec_rate, ann=ann, ewma_lambda=ewma_lambda)
 
 
 def _weval(node):
-    return evaluate(node, _G['tk'], _G['panel'], _G['market'], _G['splits'], _G['vol'], _G['exec'])
+    return evaluate(node, _G['tk'], _G['panel'], _G['market'], _G['splits'], _G['vol'], _G['exec'],
+                    ann=_G['ann'], ewma_lambda=_G['ewma_lambda'])
 
 
 class Runner:
@@ -36,23 +37,29 @@ class Runner:
 
     def __init__(self, cfg):
         self.cfg = cfg
+        self.ann = cfg.get('ann', 365.0)                 # timeframe params (daily defaults)
+        self.ewma_lambda = cfg.get('ewma_lambda', 0.06)
+        freq = cfg.get('freq', 'D')
+        vol_window = cfg.get('vol_window', 30)
         if cfg['n_jobs'] == 1:
             self.tk, _raw, self.panel = build_panel(cfg['data'], cfg['start'], cfg['end'],
-                                                    cfg.get('instruments'))
-            self.market = make_market(self.panel, self.tk, _raw)
+                                                    cfg.get('instruments'), freq=freq)
+            self.market = make_market(self.panel, self.tk, _raw, vol_window=vol_window)
             self.pool = None
         else:
             self.pool = mp.Pool(
                 cfg['n_jobs'], initializer=_winit,
                 initargs=(cfg['data'], cfg['start'], cfg['end'],
-                          cfg['splits'], cfg['vol'], cfg['exec'], cfg.get('instruments')))
+                          cfg['splits'], cfg['vol'], cfg['exec'], cfg.get('instruments'),
+                          freq, vol_window, self.ann, self.ewma_lambda))
 
     def map(self, nodes):
         if not nodes:
             return []
         if self.pool is None:
-            return [evaluate(n, self.tk, self.panel, self.market,
-                             self.cfg['splits'], self.cfg['vol'], self.cfg['exec']) for n in nodes]
+            return [evaluate(n, self.tk, self.panel, self.market, self.cfg['splits'],
+                             self.cfg['vol'], self.cfg['exec'],
+                             ann=self.ann, ewma_lambda=self.ewma_lambda) for n in nodes]
         return self.pool.map(_weval, nodes, chunksize=1)
 
     def close(self):

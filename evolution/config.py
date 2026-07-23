@@ -10,6 +10,11 @@ from datetime import datetime
 
 import pandas as pd
 
+try:
+    from timeframe import resolve as _resolve_tf     # bar size -> annualization / grid / vol params
+except Exception:                                    # pragma: no cover  (present in the shipped tree)
+    _resolve_tf = None
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
 # Paths can be overridden externally (the built application points to the bundle/user folder).
@@ -39,9 +44,20 @@ def load_config(path=None):
     else:
         instruments = [x.strip().upper() for x in uni_raw.replace('\n', ',').split(',') if x.strip()]
 
+    tf_name = cp.get('timeframe', 'tf', fallback='1d')
+    if _resolve_tf is not None:
+        _tf = _resolve_tf(tf_name)
+        tf_fields = {'tf': _tf.name, 'ann': _tf.periods_per_year, 'freq': _tf.pandas_freq,
+                     'vol_window': _tf.vol_window, 'ewma_lambda': _tf.ewma_lambda,
+                     'binance_interval': _tf.binance_interval}
+    else:                                            # daily fallback (identical to the original engine)
+        tf_fields = {'tf': '1d', 'ann': 365.0, 'freq': 'D', 'vol_window': 30,
+                     'ewma_lambda': 0.06, 'binance_interval': '1d'}
+
     return {
         'data': DATA,
         'instruments': instruments,
+        **tf_fields,
         'start': datetime.fromisoformat(seg['train_start'].strip()),
         'end': datetime.fromisoformat(seg['test_end'].strip()),
         'splits': {
