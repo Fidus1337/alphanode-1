@@ -134,11 +134,21 @@ perpetuals by 24h turnover (public Binance endpoints, no keys):
 **Timeframes.** The whole pipeline can run on `1d | 4h | 1h | 15m | 5m` bars — pick the bar size in
 the GUI (MARKET DATA → *Timeframe*) or `config.ini [timeframe]`. Each timeframe keeps its **own**
 data snapshot (`data_<tf>.pickle`) and its **own** alpha library (`library_<tf>.jsonl`) — alphas
-mined on different bar sizes are never mixed. For intraday: download data at that interval first,
-set **later date segments** (intraday history is shorter and much denser), and note that the
-portfolio builder / paper-trading remain daily-only for now (the real engine is tuned for daily
-bars); the search, leaderboard, equity charts, CSV signals and PDF reports are fully
-timeframe-aware.
+mined on different bar sizes are never mixed. The portfolio builder / paper-trading remain
+daily-only for now (the real engine is tuned for daily bars); the search, leaderboard, equity
+charts, CSV signals and PDF reports are fully timeframe-aware.
+
+Finer bars get **shorter, later** recommended windows (intraday history is denser and heavier to
+download). Picking a timeframe in the GUI fills these in automatically; `fetch_data` uses the
+`--start` default and a longer per-pair `--timeout` to match. The defaults (edit freely):
+
+| tf | history / TRAIN | VAL from | TEST from | end | pairs |
+|----|-----------------|----------|-----------|-----|-------|
+| 1d  | 2019-09-05 | 2021-11-01 | 2023-01-01 | 2026-07-05 | 150 |
+| 4h  | 2020-06-01 | 2023-01-01 | 2024-09-01 | 2026-07-01 | 100 |
+| 1h  | 2022-06-01 | 2024-06-01 | 2025-06-01 | 2026-07-01 |  60 |
+| 15m | 2024-01-01 | 2025-04-01 | 2025-12-01 | 2026-07-01 |  40 |
+| 5m  | 2024-09-01 | 2025-09-01 | 2026-03-01 | 2026-07-01 |  25 |
 
 or the **⟳ Update data.pickle** button in the GUI. Young listings are filtered out (`--min-years`) so the
 search window isn't mostly NaN. **After changing the universe, clear the history and restart the search** —

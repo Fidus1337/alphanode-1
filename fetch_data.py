@@ -25,10 +25,15 @@ import argparse
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-if HERE not in sys.path:
-    sys.path.insert(0, HERE)
+for _p in (HERE, os.path.join(HERE, 'evolution')):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from quantpylib.wrappers.binance import Binance   # noqa: E402
+try:
+    from timeframe import resolve as _resolve_tf   # per-timeframe recommended history start
+except Exception:                                  # pragma: no cover
+    _resolve_tf = None
 
 MIN_BARS = 30                                      # final backstop: completely empty ones — skip
 YEAR_SECS = 365.25 * 24 * 3600
@@ -164,7 +169,9 @@ def main():
     ap = argparse.ArgumentParser(description='Download top-N USDT perps (with history >= N years) from Binance')
     ap.add_argument('--top', type=int, default=150, help='how many pairs (top by 24h turnover)')
     ap.add_argument('--min-years', type=float, default=3.0, help='minimum years of history (by listing date)')
-    ap.add_argument('--start', default='2019-09-05', help='history start YYYY-MM-DD')
+    ap.add_argument('--start', default=None,
+                    help='history start YYYY-MM-DD (default: the timeframe\'s recommended start — '
+                         '2019-09-05 for 1d, later for intraday since its history is denser)')
     ap.add_argument('--end', default=None, help='history end YYYY-MM-DD (default today)')
     ap.add_argument('--out', default=None,
                     help='where to write (default: data.pickle for 1d, data_<interval>.pickle otherwise)')
@@ -181,9 +188,14 @@ def main():
     if args.out is None:
         suffix = '' if args.interval == '1d' else f'_{args.interval}'
         args.out = os.path.join(HERE, f'data{suffix}.pickle')
+    if args.start is None:                                # per-timeframe recommended history start
+        args.start = (_resolve_tf(args.interval).history if _resolve_tf is not None
+                      else '2019-09-05')
+        print(f'· --start not given → {args.start} (recommended for {args.interval}); '
+              'override with --start', flush=True)
     if args.interval in ('5m', '15m') and args.top > 60:
         print(f'note: {args.interval} bars are heavy (~{86400 // (300 if args.interval == "5m" else 900)}'
-              f'/day/pair) — consider --top <= 60 and a later --start', flush=True)
+              f'/day/pair) — consider --top <= 60', flush=True)
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
     end = (datetime.fromisoformat(args.end) if args.end else datetime.now(timezone.utc)).replace(tzinfo=timezone.utc)

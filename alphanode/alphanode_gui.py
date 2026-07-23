@@ -553,12 +553,17 @@ class App:
         tf_box = ttk.Combobox(tfrow, textvariable=self.v_tf, values=('1d', '4h', '1h', '15m', '5m'),
                               state='readonly', width=6)
         tf_box.pack(side='right')
+        tf_box.bind('<<ComboboxSelected>>', self._on_tf_change)
         self._tip(tf_box, 'Bar size for the WHOLE pipeline: search, metrics, signals.\n'
                           '1d — the classic daily engine. Intraday (4h/1h/15m/5m):\n'
                           '• each timeframe keeps its own data snapshot (data_<tf>.pickle)\n'
                           '  and its own alpha library — download data for it first;\n'
-                          '• set LATER date segments (intraday history is shorter/heavier);\n'
+                          '• picking a timeframe fills in its recommended date segments\n'
+                          '  and pair count (intraday history is shorter and denser);\n'
                           '• portfolio build and paper-trade are daily-only for now.')
+        self.lbl_tf_note = self._lbl(inner, text='', text_color=MUT, font=(self.UI, 11),
+                                     anchor='w', justify='left')
+        self.lbl_tf_note.pack(anchor='w', pady=(3, 0))
         self.btn_fetch = self._btn(inner, 'Download fresh data from Binance', self._fetch_data)
         self.btn_fetch.pack(fill='x', pady=(10, 0))
         self._tip(self.btn_fetch, 'Download fresh candles at the selected timeframe from Binance\n'
@@ -1160,7 +1165,7 @@ class App:
         self.v_pop.set(c['pop']); self.v_gens.set(c['gens']); self.v_seed.set(c['seed'])
         self.v_pause.set(c['pause']); self.v_port.set(c['port'])
         self.v_fetchn.set(c['fetch_n']); self.v_minyears.set(c['fetch_years'])
-        self.v_tf.set(c.get('timeframe', '1d'))
+        self.v_tf.set(c.get('timeframe', '1d')); self._tf_note()
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
@@ -1177,6 +1182,36 @@ class App:
         self.btn_stop.configure(state='normal' if running else 'disabled')
 
     # ---------- timeframe-aware paths ----------
+    def _on_tf_change(self, _evt=None):
+        """Picking a timeframe fills in its recommended date segments and pair count (from
+        evolution/timeframe.py). These are only sensible defaults — the user can still edit the
+        fields. Finer bars get a shorter, later window (intraday history is denser and heavier)."""
+        try:
+            from timeframe import resolve as _rtf
+            t = _rtf(self.v_tf.get())
+        except Exception:                                # noqa: BLE001
+            return
+        seg = t.segments
+        self.v_train.set(seg['train_start']); self.v_val.set(seg['val_start'])
+        self.v_test.set(seg['test_start']); self.v_end.set(seg['test_end'])
+        self.v_fetchn.set(t.max_pairs)
+        self._tf_note()
+
+    def _tf_note(self):
+        """Refresh the one-line hint under the timeframe selector (no field changes)."""
+        try:
+            from timeframe import resolve as _rtf
+            t = _rtf(self.v_tf.get())
+        except Exception:                                # noqa: BLE001
+            return
+        note = ('daily engine — full history' if t.name == '1d' else
+                f'{t.name} bars · recommended history from {t.history} · '
+                f'download {t.name} data first, then Start')
+        try:
+            self.lbl_tf_note.configure(text=note)
+        except (AttributeError, tk.TclError):
+            pass
+
     def _tf(self):
         """The configured bar size ('1d','4h','1h','15m','5m'); the whole pipeline follows it."""
         return (self.cfg.get('timeframe') or '1d').strip().lower()
