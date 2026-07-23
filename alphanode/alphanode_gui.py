@@ -2318,7 +2318,7 @@ class App:
         btnrow = self._box(head)
         btnrow.pack(anchor='w', pady=(10, 0))
         self._btn(btnrow, 'Paper Trade — build bundle', lambda: self._paper_trade(champ),
-                  kind='accent', width=230).pack(side='left')
+                  width=230).pack(side='left')
         self._btn(btnrow, 'Download signals (CSV)', lambda: self._download_signals(champ),
                   width=196).pack(side='left', padx=(8, 0))
         _f = champ.get('formula', '')
