@@ -8,11 +8,16 @@ Two checks --role selfcheck can't give:
      PDF on disk, exactly the path the GUI's "PDF report" buttons take via a child process
      (windowed exe + piped stdio is the other Windows-specific risk).
 
+data.pickle is NOT in the repo (a 4.6MB binary the fetcher refreshes), so the smoke generates
+a SYNTHETIC snapshot in load_raw's exact format and points the children at it via
+ALPHANODE_DATA — CI needs no market data and no network.
+
     python packaging/ci_smoke.py packaging/dist/AlphaNode/AlphaNode[.exe]
     python packaging/ci_smoke.py alphanode/app_entry.py     # dev mode (script, not frozen)
 """
 import json
 import os
+import pickle
 import re
 import random
 import subprocess
@@ -25,8 +30,36 @@ cmd = [sys.executable, target] if target.endswith('.py') else [target]
 cwd = os.path.dirname(target)
 tmp = tempfile.mkdtemp(prefix='an_ci_')
 
+
+def make_data(path, n_tk=25):
+    """Synthetic (tickers, [OHLCV dfs]) pickle covering the config.ini TRAIN..TEST span."""
+    import numpy as np
+    import pandas as pd
+    rng = np.random.default_rng(11)
+    idx = pd.date_range('2019-09-01', '2026-07-05', freq='D', tz='UTC')
+    n = len(idx)
+    tk, dfs = [], []
+    for i in range(n_tk):
+        ret = rng.normal(0.0005, 0.03 + 0.01 * (i % 5), n)
+        close = 100.0 * np.exp(np.cumsum(ret))
+        op = close * (1 + rng.normal(0, 0.005, n))
+        hi = np.maximum(op, close) * (1 + np.abs(rng.normal(0, 0.008, n)))
+        lo = np.minimum(op, close) * (1 - np.abs(rng.normal(0, 0.008, n)))
+        vol = np.exp(rng.normal(10, 1, n)) * (1 + 0.5 * np.sin(np.arange(n) / 37 + i))
+        dfs.append(pd.DataFrame({'open': op, 'high': hi, 'low': lo, 'close': close,
+                                 'volume': vol}, index=idx))
+        tk.append(f'T{i:02d}USDT')
+    with open(path, 'wb') as f:
+        pickle.dump((tk, dfs), f)
+
+
+data = os.path.join(tmp, 'data.pickle')
+make_data(data)
+print(f'synthetic  : {os.path.getsize(data) // 1024} KB market snapshot -> {data}')
+
 # ---- 1. one search round in a scratch state dir ----
-env = dict(os.environ, ALPHANODE_MAX_ROUNDS='1', ALPHANODE_POP='20', ALPHANODE_GENS='2',
+env = dict(os.environ, ALPHANODE_DATA=data,
+           ALPHANODE_MAX_ROUNDS='1', ALPHANODE_POP='20', ALPHANODE_GENS='2',
            ALPHANODE_PAUSE='0', ALPHANODE_STATE_DIR=tmp, ALPHANODE_STATUS_PORT='8799')
 subprocess.run(cmd + ['--role', 'node'], env=env, cwd=cwd, timeout=900, check=True)
 lib = os.path.join(tmp, 'library.jsonl')

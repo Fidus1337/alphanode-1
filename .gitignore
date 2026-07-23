@@ -36,3 +36,6 @@ evolution/evo_*.png
 # ── OS junk ─────────────────────────────────────────────
 .DS_Store
 Thumbs.db
+
+# ── market data snapshot (binary, 4.6MB, refreshed by the fetcher — not for git) ──
+data.pickle
