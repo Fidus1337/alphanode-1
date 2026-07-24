@@ -42,6 +42,10 @@ INTERVALS = {'5m': ('m', 5), '15m': ('m', 15), '1h': ('h', 1), '4h': ('h', 4), '
 # default per-PAIR timeout by interval: intraday majors need MANY paginated requests (BTC 1h from
 # 2019 ≈ 40+ x 1490-bar pages through a shared rate limiter). A flat 120s silently DROPS them.
 TIMEOUTS = {'1d': 120, '4h': 360, '1h': 900, '15m': 2400, '5m': 6000}
+# default concurrency by interval: intraday floods Binance with paginated kline requests; at 6
+# parallel the weight limit kicks in after ~15 min and ALL downloads stall in a rate-limit pause.
+# Fewer workers finish sooner in wall-clock because they never trip the cooldown.
+CONCURRENCY = {'1d': 6, '4h': 4, '1h': 3, '15m': 2, '5m': 2}
 
 
 def save_pickle(path, obj):
@@ -98,6 +102,7 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
     print(f'· downloading {interval} bars up to {end.date()} '
           f'(each pair starts from its listing; {concurrency} in parallel)…', flush=True)
     sem = asyncio.Semaphore(concurrency)
+    active = {}                                                # sym -> download start (monotonic)
 
     async def one(sym):
         ob = onboard.get(sym)
@@ -107,6 +112,7 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
             if ob_dt > start:
                 s_start = ob_dt                                # without a day-by-day walk of the pre-listing period
         async with sem:
+            active[sym] = asyncio.get_event_loop().time()
             try:
                 df = await asyncio.wait_for(bn.get_trade_bars(sym, s_start, end, gran, mult),
                                             timeout=timeout)
@@ -115,22 +121,34 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
                 return sym, TimeoutError(f'timeout {timeout}s')
             except Exception as e:                             # noqa: BLE001
                 return sym, e
+            finally:
+                active.pop(sym, None)
 
     got = {}
     done = 0
     pending = set(chosen)
 
     async def heartbeat():
-        """Intraday pairs take minutes each with no per-request output — show signs of life so the
-        GUI console doesn't look frozen while the majors paginate through years of bars."""
-        t0 = asyncio.get_event_loop().time()
+        """Intraday pairs take minutes each with no per-request output — show what is ACTUALLY
+        downloading right now (only `concurrency` pairs at a time; the rest wait in a queue) so
+        the console doesn't look frozen while the majors paginate through years of bars."""
+        loop = asyncio.get_event_loop()
+        last_done = -1
+        stall_since = loop.time()
         while pending:
             await asyncio.sleep(20)
             if not pending:
                 break
-            names = ', '.join(sorted(pending)[:6]) + (' …' if len(pending) > 6 else '')
-            print(f'  … still downloading {len(pending)} pairs ({names}) — '
-                  f'{asyncio.get_event_loop().time() - t0:.0f}s elapsed', flush=True)
+            if done != last_done:                              # progress since the last beat
+                last_done, stall_since = done, loop.time()
+            now = loop.time()
+            act = ', '.join(f'{s} {now - t:.0f}s' for s, t in sorted(active.items(), key=lambda kv: kv[1]))
+            line = (f'  … downloading now: {act or "—"} · queued {max(0, len(pending) - len(active))} '
+                    f'· done {done}/{len(chosen)}')
+            if now - stall_since > 120:                        # nothing finished for 2+ min
+                line += ('  [no completions for a while — likely a Binance rate-limit pause; '
+                         f'the client retries, each pair caps at {timeout:.0f}s]')
+            print(line, flush=True)
 
     hb = asyncio.ensure_future(heartbeat())
     for coro in asyncio.as_completed([one(s) for s in chosen]):
@@ -176,7 +194,9 @@ def main():
     ap.add_argument('--out', default=None,
                     help='where to write (default: data.pickle for 1d, data_<interval>.pickle otherwise)')
     ap.add_argument('--quote', default='USDT', help='quote currency (USDT)')
-    ap.add_argument('--concurrency', type=int, default=6, help='how many pairs to download in parallel')
+    ap.add_argument('--concurrency', type=int, default=None,
+                    help='how many pairs to download in parallel (default scales with --interval: '
+                         '6 for 1d, 3 for 1h, 2 for 15m/5m — more trips the Binance rate limit)')
     ap.add_argument('--timeout', type=float, default=None,
                     help='timeout per pair, sec (default scales with --interval: 120 for 1d, '
                          '900 for 1h, … — intraday needs many paginated requests per pair)')
@@ -185,6 +205,8 @@ def main():
     args = ap.parse_args()
     if args.timeout is None:
         args.timeout = TIMEOUTS[args.interval]
+    if args.concurrency is None:
+        args.concurrency = CONCURRENCY[args.interval]
     if args.out is None:
         suffix = '' if args.interval == '1d' else f'_{args.interval}'
         args.out = os.path.join(HERE, f'data{suffix}.pickle')
