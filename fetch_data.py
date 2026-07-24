@@ -29,7 +29,9 @@ for _p in (HERE, os.path.join(HERE, 'evolution')):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from quantpylib.wrappers.binance import Binance   # noqa: E402
+from quantpylib.wrappers.binance import Binance                 # noqa: E402
+from quantpylib.throttler.rate_semaphore import AsyncRateSemaphore  # noqa: E402
+from quantpylib.throttler.exceptions import HTTPException           # noqa: E402
 try:
     from timeframe import resolve as _resolve_tf   # per-timeframe recommended history start
 except Exception:                                  # pragma: no cover
@@ -76,6 +78,33 @@ def _onboard_ts(sym_info):
 async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, timeout, interval='1d'):
     gran, mult = INTERVALS[interval]
     bn = Binance()
+
+    # Binance fapi allows 2400 weight/min and a 1500-bar kline page costs weight 10 → ~240 pages
+    # a minute for the whole IP. quantpylib's stock throttle (6000 credits / 20 per page / 60s)
+    # admits 300 pages/min — 25% OVER budget, so long intraday paginations trip 429 regardless of
+    # how few pairs run in parallel. Re-budget to 180 pages/min and, when a 429/418 still slips
+    # through, honor Retry-After and repeat the SAME page instead of dropping the whole pair.
+    bn.rate_semaphore = AsyncRateSemaphore(3600)
+    raw_request = bn.http_client.request
+
+    async def paced_request(**kw):
+        attempts = 8
+        for i in range(attempts):
+            try:
+                return await raw_request(**kw)
+            except HTTPException as e:
+                if e.status_code not in (429, 418) or i == attempts - 1:
+                    raise
+                try:
+                    ra = float(e.headers.get('retry-after'))
+                except (TypeError, ValueError, AttributeError):
+                    ra = 30.0
+                wait = ra + 5 + 15 * i                     # the weight window is a rolling minute:
+                print(f'  · rate-limit {e.status_code}: pausing {wait:.0f}s, '  # right after Retry-After
+                      f'then retrying the same page (attempt {i + 1}/{attempts})…', flush=True)
+                await asyncio.sleep(wait)
+
+    bn.http_client.request = paced_request
 
     print('· pulling instrument list (exchangeInfo)…', flush=True)
     info = await bn.exchange_info()
