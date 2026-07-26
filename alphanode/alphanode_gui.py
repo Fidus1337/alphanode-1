@@ -69,9 +69,19 @@ SETTINGS = apppaths.settings_file()
 CORES = os.cpu_count() or 4
 
 
+TF_CHOICES = ('1d', '4h', '1h', '15m')
+
+
 def _tf_suffix(tf):
     """File suffix for per-timeframe state: '' for the historical daily files, '_1h' etc. else."""
     return '' if (tf or '1d') == '1d' else f'_{tf}'
+
+
+def _tf_clean(tf):
+    """Coerce a stored timeframe to a supported one — settings saved before a timeframe was
+    dropped from the product ('5m') must fall back to daily instead of crashing the pipeline."""
+    t = (tf or '1d').strip().lower()
+    return t if t in TF_CHOICES else '1d'
 
 
 def _child_cmd(role):
@@ -256,7 +266,7 @@ class App:
             seed=self._gi(self.v_seed, d['seed']), pause=self._gi(self.v_pause, d['pause']),
             port=self._gi(self.v_port, d['port']), fetch_n=self._gi(self.v_fetchn, d['fetch_n']),
             fetch_years=self._gi(self.v_minyears, d['fetch_years']),
-            timeframe=(self.v_tf.get() or '1d'),
+            timeframe=_tf_clean(self.v_tf.get()),
             explore_every=max(1, self._gi(self.v_explore, d['explore_every'])),
             seed_from_lib=bool(self.v_seedlib.get()),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
@@ -549,13 +559,13 @@ class App:
         tfrow.pack(fill='x', pady=(6, 0))
         self._lbl(tfrow, text='Timeframe (bar size)', text_color=TXT,
                      font=(self.UI, 13)).pack(side='left')
-        self.v_tf = tk.StringVar(value=self.cfg.get('timeframe', '1d'))
-        tf_box = ttk.Combobox(tfrow, textvariable=self.v_tf, values=('1d', '4h', '1h', '15m', '5m'),
+        self.v_tf = tk.StringVar(value=_tf_clean(self.cfg.get('timeframe', '1d')))
+        tf_box = ttk.Combobox(tfrow, textvariable=self.v_tf, values=TF_CHOICES,
                               state='readonly', width=6)
         tf_box.pack(side='right')
         tf_box.bind('<<ComboboxSelected>>', self._on_tf_change)
         self._tip(tf_box, 'Bar size for the WHOLE pipeline: search, metrics, signals.\n'
-                          '1d — the classic daily engine. Intraday (4h/1h/15m/5m):\n'
+                          '1d — the classic daily engine. Intraday (4h/1h/15m):\n'
                           '• each timeframe keeps its own data snapshot (data_<tf>.pickle)\n'
                           '  and its own alpha library — download data for it first;\n'
                           '• picking a timeframe fills in its recommended date segments\n'
@@ -1165,7 +1175,7 @@ class App:
         self.v_pop.set(c['pop']); self.v_gens.set(c['gens']); self.v_seed.set(c['seed'])
         self.v_pause.set(c['pause']); self.v_port.set(c['port'])
         self.v_fetchn.set(c['fetch_n']); self.v_minyears.set(c['fetch_years'])
-        self.v_tf.set(c.get('timeframe', '1d')); self._tf_note()
+        self.v_tf.set(_tf_clean(c.get('timeframe', '1d'))); self._tf_note()
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
@@ -1213,8 +1223,8 @@ class App:
             pass
 
     def _tf(self):
-        """The configured bar size ('1d','4h','1h','15m','5m'); the whole pipeline follows it."""
-        return (self.cfg.get('timeframe') or '1d').strip().lower()
+        """The configured bar size ('1d','4h','1h','15m'); the whole pipeline follows it."""
+        return _tf_clean(self.cfg.get('timeframe'))
 
     def _data_file(self):
         """Per-timeframe data snapshot: the classic data.pickle for 1d, data_<tf>.pickle else."""

@@ -1,7 +1,7 @@
 """Download OHLCV from Binance USD-M (perpetual) and write a data snapshot pickle.
 
 Takes the top-N USDT perps BY 24H VOLUME among those with history >= MIN_YEARS years (by the
-onboardDate listing date), downloads bars at --interval (1d default; 5m|15m|1h|4h intraday),
+onboardDate listing date), downloads bars at --interval (1d default; 15m|1h|4h intraday),
 and atomically overwrites the snapshot in the (tickers, ohlcvs) format — exactly what
 evolution/ and AlphaNode read. 1d writes data.pickle; an intraday interval writes its own
 data_<tf>.pickle, so timeframes never clobber each other. Public endpoints, no keys needed.
@@ -40,14 +40,14 @@ except Exception:                                  # pragma: no cover
 MIN_BARS = 30                                      # final backstop: completely empty ones — skip
 YEAR_SECS = 365.25 * 24 * 3600
 # bar size -> the qt wrapper's (granularity, multiplier); keep in sync with evolution/timeframe.py
-INTERVALS = {'5m': ('m', 5), '15m': ('m', 15), '1h': ('h', 1), '4h': ('h', 4), '1d': ('d', 1)}
+INTERVALS = {'15m': ('m', 15), '1h': ('h', 1), '4h': ('h', 4), '1d': ('d', 1)}
 # default per-PAIR timeout by interval: intraday majors need MANY paginated requests (BTC 1h from
 # 2019 ≈ 40+ x 1490-bar pages through a shared rate limiter). A flat 120s silently DROPS them.
-TIMEOUTS = {'1d': 120, '4h': 360, '1h': 900, '15m': 2400, '5m': 6000}
+TIMEOUTS = {'1d': 120, '4h': 360, '1h': 900, '15m': 2400}
 # default concurrency by interval: intraday floods Binance with paginated kline requests; at 6
 # parallel the weight limit kicks in after ~15 min and ALL downloads stall in a rate-limit pause.
 # Fewer workers finish sooner in wall-clock because they never trip the cooldown.
-CONCURRENCY = {'1d': 6, '4h': 4, '1h': 3, '15m': 2, '5m': 2}
+CONCURRENCY = {'1d': 6, '4h': 4, '1h': 3, '15m': 2}
 
 
 def save_pickle(path, obj):
@@ -225,12 +225,12 @@ def main():
     ap.add_argument('--quote', default='USDT', help='quote currency (USDT)')
     ap.add_argument('--concurrency', type=int, default=None,
                     help='how many pairs to download in parallel (default scales with --interval: '
-                         '6 for 1d, 3 for 1h, 2 for 15m/5m — more trips the Binance rate limit)')
+                         '6 for 1d, 3 for 1h, 2 for 15m — more trips the Binance rate limit)')
     ap.add_argument('--timeout', type=float, default=None,
                     help='timeout per pair, sec (default scales with --interval: 120 for 1d, '
                          '900 for 1h, … — intraday needs many paginated requests per pair)')
     ap.add_argument('--interval', default='1d', choices=sorted(INTERVALS),
-                    help='bar size (5m|15m|1h|4h|1d); intraday is written to its own data_<tf>.pickle')
+                    help='bar size (15m|1h|4h|1d); intraday is written to its own data_<tf>.pickle')
     args = ap.parse_args()
     if args.timeout is None:
         args.timeout = TIMEOUTS[args.interval]
@@ -244,9 +244,8 @@ def main():
                       else '2019-09-05')
         print(f'· --start not given → {args.start} (recommended for {args.interval}); '
               'override with --start', flush=True)
-    if args.interval in ('5m', '15m') and args.top > 60:
-        print(f'note: {args.interval} bars are heavy (~{86400 // (300 if args.interval == "5m" else 900)}'
-              f'/day/pair) — consider --top <= 60', flush=True)
+    if args.interval == '15m' and args.top > 60:
+        print('note: 15m bars are heavy (~96/day/pair) — consider --top <= 60', flush=True)
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
     end = (datetime.fromisoformat(args.end) if args.end else datetime.now(timezone.utc)).replace(tzinfo=timezone.utc)

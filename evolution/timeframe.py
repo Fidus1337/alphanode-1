@@ -1,4 +1,4 @@
-"""Timeframe abstraction: everything that depends on the bar size (5m … 1d), in one place.
+"""Timeframe abstraction: everything that depends on the bar size (15m … 1d), in one place.
 
 The engine (build_panel / precompute_market / fast_sim / metrics) is otherwise timeframe-agnostic,
 so daily behaviour is reproduced EXACTLY by DAILY, and any intraday bar size is just a different
@@ -67,16 +67,16 @@ _TF = {
     '15m': Timeframe('15m', '15m', '15min',   900, 2880,
                      history='2024-01-01', val_start='2025-04-01', test_start='2025-12-01',
                      test_end='2026-07-01', max_pairs=40),
-    '5m':  Timeframe('5m',  '5m',  '5min',    300, 8640,
-                     history='2024-09-01', val_start='2025-09-01', test_start='2026-03-01',
-                     test_end='2026-07-01', max_pairs=25),
 }
+# 5m was removed from the product (2026-07-26): bars are too heavy to download and simulate,
+# and at that scale unmodeled microstructure (slippage, queue position) dominates the signal.
+# The engine itself stays bar-size-agnostic — re-adding an entry here is all it would take.
 
 DAILY = _TF['1d']
 
 
 def resolve(name):
-    """Timeframe by short name ('5m','15m','1h','4h','1d'); default/blank -> daily."""
+    """Timeframe by short name ('15m','1h','4h','1d'); default/blank -> daily."""
     key = (name or '1d').strip().lower()
     if key not in _TF:
         raise ValueError(f'unknown timeframe {name!r}; known: {list(_TF)}')

@@ -1,7 +1,12 @@
-# Multi-timeframe trading (5m → 1d) — design
+# Multi-timeframe trading (15m → 1d) — design
 
-**Goal:** let the search + simulation + paper-trading run on any bar size from 5 minutes to 1 day,
+**Goal:** let the search + simulation + paper-trading run on any bar size from 15 minutes to 1 day,
 not just daily. Branch: `dev/multi-timeframe`.
+
+> Status 2026-07-26: shipped for 15m/1h/4h/1d. 5m was dropped from the product entirely — the
+> data is too heavy and unmodeled microstructure dominates at that scale (see "Costs & realism"
+> below, which predicted exactly this). The engine remains bar-size-agnostic; the 5m analysis is
+> kept for the record.
 
 ## Key insight — this is *parameterizing the time axis*, not a rewrite
 

@@ -131,7 +131,7 @@ perpetuals by 24h turnover (public Binance endpoints, no keys):
 .venv/bin/python fetch_data.py --top 60 --interval 1h --start 2024-01-01   # intraday snapshot
 ```
 
-**Timeframes.** The whole pipeline can run on `1d | 4h | 1h | 15m | 5m` bars — pick the bar size in
+**Timeframes.** The whole pipeline can run on `1d | 4h | 1h | 15m` bars — pick the bar size in
 the GUI (MARKET DATA → *Timeframe*) or `config.ini [timeframe]`. Each timeframe keeps its **own**
 data snapshot (`data_<tf>.pickle`) and its **own** alpha library (`library_<tf>.jsonl`) — alphas
 mined on different bar sizes are never mixed. The portfolio builder / paper-trading remain
@@ -148,7 +148,9 @@ download). Picking a timeframe in the GUI fills these in automatically; `fetch_d
 | 4h  | 2020-06-01 | 2023-01-01 | 2024-09-01 | 2026-07-01 | 100 |
 | 1h  | 2022-06-01 | 2024-06-01 | 2025-06-01 | 2026-07-01 |  60 |
 | 15m | 2024-01-01 | 2025-04-01 | 2025-12-01 | 2026-07-01 |  40 |
-| 5m  | 2024-09-01 | 2025-09-01 | 2026-03-01 | 2026-07-01 |  25 |
+
+(5m was removed: the data is very heavy to download and simulate, and at that scale slippage
+and microstructure — which the simulator does not model — dominate any signal.)
 
 or the **⟳ Update data.pickle** button in the GUI. Young listings are filtered out (`--min-years`) so the
 search window isn't mostly NaN. **After changing the universe, clear the history and restart the search** —
