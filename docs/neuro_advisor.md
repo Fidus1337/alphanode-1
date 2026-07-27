@@ -50,8 +50,13 @@ export ANTHROPIC_API_KEY=sk-ant-...        # or `ant auth login`
 # or via env (also reaches the node's workers): ALPHANODE_ADVISOR=1
 ```
 
-Cost control: `[advisor] max_calls` caps consults per run (default 8; one consult is roughly
-$0.05–0.15 on claude-opus-5 — a few cents of thinking about where the search is stuck).
+Cost control: the number of consults per run (= per node round) is hard-capped. Default 8;
+one consult is roughly $0.05–0.15 on claude-opus-5. Set it to 1 for "at most one consult per
+round", 0 to disable consults entirely. Ways to set it, most convenient first:
+
+* **GUI:** *NEURO ADVISOR → Max LLM consults per round* (passed to the node on Start);
+* **CLI:** `run_evo.py --advisor --advisor-max-calls 1`;
+* env `ALPHANODE_ADVISOR_MAX_CALLS=1` or `evolution/config.ini` `[advisor] max_calls`.
 
 ## The experiment (what would make this a success)
 

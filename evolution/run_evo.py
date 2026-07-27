@@ -43,6 +43,8 @@ def parse_args():
     p.add_argument('--advisor', action='store_true',
                    help='enable the neuro-symbolic advisor (LLM proposes formulas on plateaus; '
                         'needs ANTHROPIC_API_KEY)')
+    p.add_argument('--advisor-max-calls', type=int, metavar='N',
+                   help='cap LLM consults per run, e.g. 1 (default: config.ini [advisor] max_calls)')
     return p.parse_args()
 
 
@@ -60,6 +62,8 @@ def main():
             cfg[k] = a
     if args.advisor:
         cfg['advisor'] = True
+    if args.advisor_max_calls is not None:
+        cfg['advisor_max_calls'] = max(0, args.advisor_max_calls)
 
     experiments.bootstrap_from_champions()           # save previous champions into the registry
     kind = 'evolve'
