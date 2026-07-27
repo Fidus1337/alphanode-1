@@ -40,6 +40,9 @@ def parse_args():
                    help='warm-start: seed the population with champions from the registry')
     p.add_argument('--seed-source', default=None,
                    help="where to take the seed from: universe_key ('ALL' or 'BTCUSDT|...'); default: all")
+    p.add_argument('--advisor', action='store_true',
+                   help='enable the neuro-symbolic advisor (LLM proposes formulas on plateaus; '
+                        'needs ANTHROPIC_API_KEY)')
     return p.parse_args()
 
 
@@ -55,6 +58,8 @@ def main():
     for k, a in (('pop', args.pop), ('gens', args.gens), ('n_jobs', args.jobs), ('seed', args.seed)):
         if a is not None:
             cfg[k] = a
+    if args.advisor:
+        cfg['advisor'] = True
 
     experiments.bootstrap_from_champions()           # save previous champions into the registry
     kind = 'evolve'
@@ -78,6 +83,9 @@ def main():
           + ('  (+smoke)' if args.smoke else ''))
     uni = cfg.get('instruments')
     print(f'  Universe: {("all from data.pickle" if not uni else f"{len(uni)} pairs: " + ", ".join(uni))}')
+    if cfg.get('advisor'):
+        print(f'  Advisor: ON — {cfg["advisor_model"]} (patience {cfg["advisor_patience"]}, '
+              f'max {cfg["advisor_max_calls"]} calls)')
     sp = cfg['splits']
     print(f'  TRAIN {sp["train"][0].date()}..{sp["train"][1].date()}  '
           f'VAL {sp["val"][0].date()}..{sp["val"][1].date()}  '

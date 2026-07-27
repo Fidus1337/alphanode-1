@@ -90,4 +90,12 @@ def load_config(path=None):
         'corr_thresh': cp.getfloat('fitness', 'corr_threshold'),
         'corr_penalty': cp.getfloat('fitness', 'corr_penalty'),
         'hof_cap': cp.getint('fitness', 'hof_capacity'),
+        # --- neuro-symbolic advisor (optional; needs the anthropic SDK + credentials) ---
+        'advisor': (os.environ.get('ALPHANODE_ADVISOR', '').strip() in ('1', 'true', 'yes')
+                    or cp.getboolean('advisor', 'enabled', fallback=False)),
+        'advisor_model': (os.environ.get('ALPHANODE_ADVISOR_MODEL')
+                          or cp.get('advisor', 'model', fallback='claude-opus-5')),
+        'advisor_patience': cp.getint('advisor', 'patience', fallback=4),
+        'advisor_n': cp.getint('advisor', 'proposals', fallback=10),
+        'advisor_max_calls': cp.getint('advisor', 'max_calls', fallback=8),
     }

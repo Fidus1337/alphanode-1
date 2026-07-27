@@ -139,11 +139,15 @@ def _tournament(scored, rng, k):
     return best[0]
 
 
-def _next_pop(scored, rng, cfg):
+def _next_pop(scored, rng, cfg, extra=None):
+    """`extra`: pre-built nodes injected into the new generation (the LLM advisor's proposals).
+    They take the random-injection slots first — informed guesses instead of blind ones."""
     valid = [s for s in scored if s[1] is not None]
     sel = valid if valid else scored
     new = [e[0].copy() for e in sorted(sel, key=lambda s: -s[2])[:cfg['elitism']]]  # elite
-    for _ in range(cfg['random_inject']):                                          # novelty injection
+    for node in (extra or []):
+        new.append(node)
+    for _ in range(max(0, cfg['random_inject'] - len(extra or []))):               # novelty injection
         new.append(random_tree(rng, cfg['max_depth'], term_prob=0.3))
     guard = 0
     while len(new) < cfg['pop'] and guard < cfg['pop'] * 50:
@@ -198,6 +202,17 @@ def evolve(cfg, log=print):
     cache = {}          # canon -> res (already-evaluated formulas aren't recomputed)
     hof, history = [], []
     n_eval = 0
+
+    # --- neuro-symbolic advisor (optional; see advisor.py). The LLM proposes, the sim judges.
+    adv = None
+    origins = {}        # canon -> 'llm' (provenance: is the advisor actually pulling weight?)
+    best_fit_ever, stall = -1e18, 0
+    if cfg.get('advisor'):
+        from advisor import Advisor
+        adv = Advisor(model=cfg.get('advisor_model'), n_proposals=cfg.get('advisor_n', 10), log=log)
+        if not adv.available():
+            adv = None                              # no SDK/creds -> behave exactly as before
+
     try:
         pop = _init_pop(rng, cfg)
         for gen in range(cfg['gens']):
@@ -233,8 +248,36 @@ def evolve(cfg, log=print):
                 f'| best fit {best[2] if best else float("nan"):+.2f} '
                 f'| HoF[0] base {hb:+.2f} size {len(hof)}')
 
+            # --- plateau detector for the advisor: consult only when the blind search stalls
+            proposals = []
+            if best is not None and best[2] > best_fit_ever + 1e-9:
+                best_fit_ever, stall = best[2], 0
+            else:
+                stall += 1
+            if (adv is not None and gen < cfg['gens'] - 1
+                    and stall >= cfg.get('advisor_patience', 4)
+                    and adv.stats['calls'] < cfg.get('advisor_max_calls', 8)):
+                top = [{'canon': r['canon'], 'fit': f, 'train': r['train_sharpe'],
+                        'val': r['val_sharpe'], 'size': r['size']}
+                       for (_n, r, f) in sorted(valid, key=lambda s: -s[2])[:10]]
+                for node, hypo in adv.propose(top, [h['canon'] for h in hof], stall, cfg):
+                    c = node.canon()
+                    if c not in cache:              # already tried -> not worth a slot
+                        origins[c] = 'llm'
+                        proposals.append(node)
+                        log(f'  advisor -> {c}  [{hypo}]')
+                stall = 0                           # cooldown: don't consult every generation
+
             if gen < cfg['gens'] - 1:
-                pop = _next_pop(scored, rng, cfg)
+                pop = _next_pop(scored, rng, cfg, extra=proposals)
     finally:
         runner.close()
+
+    if adv is not None:
+        for h in hof:
+            h['origin'] = origins.get(h['canon'], 'ga')
+        n_llm = sum(1 for h in hof if h['origin'] == 'llm')
+        s = adv.stats
+        log(f'advisor: {s["calls"]} calls, {s["proposed"]} proposed, {s["valid"]} valid '
+            f'-> {n_llm}/{len(hof)} of the Hall of Fame is LLM-born')
     return hof, history, cache
