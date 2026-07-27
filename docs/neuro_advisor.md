@@ -58,6 +58,19 @@ round", 0 to disable consults entirely. Ways to set it, most convenient first:
 * **CLI:** `run_evo.py --advisor --advisor-max-calls 1`;
 * env `ALPHANODE_ADVISOR_MAX_CALLS=1` or `evolution/config.ini` `[advisor] max_calls`.
 
+## Where you SEE the advisor working
+
+* **GUI dashboard:** a `🧠 LLM advisor: N consults · M formulas injected · K champions in
+  library` line under the round status (appears once the advisor has done anything), plus the
+  last consult's proposal; LLM-born alphas carry a `🧠` badge in the leaderboard. The
+  round-done line gets `· LLM: 1 consult, 6 injected, 2/18 HoF`.
+* **Status page** (`http://localhost:PORT`): an `🧠 LLM advisor` card + the recent
+  `advisor -> formula [hypothesis]` lines + the same badge in the table.
+* **Library / CSV export:** every champion row has an `origin` field (`ga` | `llm`) — the
+  full-library CSV includes the column, so the A/B share is computable offline.
+* **Node log:** `advisor -> ...` per proposal and a per-run summary
+  `advisor: N calls, P proposed, V valid -> X/Y of the Hall of Fame is LLM-born`.
+
 ## The experiment (what would make this a success)
 
 A/B with everything held fixed except the advisor:

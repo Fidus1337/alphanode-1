@@ -123,6 +123,7 @@ def _rm(m):
 
 
 def load_existing():
+    llm_lib = 0
     if os.path.exists(LIB):
         for line in open(LIB, encoding='utf-8'):
             line = line.strip()
@@ -131,9 +132,12 @@ def load_existing():
             try:
                 c = json.loads(line)
                 seen.add(c['formula'])
+                llm_lib += (c.get('origin') == 'llm')
                 leaderboard.append(c)
             except json.JSONDecodeError:
                 pass
+    # cumulative advisor footprint: consults/injected count this session, lib_llm the whole library
+    status['advisor'] = {'consults': 0, 'injected': 0, 'lib_llm': llm_lib}
     leaderboard.sort(key=_basesh, reverse=True)        # selection by fitness min(train,val), NOT by TEST
     del leaderboard[KEEP:]
     if os.path.exists(HIST):
@@ -166,7 +170,8 @@ def load_existing():
 
 def champions_from_hof(hof):
     return [{'rank': i, 'formula': h['canon'], 'size': h['size'], 'base': round(h['base'], 3),
-             'train': _rm(h.get('train')), 'val': _rm(h.get('val')), 'test': _rm(h.get('test'))}
+             'train': _rm(h.get('train')), 'val': _rm(h.get('val')), 'test': _rm(h.get('test')),
+             'origin': h.get('origin', 'ga')}             # 'llm' = proposed by the advisor
             for i, h in enumerate(hof)]
 
 
@@ -232,8 +237,16 @@ def render_html():
         f"<tr><td>{i + 1}</td>"
         f"<td class=t>{('%+.2f' % _basesh(c)) if _basesh(c) > -1e8 else '—'}</td>"
         f"<td>{('%+.2f' % _testsh(c)) if _testsh(c) > -1e8 else '—'}</td>"
-        f"<td class=f>{c['formula']}</td></tr>"
+        f"<td class=f>{'🧠 ' if c.get('origin') == 'llm' else ''}{c['formula']}</td></tr>"
         for i, c in enumerate(leaderboard[:KEEP]))
+    adv = status.get('advisor') or {}
+    adv_card = ''
+    if adv.get('consults') or adv.get('lib_llm'):
+        adv_card = (f"<div class=card><div class=k>🧠 LLM advisor</div>"
+                    f"<b>{adv.get('consults', 0)}</b> consults · {adv.get('injected', 0)} injected "
+                    f"· {adv.get('lib_llm', 0)} champions</div>")
+    adv_lines = ''.join(f'<div>{ln}</div>' for ln in status.get('advisor_log', [])[-4:])
+    adv_log = f'<div class=gen>{adv_lines}</div>' if adv_lines else ''
     return f"""<!doctype html><meta charset=utf-8><title>AlphaNode</title>
 <style>body{{font:14px system-ui;background:#0f1115;color:#d7dce3;margin:0;padding:26px;max-width:1100px}}
 h1{{margin:0 0 2px;font-size:20px}} .sub{{color:#8a93a2;margin:0 0 18px}} .k{{color:#8a93a2;font-size:12px}}
@@ -251,8 +264,10 @@ th{{color:#8a93a2}} td.f,th.f{{text-align:left;font-family:ui-monospace,monospac
   <div class=card><div class=k>alphas found</div><b style="font-size:18px">{len(seen)}</b></div>
   <div class=card><div class=k>resources</div><b>{status['cpu_percent']}%</b> · {status['n_jobs']}/{status['cores']} cores</div>
   <div class=card><div class=k>universe</div><b>{status['universe']}</b> · pop {status['pop']} gens {status['gens']}</div>
+  {adv_card}
 </div>
 <div class=gen>{status.get('current','')} &nbsp; {status.get('gen','')}</div>
+{adv_log}
 <div class=card><div class=k style="margin-bottom:8px">best by fitness min(train,val) · TEST — honest held-out (read-only, does NOT enter selection)</div>
 <table><thead><tr><th>#</th><th>fitness</th><th>TEST (OOS)</th><th class=f>formula</th></tr></thead><tbody>{rows}</tbody></table></div>
 <script>setTimeout(()=>location.reload(),4000)</script>"""
@@ -288,7 +303,12 @@ _last_save = [0.0]
 
 
 def _cb(msg):
-    status['gen'] = str(msg)
+    m = str(msg)
+    status['gen'] = m
+    if 'advisor' in m:                                 # consults + proposals -> a rolling trace
+        alog = status.setdefault('advisor_log', [])    # the GUI/status page shows what the LLM did
+        alog.append(m.strip())
+        del alog[:-8]
     now = time.time()
     if now - _last_save[0] > 1.0:                      # live progress for GUI/page (throttle 1s)
         _last_save[0] = now
@@ -322,8 +342,9 @@ def main():
         status['current'] = f'round {rnd}: {mode} (seed {seed})…'
         save_status()
         t0 = time.time()
+        cfg = build_cfg(seed, seeds)
         try:
-            hof, _hist, cache = evolve(build_cfg(seed, seeds), log=_cb)
+            hof, _hist, cache = evolve(cfg, log=_cb)
         except KeyboardInterrupt:
             break
         except Exception as e:                         # noqa: BLE001
@@ -332,7 +353,7 @@ def main():
             time.sleep(PAUSE)
             continue
 
-        new = 0
+        new, new_llm = 0, 0
         with open(LIB, 'a', encoding='utf-8') as f:
             for c in champions_from_hof(hof):
                 if c['formula'] in seen:
@@ -342,6 +363,7 @@ def main():
                 f.write(json.dumps(c, ensure_ascii=False) + '\n')
                 leaderboard.append(c)
                 new += 1
+                new_llm += (c.get('origin') == 'llm')
         leaderboard.sort(key=_basesh, reverse=True)    # champion = best by min(train,val); TEST closed
         del leaderboard[KEEP:]
         champ = leaderboard[0] if leaderboard else None
@@ -353,6 +375,19 @@ def main():
         bt_s = f'{bt_val:+.2f}' if bt_val is not None else '—'
         entry = {'round': rnd, 'best_base': bb_val, 'best_test': bt_val,
                  'found': len(seen), 'mode': mode, 'ts': iso()}
+        # advisor footprint of the round -> status line, cumulative counters, round history
+        astats = cfg.pop('advisor_stats', None)
+        llm_s = ''
+        if astats and astats.get('calls'):
+            adv = status.get('advisor') or {'consults': 0, 'injected': 0, 'lib_llm': 0}
+            adv['consults'] += astats['calls']
+            adv['injected'] += astats['injected']
+            adv['lib_llm'] += new_llm
+            status['advisor'] = adv
+            entry['llm'] = {'calls': astats['calls'], 'injected': astats['injected'],
+                            'hof': astats['hof_llm'], 'new_champs': new_llm}
+            llm_s = (f' · LLM: {astats["calls"]} consult{"s" if astats["calls"] > 1 else ""}, '
+                     f'{astats["injected"]} injected, {astats["hof_llm"]}/{astats["hof_total"]} HoF')
         history.append(entry)
         try:
             with open(HIST, 'a', encoding='utf-8') as f:
@@ -363,7 +398,7 @@ def main():
                       found=len(seen), best=leaderboard[:KEEP], best_base=bb_val, best_test=bt_val,
                       history=history[-300:],
                       current=f'round {rnd} done [{mode}]: +{new} new · fitness {bb_s} · '
-                              f'TEST(OOS) {bt_s} · {time.time()-t0:.0f}s')
+                              f'TEST(OOS) {bt_s}{llm_s} · {time.time()-t0:.0f}s')
         save_status()
         print(status['current'])
 

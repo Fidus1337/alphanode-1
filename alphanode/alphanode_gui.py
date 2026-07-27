@@ -923,6 +923,9 @@ class App:
         self.lbl_cur = self._lbl(pad, text='', text_color=MUT, font=(self.MONO, 12),
                                     anchor='w', justify='left')
         self.lbl_cur.pack(anchor='w', fill='x', pady=(12, 0))
+        # LLM advisor footprint — appears only once the advisor has actually done something
+        self.lbl_adv = self._lbl(pad, text='', text_color=ACC, font=(self.MONO, 12),
+                                 anchor='w', justify='left')
 
         self._build_signals_card(right)                  # row 1 — hidden while nothing is served
 
@@ -1251,6 +1254,9 @@ class App:
         self.s_trials.configure(text='0')
         self.s_found.configure(text='0')
         self.lbl_cur.configure(text='')
+        self.lbl_adv.configure(text='')
+        if self.lbl_adv.winfo_ismapped():
+            self.lbl_adv.pack_forget()
         self.lbl_state.configure(text='● stopped', fg=MUT)
         self._reset_portfolio_ui()                        # clear the Portfolio panel too
 
@@ -1784,6 +1790,18 @@ class App:
             self.s_trials.configure(text=f'{st.get("trials_total", 0):,}')
             self.s_found.configure(text=str(st.get('found', len(st.get('best', [])))))
             self.lbl_cur.configure(text=(st.get('current', '') + '   ' + st.get('gen', ''))[:120])
+            adv = st.get('advisor') or {}
+            if adv.get('consults') or adv.get('lib_llm'):
+                alog = st.get('advisor_log') or []
+                last = ('   ·   ' + alog[-1]) if alog else ''
+                self.lbl_adv.configure(
+                    text=(f'🧠 LLM advisor: {adv.get("consults", 0)} consults · '
+                          f'{adv.get("injected", 0)} formulas injected · '
+                          f'{adv.get("lib_llm", 0)} champions in library{last}')[:150])
+                if not self.lbl_adv.winfo_ismapped():
+                    self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
+            elif self.lbl_adv.winfo_ismapped():
+                self.lbl_adv.pack_forget()
             self._refresh_leaderboard(st.get('best', []))
             self._history = st.get('history', [])
             self._draw_chart()
@@ -2023,6 +2041,8 @@ class App:
             stripe = 'odd' if i % 2 else 'even'
             formula = c.get('formula', '')
             f = formula if len(formula) <= 78 else formula[:78] + '…'
+            if c.get('origin') == 'llm':                 # proposed by the advisor, survived selection
+                f = '🧠 ' + f
             m = self._metrics_cache.get(formula)
             ls, act, win = self._fmt_metrics(m)
             item = self.tree.insert('', 'end', values=(
@@ -2304,7 +2324,7 @@ class App:
             return
         rows.sort(key=lambda c: c.get('base') if isinstance(c.get('base'), (int, float)) else -1e9,
                   reverse=True)
-        header = ['formula', 'size', 'fitness', 'round', 'found_at']
+        header = ['formula', 'size', 'fitness', 'round', 'found_at', 'origin']
         for seg in ('train', 'val', 'test'):
             header += [f'{seg}_{k}' for k in ('sharpe', 'dd', 'cagr', 'n')]
         out = []
@@ -2312,7 +2332,7 @@ class App:
             base = c.get('base')
             r = [c.get('formula', ''), c.get('size', ''),
                  round(base, 4) if isinstance(base, (int, float)) else '',
-                 c.get('round', ''), c.get('ts', '')]
+                 c.get('round', ''), c.get('ts', ''), c.get('origin', 'ga')]
             for seg in ('train', 'val', 'test'):
                 r += [self._seg(c, seg, k) for k in ('sharpe', 'dd', 'cagr', 'n')]
             out.append(r)

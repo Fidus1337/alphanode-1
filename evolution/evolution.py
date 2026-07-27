@@ -280,4 +280,8 @@ def evolve(cfg, log=print):
         s = adv.stats
         log(f'advisor: {s["calls"]} calls, {s["proposed"]} proposed, {s["valid"]} valid '
             f'-> {n_llm}/{len(hof)} of the Hall of Fame is LLM-born')
+        # surface the run's advisor activity to the caller (node.py -> status page/GUI);
+        # cfg is built fresh per round, so this never leaks across rounds
+        cfg['advisor_stats'] = {**s, 'injected': len(origins),
+                                'hof_llm': n_llm, 'hof_total': len(hof)}
     return hof, history, cache
