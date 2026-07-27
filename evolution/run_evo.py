@@ -45,6 +45,8 @@ def parse_args():
                         'needs ANTHROPIC_API_KEY)')
     p.add_argument('--advisor-max-calls', type=int, metavar='N',
                    help='cap LLM consults per run, e.g. 1 (default: config.ini [advisor] max_calls)')
+    p.add_argument('--advisor-model', metavar='ID',
+                   help='advisor model id: claude-opus-5 (default) / claude-sonnet-5 / claude-haiku-4-5')
     return p.parse_args()
 
 
@@ -64,6 +66,8 @@ def main():
         cfg['advisor'] = True
     if args.advisor_max_calls is not None:
         cfg['advisor_max_calls'] = max(0, args.advisor_max_calls)
+    if args.advisor_model:
+        cfg['advisor_model'] = args.advisor_model.strip()
 
     experiments.bootstrap_from_champions()           # save previous champions into the registry
     kind = 'evolve'

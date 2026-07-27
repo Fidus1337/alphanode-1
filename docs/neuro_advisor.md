@@ -58,6 +58,19 @@ round", 0 to disable consults entirely. Ways to set it, most convenient first:
 * **CLI:** `run_evo.py --advisor --advisor-max-calls 1`;
 * env `ALPHANODE_ADVISOR_MAX_CALLS=1` or `evolution/config.ini` `[advisor] max_calls`.
 
+Model choice: *NEURO ADVISOR → Model* in the GUI (`--advisor-model` /
+`ALPHANODE_ADVISOR_MODEL` / `[advisor] model` elsewhere). All tiers support the
+JSON-schema output the advisor needs; approximate cost per consult:
+
+| model | tier | ~$/consult |
+|---|---|---|
+| `claude-opus-5` (default) | smartest | 0.05–0.15 |
+| `claude-sonnet-5` | mid | 0.02–0.06 |
+| `claude-haiku-4-5` | cheapest | 0.01–0.03 |
+
+*Check key* in the GUI probes the **selected** model, so a typo'd model id fails
+right there (404) instead of mid-run.
+
 ## Where you SEE the advisor working
 
 * **GUI dashboard:** a `🧠 LLM advisor: N consults · M formulas injected · K champions in

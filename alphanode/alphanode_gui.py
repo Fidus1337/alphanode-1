@@ -71,6 +71,10 @@ CORES = os.cpu_count() or 4
 
 TF_CHOICES = ('1d', '4h', '1h', '15m')
 
+# advisor model tiers (all support the structured-output JSON the advisor relies on);
+# the box is editable, so any other model id can be typed in as well
+ADVISOR_MODELS = ('claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5')
+
 
 def _tf_suffix(tf):
     """File suffix for per-timeframe state: '' for the historical daily files, '_1h' etc. else."""
@@ -134,7 +138,7 @@ DEFAULTS = {
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
     # neuro advisor (the API key is NOT here — see KEY_FILE)
-    'advisor': False, 'advisor_max_calls': 8,
+    'advisor': False, 'advisor_max_calls': 8, 'advisor_model': 'claude-opus-5',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -294,13 +298,14 @@ class App:
         if not key:
             self.lbl_advkey.configure(text='no key entered', text_color=NEG)
             return
+        model = (self.v_advmodel.get() or 'claude-opus-5').strip()
         holder = {}
 
         def work():
             try:
                 import anthropic
-                anthropic.Anthropic(api_key=key).models.retrieve('claude-opus-5')
-                holder['res'] = ('✓ key works — claude-opus-5 reachable', POS)
+                anthropic.Anthropic(api_key=key).models.retrieve(model)
+                holder['res'] = (f'✓ key works — {model} reachable', POS)
             except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
                 holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
 
@@ -330,6 +335,7 @@ class App:
             seed_from_lib=bool(self.v_seedlib.get()),
             advisor=bool(self.v_advisor.get()),
             advisor_max_calls=self._gi(self.v_advcalls, d['advisor_max_calls']),
+            advisor_model=(self.v_advmodel.get() or d['advisor_model']).strip(),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -674,22 +680,30 @@ class App:
                                        'proposes new ones (carry/flow/vol hypotheses). The simulator stays\n'
                                        'the only judge — bad ideas die in selection like any random mutation.\n'
                                        'Cost: one consult is roughly $0.05-0.15 — cap them below.')
+        self.v_advmodel = tk.StringVar(value=self.cfg.get('advisor_model', 'claude-opus-5'))
+        model_box = ttk.Combobox(g, textvariable=self.v_advmodel, values=ADVISOR_MODELS, width=19)
+        self._row(g, 'Model', 1, model_box,
+                  tip='Which Claude model proposes formulas (per consult, roughly):\n'
+                      '  claude-opus-5    — smartest, ~$0.05-0.15\n'
+                      '  claude-sonnet-5  — solid mid-tier, ~$0.02-0.06\n'
+                      '  claude-haiku-4-5 — cheapest, ~$0.01-0.03\n'
+                      'The box is editable — any other model id can be typed in.')
         self.v_advcalls = self._num(g, 'Max LLM consults per round', self.cfg.get('advisor_max_calls', 8),
-                                    1, 0, 99, 1,
+                                    2, 0, 99, 1,
                                     tip='Hard cap on Claude consults within one search round.\n'
                                         '1 = at most one consult per round (cheapest meaningful setting);\n'
                                         '0 = never consult (same as unticking the box above).')
         self.v_apikey = tk.StringVar(value=_load_api_key())
         e_key = self._entry(g, self.v_apikey, width=230)
         e_key.configure(show='•')
-        self._row(g, 'Anthropic API key', 2, e_key,
+        self._row(g, 'Anthropic API key', 3, e_key,
                   tip='Key from console.anthropic.com (sk-ant-…). Stored in its own file with\n'
                       'owner-only permissions — never in gui_settings.json, never in git:\n'
                       f'{KEY_FILE}')
         self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12))
-        self.lbl_advkey.grid(row=3, column=0, sticky='w', pady=(4, 0))
+        self.lbl_advkey.grid(row=4, column=0, sticky='w', pady=(4, 0))
         self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
-            .grid(row=3, column=1, sticky='e', pady=(4, 0))
+            .grid(row=4, column=1, sticky='e', pady=(4, 0))
 
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
@@ -1272,6 +1286,7 @@ class App:
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
         self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
         self.v_advcalls.set(c.get('advisor_max_calls', 8))
+        self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -1387,7 +1402,8 @@ class App:
         if c.get('advisor'):
             if adv_key:
                 env.update(ALPHANODE_ADVISOR='1', ANTHROPIC_API_KEY=adv_key,
-                           ALPHANODE_ADVISOR_MAX_CALLS=str(c['advisor_max_calls']))
+                           ALPHANODE_ADVISOR_MAX_CALLS=str(c['advisor_max_calls']),
+                           ALPHANODE_ADVISOR_MODEL=c['advisor_model'])
             else:
                 messagebox.showinfo(
                     'Advisor has no key',
