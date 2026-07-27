@@ -35,6 +35,14 @@ market data, cannot look ahead, and cannot inflate a score.
 
 ## Enabling
 
+**GUI:** settings → *NEURO ADVISOR (LLM, experimental)* — tick the checkbox, paste the key
+from console.anthropic.com, press *Check key* (a free auth-probing call), Start. The key is
+stored in its **own file with 0600 permissions** (`alphanode/anthropic_key`, gitignored;
+in the packaged app — the user data dir), never in `gui_settings.json` — that file is
+tracked by git and a key there would leak with the next settings commit.
+
+**CLI:**
+
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...        # or `ant auth login`
 .venv/bin/python evolution/run_evo.py --advisor            # one run

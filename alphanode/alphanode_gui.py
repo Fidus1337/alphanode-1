@@ -84,6 +84,34 @@ def _tf_clean(tf):
     return t if t in TF_CHOICES else '1d'
 
 
+# The Anthropic API key lives in its OWN file with 0600 permissions — NEVER in
+# gui_settings.json: in dev mode that file is tracked by git and a key stored there
+# would end up on GitHub with the next settings commit.
+KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'anthropic_key')
+
+
+def _load_api_key():
+    try:
+        with open(KEY_FILE, encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+def _save_api_key(key):
+    key = (key or '').strip()
+    try:
+        if not key:
+            if os.path.exists(KEY_FILE):
+                os.remove(KEY_FILE)                     # cleared in the GUI -> gone from disk
+            return
+        with open(KEY_FILE, 'w', encoding='utf-8') as f:
+            f.write(key + '\n')
+        os.chmod(KEY_FILE, 0o600)                       # owner-only (no-op on Windows)
+    except OSError:
+        pass
+
+
 def _child_cmd(role):
     """Command for the child process of role `role`: in the frozen build — the exe itself with
     --role, in dev — the real python with the script."""
@@ -105,6 +133,8 @@ DEFAULTS = {
     'timeframe': '1d',      # bar size for the whole pipeline: 1d | 4h | 1h | 15m | 5m
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
+    # neuro advisor (the API key is NOT here — see KEY_FILE)
+    'advisor': False,
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -256,6 +286,35 @@ class App:
         except Exception:
             return d
 
+    def _check_api_key(self):
+        """Cheap live probe of the pasted key (models.retrieve — free, auth-validating).
+        Runs in a thread; the label is updated by MAIN-THREAD polling of a holder dict —
+        cross-thread root.after is unreliable here (same pattern as the PDF worker)."""
+        key = (self.v_apikey.get() or '').strip()
+        if not key:
+            self.lbl_advkey.configure(text='no key entered', text_color=NEG)
+            return
+        holder = {}
+
+        def work():
+            try:
+                import anthropic
+                anthropic.Anthropic(api_key=key).models.retrieve('claude-opus-5')
+                holder['res'] = ('✓ key works — claude-opus-5 reachable', POS)
+            except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
+                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.lbl_advkey.configure(text='checking…', text_color=MUT)
+
+        def poll():
+            if 'res' in holder:
+                txt, col = holder['res']
+                self.lbl_advkey.configure(text=txt, text_color=col)
+            else:
+                self.root.after(150, poll)
+        self.root.after(150, poll)
+
     def _collect(self):
         d = DEFAULTS
         return dict(
@@ -269,6 +328,7 @@ class App:
             timeframe=_tf_clean(self.v_tf.get()),
             explore_every=max(1, self._gi(self.v_explore, d['explore_every'])),
             seed_from_lib=bool(self.v_seedlib.get()),
+            advisor=bool(self.v_advisor.get()),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -293,6 +353,7 @@ class App:
             json.dump(self.cfg, open(SETTINGS, 'w'), indent=2)
         except Exception:
             pass
+        _save_api_key(self.v_apikey.get())     # its own 0600 file, NOT the (git-tracked) settings
 
     # ---------- style ----------
     def _px(self, n):
@@ -604,6 +665,25 @@ class App:
                                   tip='How many best alphas to keep in the top list.')
         self.v_seedlib = self._chk(g, 'Warm-start from library', self.cfg['seed_from_lib'], 3,
                                    tip='Seed the new generation with the best found alphas (fine-tuning). Off — always from scratch.')
+
+        # --- neuro advisor (LLM) ---
+        g = self._section(inner, 'NEURO ADVISOR (LLM, experimental)')
+        self.v_advisor = self._chk(g, 'LLM proposes formulas on plateaus', self.cfg.get('advisor', False), 0,
+                                   tip='When the search stalls, Claude sees the current best formulas and\n'
+                                       'proposes new ones (carry/flow/vol hypotheses). The simulator stays\n'
+                                       'the only judge — bad ideas die in selection like any random mutation.\n'
+                                       'Cost: capped at 8 calls per round, roughly $0.05-0.15 each.')
+        self.v_apikey = tk.StringVar(value=_load_api_key())
+        e_key = self._entry(g, self.v_apikey, width=230)
+        e_key.configure(show='•')
+        self._row(g, 'Anthropic API key', 1, e_key,
+                  tip='Key from console.anthropic.com (sk-ant-…). Stored in its own file with\n'
+                      'owner-only permissions — never in gui_settings.json, never in git:\n'
+                      f'{KEY_FILE}')
+        self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12))
+        self.lbl_advkey.grid(row=2, column=0, sticky='w', pady=(4, 0))
+        self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
+            .grid(row=2, column=1, sticky='e', pady=(4, 0))
 
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
@@ -1178,6 +1258,7 @@ class App:
         self.v_tf.set(_tf_clean(c.get('timeframe', '1d'))); self._tf_note()
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
+        self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -1289,6 +1370,16 @@ class App:
             ALPHANODE_TRAIN_START=c['train_start'], ALPHANODE_VAL_START=c['val_start'],
             ALPHANODE_TEST_START=c['test_start'], ALPHANODE_TEST_END=c['test_end'],
         )
+        adv_key = (self.v_apikey.get() or '').strip()
+        if c.get('advisor'):
+            if adv_key:
+                env.update(ALPHANODE_ADVISOR='1', ANTHROPIC_API_KEY=adv_key)
+            else:
+                messagebox.showinfo(
+                    'Advisor has no key',
+                    'The LLM advisor is ON but no Anthropic API key is set — the node will run '
+                    'a plain GA search.\nPaste a key in NEURO ADVISOR (and press Check key), '
+                    'then restart the search.', parent=self.root)
         self.proc = subprocess.Popen(_child_cmd('node'), env=env,
                                      cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)

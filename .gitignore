@@ -42,3 +42,4 @@ data.pickle
 
 # ── local research scratch (notebooks etc.) — not for git ──
 research/
+alphanode/anthropic_key
