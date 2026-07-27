@@ -20,9 +20,10 @@ EPS = 1e-9
 WINDOWS = [2, 3, 5, 7, 10, 14, 20, 30, 50, 60, 100, 120, 200]
 
 # terminal features (tree leaves). Base OHLCV + ret, plus derived same-day transforms
-# (vwap/range/body/dvol/logret) built in evaluator.add_derived_features.
+# (vwap/range/body/dvol/logret) built in evaluator.add_derived_features, plus the perp funding
+# rate paid during the bar (build_panel; zero on snapshots fetched before funding support).
 FEATURES = ['close', 'open', 'high', 'low', 'volume', 'ret',
-            'vwap', 'range', 'body', 'dvol', 'logret']
+            'vwap', 'range', 'body', 'dvol', 'logret', 'funding']
 
 
 def _clean(df):

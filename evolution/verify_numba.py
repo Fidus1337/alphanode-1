@@ -36,7 +36,7 @@ def main():
     cfg = load_config()
     tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'))
     market = precompute_market(panel, tk, raw)
-    C, R, V = market['C'], market['R'], market['V']
+    C, R, V, F = market['C'], market['R'], market['V'], market['F']
     idx = market['index']
 
     if fastsim._kernel_jit is None:
@@ -58,13 +58,13 @@ def main():
     jit = fastsim._kernel_jit
     # prep everything first, and warm up the JIT (first call compiles) so timing is fair
     prepped = [(name, *_prep(g, tk, panel, market)) for name, g in genomes]
-    jit(prepped[0][1], C, R, V, prepped[0][2], VOL, EXEC, INERTIA, ANN, LAMBDA)
+    jit(prepped[0][1], C, R, V, prepped[0][2], F, VOL, EXEC, INERTIA, ANN, LAMBDA)
 
     worst_corr, worst_diff = 1.0, 0.0
     t_py = t_jit = 0.0
     for name, A, E in prepped:
-        t0 = time.perf_counter(); cap_py = _sim_kernel_impl(A, C, R, V, E, VOL, EXEC, INERTIA, ANN, LAMBDA)
-        t1 = time.perf_counter(); cap_jit = jit(A, C, R, V, E, VOL, EXEC, INERTIA, ANN, LAMBDA)
+        t0 = time.perf_counter(); cap_py = _sim_kernel_impl(A, C, R, V, E, F, VOL, EXEC, INERTIA, ANN, LAMBDA)
+        t1 = time.perf_counter(); cap_jit = jit(A, C, R, V, E, F, VOL, EXEC, INERTIA, ANN, LAMBDA)
         t2 = time.perf_counter()
         t_py += t1 - t0; t_jit += t2 - t1
         rp, rj = _returns(cap_py, idx), _returns(cap_jit, idx)

@@ -156,6 +156,17 @@ or the **⟳ Update data.pickle** button in the GUI. Young listings are filtered
 search window isn't mostly NaN. **After changing the universe, clear the history and restart the search** —
 the old library was mined on different pairs.
 
+**Funding.** Snapshots include each perp's funding-rate history (a `funding` column: the rate paid
+within each bar, fetched from `/fapi/v1/fundingRate` — full depth, no keys). Two effects: (1) the
+fast simulator now **subtracts funding PnL** — a position held into a payment pays
+`units × price × rate` (longs pay when the rate is positive; on BTC that's a real ~10%/yr drag the
+old price-only PnL ignored); (2) `funding` is a terminal **feature** for the search, so the GA can
+mine carry/squeeze-style strategies, not just price/volume ones. Upgrade an existing snapshot
+in place (klines untouched): `python fetch_data.py --add-funding [--interval 1h]`. Old snapshots
+without the column still work — funding is treated as zero, exactly the old behavior. The REAL
+quantpylib engine (portfolio backtest / paper trade) does not account funding PnL yet (phase 2),
+which is one more reason its numbers can differ slightly from the search engine's.
+
 ---
 
 ## 4. Your first search (GUI)

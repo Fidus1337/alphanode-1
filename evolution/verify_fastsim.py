@@ -44,6 +44,9 @@ def sharpe(r):
 def main():
     tk, raw, panel = build_panel('../data.pickle', datetime(2019, 9, 5), datetime(2026, 6, 30))
     market = precompute_market(panel, tk, raw)
+    # the REAL engine doesn't account funding PnL (phase 2) — parity is checked on price PnL,
+    # so zero out F here; funding-aware vs funding-less kernels are compared in verify_numba.
+    market['F'] = np.zeros_like(market['C'])
 
     genomes = [
         ('Bollinger', Node('ts_zscore', [Node('close')], 14)),

@@ -58,6 +58,13 @@ class EvolvedAlpha(Alpha):
                 for f in base:
                     panel[f].loc[panel[f].index < cut, inst] = np.nan
         add_derived_features(panel)      # derived terminals from the masked base -> same masking
+        # funding terminal: from the dfs when the data has it, zeros otherwise (a formula with
+        # `funding` then yields a zero/constant signal instead of crashing the live bridge).
+        # Same pre-listing masking as the base features (funding is 0.0-filled inside the range).
+        panel['funding'] = pd.DataFrame(
+            {inst: (self.dfs[inst]['funding'] if 'funding' in self.dfs[inst].columns
+                    else pd.Series(0.0, index=self.dfs[inst].index)) for inst in self.insts}
+        ).fillna(0.0).where(panel['close'].notna())
         alpha_wide = eval_alpha_panel(self._node, panel)
         for inst in self.insts:
             a = alpha_wide[inst].reindex(self.dfs[inst].index).ffill()

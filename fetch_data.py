@@ -5,6 +5,9 @@ onboardDate listing date), downloads bars at --interval (1d default; 15m|1h|4h i
 and atomically overwrites the snapshot in the (tickers, ohlcvs) format — exactly what
 evolution/ and AlphaNode read. 1d writes data.pickle; an intraday interval writes its own
 data_<tf>.pickle, so timeframes never clobber each other. Public endpoints, no keys needed.
+Each pair also gets its perp funding-rate history (a `funding` column: the rate paid within
+each bar); `python fetch_data.py --add-funding [--interval 1h]` upgrades an EXISTING snapshot
+with that column without refetching the klines.
 
   python fetch_data.py --top 150
   python fetch_data.py --top 100 --min-years 3 --start 2019-09-05
@@ -23,6 +26,8 @@ import pickle
 import asyncio
 import argparse
 from datetime import datetime, timezone
+
+import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 for _p in (HERE, os.path.join(HERE, 'evolution')):
@@ -48,6 +53,14 @@ TIMEOUTS = {'1d': 120, '4h': 360, '1h': 900, '15m': 2400}
 # parallel the weight limit kicks in after ~15 min and ALL downloads stall in a rate-limit pause.
 # Fewer workers finish sooner in wall-clock because they never trip the cooldown.
 CONCURRENCY = {'1d': 6, '4h': 4, '1h': 3, '15m': 2}
+FUNDING_TIMEOUT = 180        # per pair: funding history is ~8 LIGHT pages even for 2019 majors
+
+
+def _bar_freq(interval):
+    """pandas floor/reindex frequency of the bar grid for a Binance interval."""
+    if _resolve_tf is not None:
+        return _resolve_tf(interval).pandas_freq
+    return {'1d': 'D', '4h': '4h', '1h': 'h', '15m': '15min'}[interval]
 
 
 def save_pickle(path, obj):
@@ -75,15 +88,14 @@ def _onboard_ts(sym_info):
         return None
 
 
-async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, timeout, interval='1d'):
-    gran, mult = INTERVALS[interval]
+def _make_binance():
+    """Binance client with sane pacing. The fapi budget is 2400 weight/min and a 1500-bar kline
+    page costs weight 10 → ~240 pages a minute for the whole IP. quantpylib's stock throttle
+    (6000 credits / 20 per page / 60s) admits 300 pages/min — 25% OVER budget, so long intraday
+    paginations trip 429 regardless of how few pairs run in parallel. Re-budget to 180 pages/min
+    and, when a 429/418 still slips through, honor Retry-After and repeat the SAME page instead
+    of dropping the whole pair."""
     bn = Binance()
-
-    # Binance fapi allows 2400 weight/min and a 1500-bar kline page costs weight 10 → ~240 pages
-    # a minute for the whole IP. quantpylib's stock throttle (6000 credits / 20 per page / 60s)
-    # admits 300 pages/min — 25% OVER budget, so long intraday paginations trip 429 regardless of
-    # how few pairs run in parallel. Re-budget to 180 pages/min and, when a 429/418 still slips
-    # through, honor Retry-After and repeat the SAME page instead of dropping the whole pair.
     bn.rate_semaphore = AsyncRateSemaphore(3600)
     raw_request = bn.http_client.request
 
@@ -105,6 +117,50 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
                 await asyncio.sleep(wait)
 
     bn.http_client.request = paced_request
+    return bn
+
+
+async def _funding_series(bn, sym, start, end):
+    """Full funding-payment history of a perp as a rate Series indexed by payment time (UTC).
+    /fapi/v1/fundingRate: public, full depth since listing, 1000 records/page ≈ 333 days."""
+    rows = []
+    cur = int(start.timestamp() * 1000)
+    end_ms = int(end.timestamp() * 1000)
+    while cur < end_ms:
+        res = await bn.http_client.request(
+            endpoint='/fapi/v1/fundingRate', method='GET',
+            params={'symbol': sym, 'startTime': cur, 'endTime': end_ms, 'limit': 1000})
+        if not res:
+            break
+        rows.extend(res)
+        nxt = int(res[-1]['fundingTime']) + 1
+        if nxt <= cur:
+            break
+        cur = nxt
+        if len(res) < 1000:
+            break
+    if not rows:
+        return None
+    idx = pd.to_datetime([int(r['fundingTime']) for r in rows], unit='ms', utc=True)
+    ser = pd.Series([float(r['fundingRate']) for r in rows], index=idx, dtype=float).sort_index()
+    return ser[~ser.index.duplicated(keep='last')]
+
+
+def _attach_funding(df, fser, freq):
+    """`funding` column = sum of the 8h payments that land inside each bar (floor() also absorbs
+    the occasional ms jitter in fundingTime). Bars without a payment -> 0.0 (it's a flow)."""
+    if fser is None or len(fser) == 0:
+        df['funding'] = 0.0
+        return df
+    per_bar = fser.groupby(fser.index.floor(freq)).sum()
+    df['funding'] = per_bar.reindex(df.index).fillna(0.0)
+    return df
+
+
+async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, timeout, interval='1d'):
+    gran, mult = INTERVALS[interval]
+    bar_freq = _bar_freq(interval)
+    bn = _make_binance()
 
     print('· pulling instrument list (exchangeInfo)…', flush=True)
     info = await bn.exchange_info()
@@ -145,6 +201,14 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
             try:
                 df = await asyncio.wait_for(bn.get_trade_bars(sym, s_start, end, gran, mult),
                                             timeout=timeout)
+                if df is not None and not df.empty:            # perp funding history (light pages)
+                    try:
+                        fser = await asyncio.wait_for(_funding_series(bn, sym, s_start, end),
+                                                      timeout=FUNDING_TIMEOUT)
+                    except Exception:                          # noqa: BLE001 — funding is optional
+                        fser = None
+                        print(f'  {sym}: funding history unavailable — column zeroed', flush=True)
+                    _attach_funding(df, fser, bar_freq)
                 return sym, df
             except asyncio.TimeoutError:
                 return sym, TimeoutError(f'timeout {timeout}s')
@@ -212,6 +276,42 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
     return 0
 
 
+async def add_funding(out_path, interval, concurrency=6):
+    """Upgrade an EXISTING snapshot in place: download each pair's funding history and add the
+    `funding` column, without refetching the klines. Atomic rewrite; klines stay untouched."""
+    with open(out_path, 'rb') as f:
+        tickers, ohlcvs = pickle.load(f)
+    print(f'· adding funding to {out_path}: {len(tickers)} pairs, klines untouched…', flush=True)
+    bn = _make_binance()
+    freq = _bar_freq(interval)
+    end = datetime.now(timezone.utc)
+    sem = asyncio.Semaphore(concurrency)
+    done = 0
+
+    async def one(i):
+        nonlocal done
+        sym, df = tickers[i], ohlcvs[i]
+        async with sem:
+            try:
+                fser = await asyncio.wait_for(_funding_series(bn, sym, df.index.min(), end),
+                                              timeout=FUNDING_TIMEOUT)
+            except Exception as e:                             # noqa: BLE001
+                print(f'  {sym}: ! {type(e).__name__} {e} — funding column zeroed', flush=True)
+                fser = None
+            _attach_funding(df, fser, freq)
+            done += 1
+            npay = int((df['funding'] != 0).sum())
+            print(f'  [{done}/{len(tickers)}] {sym}: funding on {npay} bars', flush=True)
+
+    await asyncio.gather(*[one(i) for i in range(len(tickers))])
+    tmp = out_path + '.tmp'                                    # atomic, like the main fetch
+    save_pickle(tmp, (tickers, ohlcvs))
+    os.replace(tmp, out_path)
+    print(f'✓ upgraded {out_path}: funding column on all {len(tickers)} pairs', flush=True)
+    await _aclose(bn)
+    return 0
+
+
 def main():
     ap = argparse.ArgumentParser(description='Download top-N USDT perps (with history >= N years) from Binance')
     ap.add_argument('--top', type=int, default=150, help='how many pairs (top by 24h turnover)')
@@ -231,6 +331,9 @@ def main():
                          '900 for 1h, … — intraday needs many paginated requests per pair)')
     ap.add_argument('--interval', default='1d', choices=sorted(INTERVALS),
                     help='bar size (15m|1h|4h|1d); intraday is written to its own data_<tf>.pickle')
+    ap.add_argument('--add-funding', action='store_true',
+                    help='do NOT refetch klines: add the funding column to the existing snapshot '
+                         'of --interval (or --out) and exit')
     args = ap.parse_args()
     if args.timeout is None:
         args.timeout = TIMEOUTS[args.interval]
@@ -239,6 +342,17 @@ def main():
     if args.out is None:
         suffix = '' if args.interval == '1d' else f'_{args.interval}'
         args.out = os.path.join(HERE, f'data{suffix}.pickle')
+    if args.add_funding:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.set_exception_handler(lambda _l, _c: None)
+        try:
+            rc = loop.run_until_complete(add_funding(args.out, args.interval))
+        except KeyboardInterrupt:
+            rc = 130
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(rc)
     if args.start is None:                                # per-timeframe recommended history start
         args.start = (_resolve_tf(args.interval).history if _resolve_tf is not None
                       else '2019-09-05')

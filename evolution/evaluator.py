@@ -87,6 +87,14 @@ def build_panel(data_path, start, end, instruments=None, freq='D'):
 
     panel = {c: wide(c) for c in BASE_FEATURES}
     add_derived_features(panel)                 # 'ret' + vwap/range/body/dvol/logret
+
+    # funding: the rate PAID during the bar (a flow, not a level — so missing bars become 0.0,
+    # not ffill of the last payment). Snapshots fetched before funding support have no such
+    # column -> all-zero feature (degenerate funding-only genomes die in the activity filter).
+    # Pre-listing cells stay NaN (masked by close) — the cs-leak guard, as for every feature.
+    fcols = {t: (raw[t]['funding'].reindex(idx) if 'funding' in raw[t].columns
+                 else pd.Series(np.nan, index=idx)) for t in tk}
+    panel['funding'] = pd.DataFrame(fcols).fillna(0.0).where(panel['close'].notna())
     return tk, raw, panel
 
 
