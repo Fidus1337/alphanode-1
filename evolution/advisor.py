@@ -121,7 +121,8 @@ class Advisor:
         self.log = log
         self._client = None
         self._dead = False           # set after an unrecoverable error (bad creds, no SDK)
-        self.stats = {'calls': 0, 'proposed': 0, 'valid': 0}
+        self.stats = {'calls': 0, 'proposed': 0, 'valid': 0, 'errors': 0}
+        self.last_error = None       # short human-readable reason (surfaced in the GUI/status)
 
     # ---------- availability ----------
     def available(self):
@@ -183,7 +184,12 @@ class Advisor:
             text = next(b.text for b in resp.content if b.type == 'text')
             raw = json.loads(text).get('proposals', [])
         except Exception as e:                     # noqa: BLE001 — network/auth/parse: never crash evolve
+            self.stats['calls'] -= 1               # 'calls' counts consults that actually happened
+            self.stats['errors'] += 1
+            self.last_error = f'{type(e).__name__}: {str(e)[:110]}'
             import anthropic
+            if isinstance(e, anthropic.AuthenticationError):
+                self.last_error = 'API key invalid (401)'
             if isinstance(e, (anthropic.AuthenticationError, anthropic.PermissionDeniedError,
                               TypeError)):         # TypeError = SDK "could not resolve auth method"
                 self._dead = True                  # credentials won't appear mid-run — stop retrying

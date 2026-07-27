@@ -1791,13 +1791,19 @@ class App:
             self.s_found.configure(text=str(st.get('found', len(st.get('best', [])))))
             self.lbl_cur.configure(text=(st.get('current', '') + '   ' + st.get('gen', ''))[:120])
             adv = st.get('advisor') or {}
-            if adv.get('consults') or adv.get('lib_llm'):
+            if adv.get('error'):
+                self.lbl_adv.configure(
+                    fg=NEG, text=f'🧠 LLM advisor: {adv["error"]} — running plain GA '
+                                 f'(fix the key in Settings → NEURO ADVISOR, press Check key)'[:150])
+                if not self.lbl_adv.winfo_ismapped():
+                    self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
+            elif adv.get('consults') or adv.get('lib_llm'):
                 alog = st.get('advisor_log') or []
                 last = ('   ·   ' + alog[-1]) if alog else ''
                 self.lbl_adv.configure(
-                    text=(f'🧠 LLM advisor: {adv.get("consults", 0)} consults · '
-                          f'{adv.get("injected", 0)} formulas injected · '
-                          f'{adv.get("lib_llm", 0)} champions in library{last}')[:150])
+                    fg=ACC, text=(f'🧠 LLM advisor: {adv.get("consults", 0)} consults · '
+                                  f'{adv.get("injected", 0)} formulas injected · '
+                                  f'{adv.get("lib_llm", 0)} champions in library{last}')[:150])
                 if not self.lbl_adv.winfo_ismapped():
                     self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
             elif self.lbl_adv.winfo_ismapped():

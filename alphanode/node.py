@@ -241,7 +241,10 @@ def render_html():
         for i, c in enumerate(leaderboard[:KEEP]))
     adv = status.get('advisor') or {}
     adv_card = ''
-    if adv.get('consults') or adv.get('lib_llm'):
+    if adv.get('error'):
+        adv_card = (f"<div class=card><div class=k>🧠 LLM advisor</div>"
+                    f"<b style='color:#f87171'>{adv['error']}</b> · running plain GA</div>")
+    elif adv.get('consults') or adv.get('lib_llm'):
         adv_card = (f"<div class=card><div class=k>🧠 LLM advisor</div>"
                     f"<b>{adv.get('consults', 0)}</b> consults · {adv.get('injected', 0)} injected "
                     f"· {adv.get('lib_llm', 0)} champions</div>")
@@ -378,16 +381,26 @@ def main():
         # advisor footprint of the round -> status line, cumulative counters, round history
         astats = cfg.pop('advisor_stats', None)
         llm_s = ''
-        if astats and astats.get('calls'):
+        if astats:
             adv = status.get('advisor') or {'consults': 0, 'injected': 0, 'lib_llm': 0}
-            adv['consults'] += astats['calls']
+            adv['consults'] += astats['calls']            # only consults that actually happened
             adv['injected'] += astats['injected']
             adv['lib_llm'] += new_llm
+            err = astats.get('error')
+            if err:                                       # e.g. 'API key invalid (401)'
+                adv['error'] = err
+            else:
+                adv.pop('error', None)                    # a healthy round clears the sticky error
             status['advisor'] = adv
-            entry['llm'] = {'calls': astats['calls'], 'injected': astats['injected'],
-                            'hof': astats['hof_llm'], 'new_champs': new_llm}
-            llm_s = (f' · LLM: {astats["calls"]} consult{"s" if astats["calls"] > 1 else ""}, '
-                     f'{astats["injected"]} injected, {astats["hof_llm"]}/{astats["hof_total"]} HoF')
+            if astats['calls'] or err:
+                entry['llm'] = {'calls': astats['calls'], 'injected': astats['injected'],
+                                'hof': astats['hof_llm'], 'new_champs': new_llm,
+                                **({'error': err} if err else {})}
+            if astats['calls']:
+                llm_s = (f' · LLM: {astats["calls"]} consult{"s" if astats["calls"] > 1 else ""}, '
+                         f'{astats["injected"]} injected, {astats["hof_llm"]}/{astats["hof_total"]} HoF')
+            elif err:
+                llm_s = f' · LLM: {err}'
         history.append(entry)
         try:
             with open(HIST, 'a', encoding='utf-8') as f:

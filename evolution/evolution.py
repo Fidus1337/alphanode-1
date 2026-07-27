@@ -283,5 +283,6 @@ def evolve(cfg, log=print):
         # surface the run's advisor activity to the caller (node.py -> status page/GUI);
         # cfg is built fresh per round, so this never leaks across rounds
         cfg['advisor_stats'] = {**s, 'injected': len(origins),
-                                'hof_llm': n_llm, 'hof_total': len(hof)}
+                                'hof_llm': n_llm, 'hof_total': len(hof),
+                                'error': adv.last_error}
     return hof, history, cache
