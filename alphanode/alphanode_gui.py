@@ -1138,6 +1138,13 @@ class App:
         # width/height are raw: CTk scales them itself (set_widget_scaling), unlike a tk pixel.
         self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_library, height=24, width=52)
         self.btn_lb_csv.pack(side='right', padx=(10, 0))
+        self.btn_lb_hub = self._btn(hrow, '⇪ Hub', self._push_selected_to_hub, height=24, width=64)
+        self.btn_lb_hub.pack(side='right', padx=(10, 0))
+        self._tip(self.btn_lb_hub,
+                  'Serve the SELECTED alpha as a live signal and push its target weights\n'
+                  'to AlphaHub before every bar close (forward track record).\n'
+                  'The hub keeps one signal per node+timeframe — pushing another alpha\n'
+                  'replaces the current one.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -1200,6 +1207,8 @@ class App:
         self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
+        self._menu.add_command(label='Push to AlphaHub (serve + push weights)',
+                               command=self._push_selected_to_hub)
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
         self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
@@ -1776,7 +1785,7 @@ class App:
                     continue
         return None
 
-    def _serve_signal(self, formulas, label):
+    def _serve_signal(self, formulas, label, hub_push=False):
         if self._tf_gate('The live signal API'):
             return
         formulas = [f for f in (formulas or []) if f and f.strip()]
@@ -1808,7 +1817,8 @@ class App:
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
                    ALPHANODE_SIGNAL_PORT=str(port), ALPHANODE_SIGNAL_REFRESH='900')
-        if c.get('hub') and c.get('hub_url'):
+        with_hub = bool(c.get('hub_url')) and (hub_push or c.get('hub'))
+        if with_hub:
             env.update(ALPHANODE_HUB_URL=c['hub_url'],   # the service pushes weights each refresh
                        ALPHANODE_HUB_IDENTITY=HUB_ID_FILE)
         log_path = os.path.join(STATE_DIR, f'signal_{port}.log')
@@ -1823,6 +1833,7 @@ class App:
             return
         self._sigs.append({'port': port, 'proc': proc, 'pid': proc.pid, 'fh': fh, 'log': log_path,
                            'label': label, 'n_formulas': len(formulas), 'n_tickers': len(tickers),
+                           'hub': with_hub,               # this service pushes to AlphaHub
                            'started': time.strftime('%Y-%m-%d %H:%M')})
         self._sig_health[port] = 'starting — fetching live data, computing the first signal…'
         self._sig_save()
@@ -1959,6 +1970,8 @@ class App:
                 age = h.get('age_secs')
                 txt = (f'● serving · updated {h.get("updated_at", "")} ({age:.0f}s ago)'
                        if age is not None else '● serving')
+                if h.get('hub'):                          # last AlphaHub push outcome
+                    txt += f' · hub {h["hub"]}'
             elif h.get('error'):
                 txt = f'⚠ {h["error"]}'
             else:
@@ -2408,6 +2421,34 @@ class App:
             self._open_plot(self._shown[idx])
 
     # ---------- copy formula ----------
+    def _push_selected_to_hub(self):
+        """Leaderboard 'Push → Hub': serve the selected alpha as a live signal WITH AlphaHub
+        push. The hub keeps ONE signal per (node, timeframe, bar) — last write wins — so only
+        one pushing service makes sense; an existing one is replaced after confirmation."""
+        c = self._selected_champ()
+        if not c or not c.get('formula'):
+            messagebox.showinfo('AlphaHub', 'Select an alpha in the leaderboard first.',
+                                parent=self.root)
+            return
+        if not (self.cfg.get('hub_url') or '').strip():
+            messagebox.showinfo(
+                'AlphaHub', 'No hub configured.\nSettings → ALPHAHUB: set the Hub URL and '
+                            'press Register, then try again.', parent=self.root)
+            return
+        pushing = [s for s in self._sigs if s.get('hub')]
+        if pushing:
+            names = ', '.join(s['label'] for s in pushing)
+            if not messagebox.askyesno(
+                    'AlphaHub', f'The hub keeps ONE signal per node and timeframe, and '
+                                f'"{names}" is already pushing.\nReplace it with the selected '
+                                f'alpha?', parent=self.root):
+                return
+            for s in pushing:
+                self._stop_signal(s)
+            self._render_signal_rows()
+        f = c['formula']
+        self._serve_signal([f], 'hub_' + hashlib.md5(f.encode()).hexdigest()[:6], hub_push=True)
+
     def _selected_champ(self):
         item = self.tree.focus() or (self.tree.selection()[0] if self.tree.selection() else '')
         if not item:
