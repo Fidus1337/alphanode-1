@@ -92,7 +92,7 @@ def _tf_clean(tf):
 # gui_settings.json: in dev mode that file is tracked by git and a key stored there
 # would end up on GitHub with the next settings commit.
 KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'anthropic_key')
-HUB_KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'alphahub_key')
+HUB_ID_FILE = os.path.join(os.path.dirname(SETTINGS), 'alphahub_identity')
 
 
 def _load_keyfile(path):
@@ -149,8 +149,8 @@ DEFAULTS = {
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
     # neuro advisor (the API key is NOT here — see KEY_FILE)
     'advisor': False, 'advisor_max_calls': 8, 'advisor_model': 'claude-opus-5',
-    # alphahub (the node secret is NOT here — see HUB_KEY_FILE)
-    'hub': False, 'hub_url': '', 'hub_node': '',
+    # alphahub (the Ed25519 identity is NOT here — see HUB_ID_FILE)
+    'hub': False, 'hub_url': '', 'hub_name': 'my-node',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -366,6 +366,36 @@ class App:
                 self.root.after(150, poll)
         self.root.after(150, poll)
 
+    def _register_hub(self):
+        """One-click node registration: sends node_id + PUBLIC key, signed. The private
+        key never leaves this machine. Worker thread + main-thread polling, as usual."""
+        url = (self.v_huburl.get() or '').strip()
+        if not url:
+            self.lbl_hub.configure(text='no hub URL entered', fg=NEG)
+            return
+        name = (self.v_hubname.get() or 'my-node').strip()
+        holder = {}
+
+        def work():
+            try:
+                import hub_client
+                ident = hub_client.ensure_identity(HUB_ID_FILE)
+                ok, msg = hub_client.register(url, ident, name)
+                holder['res'] = (('✓ ' if ok else '✗ ') + msg, POS if ok else NEG)
+            except Exception as e:                     # noqa: BLE001
+                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.lbl_hub.configure(text='registering…', fg=MUT)
+
+        def poll():
+            if 'res' in holder:
+                txt, col = holder['res']
+                self.lbl_hub.configure(text=txt, fg=col)
+            else:
+                self.root.after(150, poll)
+        self.root.after(150, poll)
+
     def _collect(self):
         d = DEFAULTS
         return dict(
@@ -384,7 +414,7 @@ class App:
             advisor_model=(self.v_advmodel.get() or d['advisor_model']).strip(),
             hub=bool(self.v_hub.get()),
             hub_url=self.v_huburl.get().strip(),
-            hub_node=self.v_hubnode.get().strip(),
+            hub_name=self.v_hubname.get().strip() or 'my-node',
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -410,7 +440,6 @@ class App:
         except Exception:
             pass
         _save_api_key(self.v_apikey.get())     # its own 0600 file, NOT the (git-tracked) settings
-        _save_keyfile(HUB_KEY_FILE, self.v_hubkey.get())
 
     # ---------- style ----------
     def _px(self, n):
@@ -802,20 +831,30 @@ class App:
         self.v_huburl = tk.StringVar(value=self.cfg.get('hub_url', ''))
         self._row(g, 'Hub URL', 1, self._entry(g, self.v_huburl, width=230),
                   tip='e.g. http://my-vps:8899 — where your AlphaHub runs.')
-        self.v_hubnode = tk.StringVar(value=self.cfg.get('hub_node', ''))
-        self._row(g, 'Node ID', 2, self._entry(g, self.v_hubnode, width=230),
-                  tip='Issued by the hub operator: python manage.py add-node "name".')
-        self.v_hubkey = tk.StringVar(value=_load_keyfile(HUB_KEY_FILE))
-        e_hk = self._entry(g, self.v_hubkey, width=230)
-        e_hk.configure(show='•')
-        self._row(g, 'Node secret', 3, e_hk,
-                  tip='Signs every push (HMAC) — it never travels over the network.\n'
-                      'Stored in its own owner-only file, never in gui_settings.json:\n'
-                      f'{HUB_KEY_FILE}')
+        self.v_hubname = tk.StringVar(value=self.cfg.get('hub_name', 'my-node'))
+        self._row(g, 'Node name', 2, self._entry(g, self.v_hubname, width=230),
+                  tip='How this node appears on the hub leaderboard.')
+        # identity is born HERE, on this machine — the hub only ever sees the public key
+        node_id = ''
+        try:
+            import hub_client
+            node_id = hub_client.ensure_identity(HUB_ID_FILE)['node_id']
+        except Exception:                                # noqa: BLE001 — no cryptography pkg etc.
+            pass
+        self.lbl_hubid = self._lbl(g, text=(f'identity: {node_id}' if node_id
+                                            else 'identity: unavailable (cryptography pkg missing)'),
+                                   text_color=(MUT if node_id else NEG), font=(self.MONO, 11))
+        self.lbl_hubid.grid(row=3, column=0, sticky='w', pady=(4, 0))
+        self._tip(self.lbl_hubid,
+                  'Auto-generated Ed25519 keypair; the PRIVATE key stays in\n'
+                  f'{HUB_ID_FILE}\n(owner-only, gitignored). Delete that file for a fresh identity.')
         self.lbl_hub = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12))
         self.lbl_hub.grid(row=4, column=0, sticky='w', pady=(4, 0))
-        self._btn(g, 'Check hub', self._check_hub, height=26, width=100)\
-            .grid(row=4, column=1, sticky='e', pady=(4, 0))
+        row_btns = self._box(g)
+        row_btns.grid(row=4, column=1, sticky='e', pady=(4, 0))
+        self._btn(row_btns, 'Check hub', self._check_hub, height=26, width=92).pack(side='left')
+        self._btn(row_btns, 'Register', self._register_hub, height=26, width=92)\
+            .pack(side='left', padx=(8, 0))
 
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
@@ -1426,7 +1465,7 @@ class App:
         self.v_advcalls.set(c.get('advisor_max_calls', 8))
         self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
         self.v_hub.set(c.get('hub', False)); self.v_huburl.set(c.get('hub_url', ''))
-        self.v_hubnode.set(c.get('hub_node', '')); self.v_hubkey.set(_load_keyfile(HUB_KEY_FILE))
+        self.v_hubname.set(c.get('hub_name', 'my-node'))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -1769,10 +1808,9 @@ class App:
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
                    ALPHANODE_SIGNAL_PORT=str(port), ALPHANODE_SIGNAL_REFRESH='900')
-        hub_key = _load_keyfile(HUB_KEY_FILE)
-        if c.get('hub') and c.get('hub_url') and c.get('hub_node') and hub_key:
-            env.update(ALPHANODE_HUB_URL=c['hub_url'], ALPHANODE_HUB_NODE=c['hub_node'],
-                       ALPHANODE_HUB_KEY=hub_key)      # the service pushes weights each refresh
+        if c.get('hub') and c.get('hub_url'):
+            env.update(ALPHANODE_HUB_URL=c['hub_url'],   # the service pushes weights each refresh
+                       ALPHANODE_HUB_IDENTITY=HUB_ID_FILE)
         log_path = os.path.join(STATE_DIR, f'signal_{port}.log')
         try:
             fh = open(log_path, 'w', buffering=1)

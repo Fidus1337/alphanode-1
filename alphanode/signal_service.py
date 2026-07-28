@@ -164,11 +164,15 @@ def _hub_push(sig):
     Every refresh re-pushes; the hub keeps the last write before the deadline. Failures
     are logged and NEVER disturb the service — the hub is an add-on, not a dependency."""
     url = os.environ.get('ALPHANODE_HUB_URL', '').strip()
-    node = os.environ.get('ALPHANODE_HUB_NODE', '').strip()
-    key = os.environ.get('ALPHANODE_HUB_KEY', '').strip()
-    if not (url and node and key):
+    if not url:
         return
     import hub_client
+    try:                                                  # identity lives on THIS machine
+        ident = hub_client.ensure_identity(os.environ.get('ALPHANODE_HUB_IDENTITY'))
+    except Exception as e:                                # noqa: BLE001 — no cryptography / RO disk
+        with _STATE['lock']:
+            _STATE['hub'] = f'✗ identity unavailable ({type(e).__name__})'
+        return
     weights = {p['ticker']: p['weight'] for p in sig['positions']}
     if not weights:
         msg = 'flat signal — nothing to push'
@@ -176,7 +180,7 @@ def _hub_push(sig):
     else:
         nxt = (int(time.time()) // 86400 + 1) * 86400     # next daily close (00:00 UTC)
         iso = datetime.fromtimestamp(nxt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-        ok, msg = hub_client.push(url, node, key, '1d', iso, weights)
+        ok, msg = hub_client.push(url, ident, '1d', iso, weights)
     with _STATE['lock']:
         _STATE['hub'] = ('✓ ' if ok else '✗ ') + msg
     print(f'[signal] hub: {"✓" if ok else "✗"} {msg}', flush=True)
