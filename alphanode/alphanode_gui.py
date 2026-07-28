@@ -153,6 +153,8 @@ DEFAULTS = {
     # appearance
     'theme': '',            # 'light' | 'dark' | '' = follow the OS on first run
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
+    'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
+    'chart_h': 0,           # progress-chart height, 100%-DPI px; 0 = default (170)
 }
 
 # --- design palette: Linear/Stripe style, light + dark ---
@@ -508,14 +510,20 @@ class App:
         self._build_theme_pick(top)
         self._box(self._shell, bg=BORDER, height=1).pack(fill='x')       # hairline
 
-        body = self._box(self._shell, bg=BG)
+        # settings | dashboard live in a PanedWindow so the split is mouse-draggable; the sash
+        # position (and the chart height below) persist in gui_settings.json in raw 100%-DPI units
+        body = tk.PanedWindow(self._shell, orient='horizontal', bg=BG, bd=0,
+                              sashwidth=max(8, int(8 * self.SCALE)), sashpad=0, sashrelief='flat',
+                              opaqueresize=True)
         body.pack(fill='both', expand=True, padx=20, pady=16)
-        body.columnconfigure(0, weight=0, minsize=250)   # width refined by the content itself (see _sync)
-        body.columnconfigure(1, weight=1)
-        body.rowconfigure(0, weight=1)
+        self._paned = body
 
         self._build_settings(body)
         self._build_status(body)
+        if self.cfg.get('split_w'):
+            self.root.after(120, self._sash_restore)
+        body.bind('<ButtonRelease-1>', self._sash_save)
+        body.bind('<Double-1>', self._sash_reset)
 
     # ---------- theme ----------
     def _build_theme_pick(self, top):
@@ -559,18 +567,49 @@ class App:
             self._render_portfolio(self._pf_doc)
 
     # ---------- left panel: ALL settings (scrollable) ----------
+    # ---------- draggable split (settings | dashboard) ----------
+    def _sash_restore(self):
+        try:
+            self._paned.sash_place(0, int(self.cfg['split_w'] * self.SCALE), 1)
+        except tk.TclError:
+            pass
+
+    def _sash_save(self, _e=None):
+        try:
+            x = self._paned.sash_coord(0)[0]
+        except tk.TclError:
+            return
+        w = round(x / self.SCALE)
+        if w != self.cfg.get('split_w'):
+            self.cfg['split_w'] = w
+            self._save()
+
+    def _sash_reset(self, e):
+        if not self._paned.identify(e.x, e.y):           # double-click somewhere else — ignore
+            return
+        self.cfg['split_w'] = 0
+        nat = self._settings_inner.winfo_reqwidth() + int(48 * self.SCALE)   # content + paddings
+        try:
+            self._paned.sash_place(0, nat, 1)
+        except tk.TclError:
+            pass
+        self._save()
+
     def _build_settings(self, body):
         outer = self._card(body)
-        outer.grid(row=0, column=0, sticky='nsew', padx=(0, 16))
+        body.add(outer, minsize=int(230 * self.SCALE), stretch='never')
         # hand-rolled scroller rather than CTkScrollableFrame: the width has to come from the content
         # itself (_sync), which stays correct under HiDPI font scaling — a fixed width would clip.
         canvas = tk.Canvas(outer, bg=CARD, highlightthickness=0)
         vsb = ctk.CTkScrollbar(outer, orientation='vertical', command=canvas.yview,
                                fg_color=CARD, button_color=BORDER, button_hover_color=FAINT, width=14)
         canvas.configure(yscrollcommand=vsb.set)
-        canvas.pack(side='left', fill='both', expand=True, padx=(14, 0), pady=14)
+        # the scrollbar packs FIRST: when the pane is dragged narrower than the content, whoever
+        # packed last is squeezed out first — it must be the canvas that clips, not the scrollbar
         vsb.pack(side='right', fill='y', padx=(0, 6), pady=14)
+        canvas.pack(side='left', fill='both', expand=True, padx=(14, 0), pady=14)
         inner = self._box(canvas)
+        self._settings_inner = inner                     # natural width for the sash double-click reset
         canvas.create_window((0, 0), window=inner, anchor='nw')
 
         def _sync(_e=None):     # width is set by the content ITSELF — correct even with HiDPI font scaling
@@ -915,7 +954,7 @@ class App:
     # ---------- right panel: status / chart / leaderboard ----------
     def _build_status(self, body):
         right = self._box(body, bg=BG)
-        right.grid(row=0, column=1, sticky='nsew')
+        body.add(right, minsize=int(420 * self.SCALE), stretch='always')
         right.rowconfigure(3, weight=1)                  # the leaderboard takes the slack
         right.columnconfigure(0, weight=1)
 
@@ -948,9 +987,18 @@ class App:
         cpad = self._pad(chart_card)
         self._head(cpad, 'PROGRESS — FITNESS min(train,val) BY ROUND  ·  TEST kept held-out').pack(
             anchor='w', pady=(0, 8))
-        self.chart = tk.Canvas(cpad, height=int(170 * self.SCALE), bg=CARD, highlightthickness=0)
+        ch = int((self.cfg.get('chart_h') or 170) * self.SCALE)
+        self.chart = tk.Canvas(cpad, height=ch, bg=CARD, highlightthickness=0)
         self.chart.pack(fill='x')
         self.chart.bind('<Configure>', lambda e: self._draw_chart())
+        # drag grip: resize the chart vertically (the leaderboard below absorbs the difference)
+        grip = tk.Frame(cpad, bg=BORDER, height=max(5, int(5 * self.SCALE)),
+                        cursor='sb_v_double_arrow')
+        grip.pack(fill='x', pady=(8, 0))
+        grip.bind('<B1-Motion>', self._on_chart_drag)
+        grip.bind('<ButtonRelease-1>', lambda e: self._save())
+        grip.bind('<Double-1>', self._chart_reset)
+        self._tip(grip, 'Drag to make the chart taller or shorter. Double-click — default height.')
 
         card2 = self._card(right)
         card2.grid(row=3, column=0, sticky='nsew', pady=(16, 0))
@@ -1836,6 +1884,17 @@ class App:
         except queue.Empty:
             pass
         self.root.after(1500, self._poll)
+
+    def _on_chart_drag(self, e):
+        h = e.y_root - self.chart.winfo_rooty()
+        h = max(int(90 * self.SCALE), min(int(560 * self.SCALE), h))
+        self.chart.configure(height=h)                   # <Configure> redraws the plot itself
+        self.cfg['chart_h'] = round(h / self.SCALE)
+
+    def _chart_reset(self, _e=None):
+        self.cfg['chart_h'] = 0
+        self.chart.configure(height=int(170 * self.SCALE))
+        self._save()
 
     def _draw_chart(self):
         cv = getattr(self, 'chart', None)
