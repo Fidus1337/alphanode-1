@@ -92,28 +92,38 @@ def _tf_clean(tf):
 # gui_settings.json: in dev mode that file is tracked by git and a key stored there
 # would end up on GitHub with the next settings commit.
 KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'anthropic_key')
+HUB_KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'alphahub_key')
 
 
-def _load_api_key():
+def _load_keyfile(path):
     try:
-        with open(KEY_FILE, encoding='utf-8') as f:
+        with open(path, encoding='utf-8') as f:
             return f.read().strip()
     except OSError:
         return ''
 
 
-def _save_api_key(key):
+def _save_keyfile(path, key):
+    """Secrets live in their own 0600 files, never in the (git-tracked) settings JSON."""
     key = (key or '').strip()
     try:
         if not key:
-            if os.path.exists(KEY_FILE):
-                os.remove(KEY_FILE)                     # cleared in the GUI -> gone from disk
+            if os.path.exists(path):
+                os.remove(path)                         # cleared in the GUI -> gone from disk
             return
-        with open(KEY_FILE, 'w', encoding='utf-8') as f:
+        with open(path, 'w', encoding='utf-8') as f:
             f.write(key + '\n')
-        os.chmod(KEY_FILE, 0o600)                       # owner-only (no-op on Windows)
+        os.chmod(path, 0o600)                           # owner-only (no-op on Windows)
     except OSError:
         pass
+
+
+def _load_api_key():
+    return _load_keyfile(KEY_FILE)
+
+
+def _save_api_key(key):
+    _save_keyfile(KEY_FILE, key)
 
 
 def _child_cmd(role):
@@ -139,6 +149,8 @@ DEFAULTS = {
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
     # neuro advisor (the API key is NOT here — see KEY_FILE)
     'advisor': False, 'advisor_max_calls': 8, 'advisor_model': 'claude-opus-5',
+    # alphahub (the node secret is NOT here — see HUB_KEY_FILE)
+    'hub': False, 'hub_url': '', 'hub_node': '',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -299,7 +311,7 @@ class App:
         cross-thread root.after is unreliable here (same pattern as the PDF worker)."""
         key = (self.v_apikey.get() or '').strip()
         if not key:
-            self.lbl_advkey.configure(text='no key entered', text_color=NEG)
+            self.lbl_advkey.configure(text='no key entered', fg=NEG)
             return
         model = (self.v_advmodel.get() or 'claude-opus-5').strip()
         holder = {}
@@ -313,12 +325,43 @@ class App:
                 holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
 
         threading.Thread(target=work, daemon=True).start()
-        self.lbl_advkey.configure(text='checking…', text_color=MUT)
+        self.lbl_advkey.configure(text='checking…', fg=MUT)
 
         def poll():
             if 'res' in holder:
                 txt, col = holder['res']
-                self.lbl_advkey.configure(text=txt, text_color=col)
+                self.lbl_advkey.configure(text=txt, fg=col)
+            else:
+                self.root.after(150, poll)
+        self.root.after(150, poll)
+
+    def _check_hub(self):
+        """Probe <hub>/health in a worker thread; same main-thread polling pattern as Check key."""
+        url = (self.v_huburl.get() or '').strip()
+        if not url:
+            self.lbl_hub.configure(text='no hub URL entered', fg=NEG)
+            return
+        holder = {}
+
+        def work():
+            try:
+                import urllib.request
+                with urllib.request.urlopen(url.rstrip('/') + '/health', timeout=10) as r:
+                    d = json.loads(r.read())
+                if d.get('ok'):
+                    holder['res'] = (f'✓ hub alive — protocol v{d.get("protocol")}', POS)
+                else:
+                    holder['res'] = ('✗ hub responded but not ok', NEG)
+            except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
+                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.lbl_hub.configure(text='checking…', fg=MUT)
+
+        def poll():
+            if 'res' in holder:
+                txt, col = holder['res']
+                self.lbl_hub.configure(text=txt, fg=col)
             else:
                 self.root.after(150, poll)
         self.root.after(150, poll)
@@ -339,6 +382,9 @@ class App:
             advisor=bool(self.v_advisor.get()),
             advisor_max_calls=self._gi(self.v_advcalls, d['advisor_max_calls']),
             advisor_model=(self.v_advmodel.get() or d['advisor_model']).strip(),
+            hub=bool(self.v_hub.get()),
+            hub_url=self.v_huburl.get().strip(),
+            hub_node=self.v_hubnode.get().strip(),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -364,6 +410,7 @@ class App:
         except Exception:
             pass
         _save_api_key(self.v_apikey.get())     # its own 0600 file, NOT the (git-tracked) settings
+        _save_keyfile(HUB_KEY_FILE, self.v_hubkey.get())
 
     # ---------- style ----------
     def _px(self, n):
@@ -743,6 +790,31 @@ class App:
         self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12))
         self.lbl_advkey.grid(row=4, column=0, sticky='w', pady=(4, 0))
         self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
+            .grid(row=4, column=1, sticky='e', pady=(4, 0))
+
+        # --- alphahub (forward-track notary) ---
+        g = self._section(inner, 'ALPHAHUB (forward-track, experimental)')
+        self.v_hub = self._chk(g, 'Push signals to AlphaHub', self.cfg.get('hub', False), 0,
+                               tip='Served signals also push their target weights to an AlphaHub\n'
+                                   'before each bar closes. The hub timestamps them and scores them\n'
+                                   'on the NEXT bar — an untamperable forward track record.\n'
+                                   'The hub sees only weights, never formulas.')
+        self.v_huburl = tk.StringVar(value=self.cfg.get('hub_url', ''))
+        self._row(g, 'Hub URL', 1, self._entry(g, self.v_huburl, width=230),
+                  tip='e.g. http://my-vps:8899 — where your AlphaHub runs.')
+        self.v_hubnode = tk.StringVar(value=self.cfg.get('hub_node', ''))
+        self._row(g, 'Node ID', 2, self._entry(g, self.v_hubnode, width=230),
+                  tip='Issued by the hub operator: python manage.py add-node "name".')
+        self.v_hubkey = tk.StringVar(value=_load_keyfile(HUB_KEY_FILE))
+        e_hk = self._entry(g, self.v_hubkey, width=230)
+        e_hk.configure(show='•')
+        self._row(g, 'Node secret', 3, e_hk,
+                  tip='Signs every push (HMAC) — it never travels over the network.\n'
+                      'Stored in its own owner-only file, never in gui_settings.json:\n'
+                      f'{HUB_KEY_FILE}')
+        self.lbl_hub = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12))
+        self.lbl_hub.grid(row=4, column=0, sticky='w', pady=(4, 0))
+        self._btn(g, 'Check hub', self._check_hub, height=26, width=100)\
             .grid(row=4, column=1, sticky='e', pady=(4, 0))
 
         # --- simulation ---
@@ -1353,6 +1425,8 @@ class App:
         self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
         self.v_advcalls.set(c.get('advisor_max_calls', 8))
         self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
+        self.v_hub.set(c.get('hub', False)); self.v_huburl.set(c.get('hub_url', ''))
+        self.v_hubnode.set(c.get('hub_node', '')); self.v_hubkey.set(_load_keyfile(HUB_KEY_FILE))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -1695,6 +1769,10 @@ class App:
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
                    ALPHANODE_SIGNAL_PORT=str(port), ALPHANODE_SIGNAL_REFRESH='900')
+        hub_key = _load_keyfile(HUB_KEY_FILE)
+        if c.get('hub') and c.get('hub_url') and c.get('hub_node') and hub_key:
+            env.update(ALPHANODE_HUB_URL=c['hub_url'], ALPHANODE_HUB_NODE=c['hub_node'],
+                       ALPHANODE_HUB_KEY=hub_key)      # the service pushes weights each refresh
         log_path = os.path.join(STATE_DIR, f'signal_{port}.log')
         try:
             fh = open(log_path, 'w', buffering=1)

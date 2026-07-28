@@ -52,7 +52,8 @@ DUST_W = 0.0005                                          # ignore weights below 
 
 # ---- shared state (the HTTP handler reads this; the refresh thread writes it) ----
 _STATE = {'lock': threading.Lock(), 'signal': None, 'updated': None, 'ts': 0.0,
-          'error': None, 'computing': False, 'name': 'signal', 'formulas': [], 'n_tickers': 0}
+          'error': None, 'computing': False, 'name': 'signal', 'formulas': [], 'n_tickers': 0,
+          'hub': None}                                   # last AlphaHub push outcome (or None)
 
 
 # ---------------- live Binance klines (stdlib, no keys) ----------------
@@ -156,6 +157,31 @@ def _utcnow_iso():
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
+def _hub_push(sig):
+    """Push the fresh target weights to AlphaHub (see alphahub/protocol.md), if configured.
+    The service is daily-only, so tf='1d' and the deadline is the NEXT 00:00 UTC close:
+    'these are the weights I commit to holding from that close' — scored on the day after.
+    Every refresh re-pushes; the hub keeps the last write before the deadline. Failures
+    are logged and NEVER disturb the service — the hub is an add-on, not a dependency."""
+    url = os.environ.get('ALPHANODE_HUB_URL', '').strip()
+    node = os.environ.get('ALPHANODE_HUB_NODE', '').strip()
+    key = os.environ.get('ALPHANODE_HUB_KEY', '').strip()
+    if not (url and node and key):
+        return
+    import hub_client
+    weights = {p['ticker']: p['weight'] for p in sig['positions']}
+    if not weights:
+        msg = 'flat signal — nothing to push'
+        ok = True
+    else:
+        nxt = (int(time.time()) // 86400 + 1) * 86400     # next daily close (00:00 UTC)
+        iso = datetime.fromtimestamp(nxt, tz=timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+        ok, msg = hub_client.push(url, node, key, '1d', iso, weights)
+    with _STATE['lock']:
+        _STATE['hub'] = ('✓ ' if ok else '✗ ') + msg
+    print(f'[signal] hub: {"✓" if ok else "✗"} {msg}', flush=True)
+
+
 def refresh_loop(formulas, tickers, start, vol, exec_rate, refresh, stop):
     while not stop.is_set():
         with _STATE['lock']:
@@ -166,6 +192,7 @@ def refresh_loop(formulas, tickers, start, vol, exec_rate, refresh, stop):
                 _STATE.update(signal=sig, updated=_utcnow_iso(), ts=time.time(), error=None)
             print(f'[signal] updated {sig["as_of"]} · {len(sig["positions"])} positions · '
                   f'lev {sig["leverage"]:.2f}', flush=True)
+            _hub_push(sig)
         except Exception as e:                            # noqa: BLE001
             with _STATE['lock']:
                 _STATE['error'] = f'{type(e).__name__}: {e}'
@@ -192,13 +219,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
             sig, upd, ts = _STATE['signal'], _STATE['updated'], _STATE['ts']
             err, computing, name, forms = (_STATE['error'], _STATE['computing'],
                                            _STATE['name'], _STATE['formulas'])
-            n_tick = _STATE['n_tickers']
+            n_tick, hub = _STATE['n_tickers'], _STATE['hub']
         age = round(time.time() - ts, 1) if ts else None
         if path == '/health':
             # pid + counts: everything the GUI needs to re-adopt a service it lost the handle to
             self._send(200, {'ok': sig is not None, 'name': name, 'pid': os.getpid(),
                              'n_formulas': len(forms), 'n_tickers': n_tick, 'updated_at': upd,
-                             'age_secs': age, 'computing': computing, 'error': err})
+                             'age_secs': age, 'computing': computing, 'error': err, 'hub': hub})
         elif path in ('/', '/signal'):
             if sig is None:
                 self._send(503, {'ok': False, 'name': name, 'formulas': forms,
