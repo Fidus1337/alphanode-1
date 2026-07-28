@@ -953,10 +953,28 @@ class App:
         canvas.bind('<Leave>', _off)
 
     # ---------- right panel: status / chart / leaderboard ----------
+    def _vgrip(self, parent, row, on_drag, on_reset, tip):
+        """A full-width draggable gap between two cards: the ENTIRE space between the blocks is
+        the handle (a thin accent bar lights up on hover), not a hairline you have to hunt for."""
+        outer = tk.Frame(parent, bg=BG, height=max(16, int(16 * self.SCALE)),
+                         cursor='sb_v_double_arrow')
+        outer.grid(row=row, column=0, sticky='ew')
+        handle = tk.Frame(outer, bg=BORDER, height=max(4, int(4 * self.SCALE)),
+                          width=int(64 * self.SCALE), cursor='sb_v_double_arrow')
+        handle.place(relx=0.5, rely=0.5, anchor='center')
+        for w in (outer, handle):
+            w.bind('<B1-Motion>', on_drag)
+            w.bind('<ButtonRelease-1>', lambda e: self._save())
+            w.bind('<Double-1>', on_reset)
+            w.bind('<Enter>', lambda e: handle.configure(bg=ACC))
+            w.bind('<Leave>', lambda e: handle.configure(bg=BORDER))
+        self._tip(outer, tip)
+        return outer
+
     def _build_status(self, body):
         right = self._box(body, bg=BG)
         body.add(right, minsize=int(420 * self.SCALE), stretch='always')
-        right.rowconfigure(3, weight=1)                  # the leaderboard takes the slack
+        right.rowconfigure(4, weight=1)                  # the leaderboard takes the slack
         right.columnconfigure(0, weight=1)
 
         card = self._card(right)
@@ -992,17 +1010,13 @@ class App:
         self.chart = tk.Canvas(cpad, height=ch, bg=CARD, highlightthickness=0)
         self.chart.pack(fill='x')
         self.chart.bind('<Configure>', lambda e: self._draw_chart())
-        # drag grip: resize the chart vertically (the leaderboard below absorbs the difference)
-        grip = tk.Frame(cpad, bg=BORDER, height=max(5, int(5 * self.SCALE)),
-                        cursor='sb_v_double_arrow')
-        grip.pack(fill='x', pady=(8, 0))
-        grip.bind('<B1-Motion>', self._on_chart_drag)
-        grip.bind('<ButtonRelease-1>', lambda e: self._save())
-        grip.bind('<Double-1>', self._chart_reset)
-        self._tip(grip, 'Drag to make the chart taller or shorter. Double-click — default height.')
+        # the whole gap below this card is the drag handle (see _vgrip in the row layout)
 
+        self._vgrip(right, 3, self._on_chart_drag, self._chart_reset,
+                    'Drag: the chart above grows/shrinks, the leaderboard absorbs it.\n'
+                    'Double-click — default chart height.')
         card2 = self._card(right)
-        card2.grid(row=3, column=0, sticky='nsew', pady=(16, 0))
+        card2.grid(row=4, column=0, sticky='nsew')
         p2 = self._pad(card2)
         hrow = self._box(p2)
         hrow.pack(fill='x', pady=(0, 8))
@@ -1077,19 +1091,13 @@ class App:
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
+        self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
+                    'Drag up — a taller portfolio equity plot (the leaderboard shrinks);\n'
+                    'drag down — more room for the leaderboard. Double-click — automatic height.')
         card3 = self._card(right)
-        card3.grid(row=4, column=0, sticky='ew', pady=(16, 0))
+        card3.grid(row=6, column=0, sticky='ew')
         self.pf_card = card3
         p3 = self._pad(card3)
-        # drag grip on the top edge: pull UP to make the portfolio (its equity plot) taller —
-        # the leaderboard above absorbs the difference. Double-click: back to automatic height.
-        pgrip = tk.Frame(p3, bg=BORDER, height=max(5, int(5 * self.SCALE)),
-                         cursor='sb_v_double_arrow')
-        pgrip.pack(fill='x', pady=(0, 8))
-        pgrip.bind('<B1-Motion>', self._on_pf_grip)
-        pgrip.bind('<ButtonRelease-1>', lambda e: self._save())
-        pgrip.bind('<Double-1>', self._pf_grip_reset)
-        self._tip(pgrip, 'Drag up/down to resize the portfolio equity plot.\nDouble-click — automatic height.')
         hp = self._box(p3)
         hp.pack(fill='x')
         self._head(hp, 'PORTFOLIO — top-N combined via the real engine').pack(side='left')
