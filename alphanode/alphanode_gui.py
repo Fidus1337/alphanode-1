@@ -155,6 +155,7 @@ DEFAULTS = {
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
     'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
     'chart_h': 0,           # progress-chart height, 100%-DPI px; 0 = default (170)
+    'pf_h': 0,              # portfolio equity-plot height, px; 0 = automatic (from width)
 }
 
 # --- design palette: Linear/Stripe style, light + dark ---
@@ -1080,6 +1081,15 @@ class App:
         card3.grid(row=4, column=0, sticky='ew', pady=(16, 0))
         self.pf_card = card3
         p3 = self._pad(card3)
+        # drag grip on the top edge: pull UP to make the portfolio (its equity plot) taller —
+        # the leaderboard above absorbs the difference. Double-click: back to automatic height.
+        pgrip = tk.Frame(p3, bg=BORDER, height=max(5, int(5 * self.SCALE)),
+                         cursor='sb_v_double_arrow')
+        pgrip.pack(fill='x', pady=(0, 8))
+        pgrip.bind('<B1-Motion>', self._on_pf_grip)
+        pgrip.bind('<ButtonRelease-1>', lambda e: self._save())
+        pgrip.bind('<Double-1>', self._pf_grip_reset)
+        self._tip(pgrip, 'Drag up/down to resize the portfolio equity plot.\nDouble-click — automatic height.')
         hp = self._box(p3)
         hp.pack(fill='x')
         self._head(hp, 'PORTFOLIO — top-N combined via the real engine').pack(side='left')
@@ -2501,17 +2511,35 @@ class App:
             w = self.tree.winfo_width() or 900
         return max(700, min(w - 34, 3400))
 
-    def _on_pf_resize(self, event):
+    def _pf_rerender(self, delay=250):
+        """Debounced background re-render of the equity PNG at the current width/height."""
         if not self._pf_doc:
-            return
-        w = self._pf_width()
-        if abs(w - self._pf_last_w) < 40:                # ignore tiny/noise resizes
             return
         if self._pf_resize_after:
             self.root.after_cancel(self._pf_resize_after)
-        self._pf_resize_after = self.root.after(         # debounce: re-render after resize settles
-            250, lambda: threading.Thread(target=self._render_pf_equity,
-                                          args=(self._pf_doc, self._pf_width()), daemon=True).start())
+        self._pf_resize_after = self.root.after(
+            delay, lambda: threading.Thread(target=self._render_pf_equity,
+                                            args=(self._pf_doc, self._pf_width()), daemon=True).start())
+
+    def _on_pf_resize(self, event):
+        if not self._pf_doc:
+            return
+        if abs(self._pf_width() - self._pf_last_w) < 40:   # ignore tiny/noise resizes
+            return
+        self._pf_rerender()                              # debounce: re-render after resize settles
+
+    def _on_pf_grip(self, e):
+        """The grip above the PORTFOLIO card: cursor-to-image-bottom = new equity-plot height."""
+        base = (self.pf_img.winfo_rooty() + self.pf_img.winfo_height()
+                if self._pf_img_ref is not None           # an equity PNG is actually shown
+                else self.pf_card.winfo_rooty() + self.pf_card.winfo_height())
+        self.cfg['pf_h'] = max(160, min(800, base - e.y_root))
+        self._pf_rerender(delay=180)                     # height is picked up by the render itself
+
+    def _pf_grip_reset(self, _e=None):
+        self.cfg['pf_h'] = 0
+        self._save()
+        self._pf_rerender(delay=0)
 
     @staticmethod
     def _mpl_rc():
@@ -2537,7 +2565,8 @@ class App:
                 x = pd.to_datetime(eq['dates'])
                 w = width
                 dpi = 100
-                fig_h = min(3.8, max(2.4, w / dpi / 4.5))     # grow height gently with width
+                ph = self.cfg.get('pf_h') or 0            # user-dragged height (px), 0 = automatic
+                fig_h = (ph / dpi) if ph else min(3.8, max(2.4, w / dpi / 4.5))
                 with matplotlib.rc_context(self._mpl_rc()):
                     fig = plt.figure(figsize=(w / dpi, fig_h), dpi=dpi)
                     ax = fig.gca()
