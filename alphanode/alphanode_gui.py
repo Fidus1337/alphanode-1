@@ -1139,10 +1139,10 @@ class App:
         self.btn_lb_hub.pack(side='right', padx=(10, 0))
         self._tip(self.btn_lb_hub,
                   'One-shot push of the SELECTED alpha to AlphaHub: compute its current\n'
-                  'target weights on live data and send ONLY the weights as your forward\n'
-                  'signal for the next daily close (the formula never leaves this machine).\n'
-                  'Push again any time — the hub keeps the last version sent before the\n'
-                  'bar closes.')
+                  'target weights on live data (at the active timeframe) and send ONLY\n'
+                  'the weights as your forward signal for the next bar close. The formula\n'
+                  'never leaves this machine. Push again any time — the hub keeps the\n'
+                  'last version sent before the bar closes.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -2429,15 +2429,14 @@ class App:
                 'AlphaHub', 'No hub configured.\nSettings → ALPHAHUB: set the Hub URL and '
                             'press Register, then try again.', parent=self.root)
             return
-        if self._tf_gate('Pushing to AlphaHub'):          # weights come from the daily engine
-            return
+        tf = self._tf()                                   # any timeframe: weights via fastsim
         formula = c['formula']
         if not messagebox.askyesno(
                 'AlphaHub', f'Push this alpha to {hub_url}?\n\n{formula}\n\n'
-                            'The node will fetch fresh daily candles, compute the current '
-                            'target weights and send ONLY the weights as your forward signal '
-                            'for the next daily close. The formula never leaves this machine.',
-                parent=self.root):
+                            f'The node will fetch fresh {tf} candles (+ funding), compute the '
+                            'current target weights and send ONLY the weights as your forward '
+                            f'signal for the next {tf} close. The formula never leaves this '
+                            'machine.', parent=self.root):
             return
         cfg = self.cfg
         if cfg.get('universe_all', True):
@@ -2450,29 +2449,24 @@ class App:
         else:
             tickers = [x.strip().upper() for x in cfg.get('universe_list', '').split(',')
                        if x.strip()]
-        self._flash_lb('⇪ computing current weights on live data…', ms=60000)
+        self._flash_lb(f'⇪ computing current {tf} weights on live data…', ms=120000)
         holder = {}
 
         def work():
             try:
                 import hub_client
-                import signal_service
-                from datetime import datetime as _dt, timezone as _tz
+                import hub_push
                 ident = hub_client.ensure_identity(HUB_ID_FILE)
-                sig = signal_service.compute_signal(
-                    [formula], tickers, cfg_start, self.cfg['target_vol'],
-                    self.cfg['exec_cost'])
-                weights = {p['ticker']: p['weight'] for p in sig['positions']}
-                nxt = (int(time.time()) // 86400 + 1) * 86400   # next daily close, 00:00 UTC
-                iso = _dt.fromtimestamp(nxt, tz=_tz.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-                ok, msg = hub_client.push(hub_url, ident, '1d', iso, weights)
+                weights, meta = hub_push.compute_weights(
+                    formula, tickers, tf, self.cfg['target_vol'], self.cfg['exec_cost'],
+                    log=lambda *a: None)
+                iso = hub_push.bar_close_iso(tf)
+                ok, msg = hub_client.push(hub_url, ident, tf, iso, weights)
                 holder['res'] = (ok, f'{msg} · {len(weights)} positions · bar {iso}'
                                  if ok else msg)
             except Exception as e:                        # noqa: BLE001
                 holder['res'] = (False, f'{type(e).__name__}: {str(e)[:120]}')
 
-        from datetime import datetime as _dt0
-        cfg_start = _dt0.fromisoformat(self.cfg['train_start'])
         threading.Thread(target=work, daemon=True).start()
 
         def poll():

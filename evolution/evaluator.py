@@ -74,6 +74,12 @@ def build_panel(data_path, start, end, instruments=None, freq='D'):
 
     instruments=None -> all pairs from data.pickle; a list -> keep only those (in that order)."""
     tk, raw = load_raw(data_path, instruments)
+    return tk, raw, panel_from_raw(tk, raw, start, end, freq)
+
+
+def panel_from_raw(tk, raw, start, end, freq='D'):
+    """The feature panel from an in-memory {ticker: OHLCV(+funding) df} dict — same maths as
+    build_panel, no pickle needed (live AlphaHub pushes feed freshly fetched candles here)."""
     idx = pd.date_range(start=start, end=end, freq=freq, tz='UTC')
 
     # IMPORTANT (look-ahead guard): SIGNAL features are ffill only, NO bfill.
@@ -95,7 +101,7 @@ def build_panel(data_path, start, end, instruments=None, freq='D'):
     fcols = {t: (raw[t]['funding'].reindex(idx) if 'funding' in raw[t].columns
                  else pd.Series(np.nan, index=idx)) for t in tk}
     panel['funding'] = pd.DataFrame(fcols).fillna(0.0).where(panel['close'].notna())
-    return tk, raw, panel
+    return panel
 
 
 def eval_alpha_panel(node, panel):
