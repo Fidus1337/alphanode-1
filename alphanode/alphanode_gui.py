@@ -1257,7 +1257,8 @@ class App:
                                    'экспозиция и обороты, структура весов, помесячные\n'
                                    'доходности и выводы (период TEST).')
         self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
-                                   'weight per asset per day on TEST (same as for a single alpha).')
+                                   'weight per asset per bar on TEST, with the asset\'s OHLCV on\n'
+                                   'that bar (same as for a single alpha).')
         self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
                                      'portfolio (all N alphas combined via the real Portfolio engine)\n'
                                      'to run daily on live Binance data — same as for a single alpha.')
@@ -2930,13 +2931,14 @@ class App:
             cfg = self._build_plot_cfg()
             _tk, panel, market, _basket = self._get_market(cfg)
             wide = self._alpha_weights_wide(formula, cfg, market, panel)
-            self._signals_from_wide(wide, cfg['splits'], path)
+            self._signals_from_wide(wide, cfg['splits'], path, panel=panel)
         except Exception as e:                                     # noqa: BLE001
             messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
 
-    def _signals_from_wide(self, wide, splits, path):
-        """Wide target-weight table (index=date, cols=tickers) -> tidy CSV (row = one position) +
-        the 'what to hold now' dialog. Shared by a single alpha and the combined portfolio."""
+    def _signals_from_wide(self, wide, splits, path, panel=None):
+        """Wide target-weight table (index=date, cols=tickers) -> tidy CSV (row = one position,
+        with the asset's OHLCV on that bar when `panel` is given) + the 'what to hold now'
+        dialog. Shared by a single alpha and the combined portfolio."""
         import numpy as np
         wide = wide.copy()
         wide.index.name = 'date'
@@ -2950,7 +2952,16 @@ class App:
                                    np.where(d < splits['test'][0], 'VAL', 'TEST'))
         long['_aw'] = long['weight'].abs()
         long = long.sort_values(['date', '_aw'], ascending=[True, False]).drop(columns='_aw')
-        long = long[['date', 'segment', 'ticker', 'side', 'weight', 'weight_pct']]
+        cols = ['date', 'segment', 'ticker', 'side', 'weight', 'weight_pct']
+        if panel is not None:                                      # the asset's bar next to its weight
+            ii = panel['close'].index.get_indexer(long['date'])
+            jj = panel['close'].columns.get_indexer(long['ticker'])
+            ok = (ii >= 0) & (jj >= 0)
+            for c in ('open', 'high', 'low', 'close', 'volume'):
+                arr = panel[c].to_numpy()
+                long[c] = np.where(ok, arr[np.clip(ii, 0, None), np.clip(jj, 0, None)], np.nan)
+            cols += ['open', 'high', 'low', 'close', 'volume']
+        long = long[cols]
         long.to_csv(path, index=False)
         last = wide.iloc[-1]
         pos = sorted([(t, float(v)) for t, v in last.items() if abs(v) > 0.0005],
@@ -3100,7 +3111,12 @@ class App:
             w = doc['weights']
             idx = pd.to_datetime(w['dates']).tz_localize('UTC')   # match the tz-aware splits
             wide = pd.DataFrame(np.array(w['W'], dtype=float), index=idx, columns=w['tickers'])
-            self._signals_from_wide(wide, self._build_plot_cfg()['splits'], path)
+            cfg = self._build_plot_cfg()
+            try:                                                   # OHLCV columns are best-effort:
+                _tk, panel, _market, _b = self._get_market(cfg)    # no data snapshot -> weights-only CSV
+            except Exception:                                      # noqa: BLE001
+                panel = None
+            self._signals_from_wide(wide, cfg['splits'], path, panel=panel)
         except Exception as e:                                     # noqa: BLE001
             messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
 
@@ -3169,7 +3185,8 @@ class App:
             self._lbl(r, text=t, text_color=TXT, font=(self.MONO, 13), anchor='w').pack(side='left')
             self._lbl(r, text=f'{w * 100:+.1f}%', text_color=col, font=(self.MONO, 13, 'bold'),
                          anchor='e').pack(side='right', padx=(0, 8))
-        self._lbl(frm, text=f'Full history ({n_days} days) — in the CSV: date, ticker, side, weight_pct.',
+        self._lbl(frm, text=f'Full history ({n_days} bars) — in the CSV: date, ticker, side, '
+                            'weight, weight_pct + the asset\'s open/high/low/close/volume.',
                      text_color=MUT, font=(self.UI, 12), wraplength=400, justify='left',
                      anchor='w').pack(anchor='w', pady=(10, 0))
         self._btn(frm, 'Close', win.destroy, width=80).pack(anchor='e', pady=(10, 0))
