@@ -1139,9 +1139,10 @@ class App:
         self.btn_lb_hub.pack(side='right', padx=(10, 0))
         self._tip(self.btn_lb_hub,
                   'One-shot push of the SELECTED alpha to AlphaHub: compute its current\n'
-                  'target weights on live data and send them (formula disclosed) as your\n'
-                  'forward signal for the next daily close. Push again any time — the hub\n'
-                  'keeps the last version sent before the bar closes.')
+                  'target weights on live data and send ONLY the weights as your forward\n'
+                  'signal for the next daily close (the formula never leaves this machine).\n'
+                  'Push again any time — the hub keeps the last version sent before the\n'
+                  'bar closes.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -1204,7 +1205,7 @@ class App:
         self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
-        self._menu.add_command(label='Push to AlphaHub (one-shot: weights + formula)',
+        self._menu.add_command(label='Push to AlphaHub (one-shot, weights only)',
                                command=self._push_selected_to_hub)
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
@@ -2434,8 +2435,9 @@ class App:
         if not messagebox.askyesno(
                 'AlphaHub', f'Push this alpha to {hub_url}?\n\n{formula}\n\n'
                             'The node will fetch fresh daily candles, compute the current '
-                            'target weights and send them (formula included) as your forward '
-                            'signal for the next daily close.', parent=self.root):
+                            'target weights and send ONLY the weights as your forward signal '
+                            'for the next daily close. The formula never leaves this machine.',
+                parent=self.root):
             return
         cfg = self.cfg
         if cfg.get('universe_all', True):
@@ -2463,7 +2465,7 @@ class App:
                 weights = {p['ticker']: p['weight'] for p in sig['positions']}
                 nxt = (int(time.time()) // 86400 + 1) * 86400   # next daily close, 00:00 UTC
                 iso = _dt.fromtimestamp(nxt, tz=_tz.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-                ok, msg = hub_client.push(hub_url, ident, '1d', iso, weights, formula=formula)
+                ok, msg = hub_client.push(hub_url, ident, '1d', iso, weights)
                 holder['res'] = (ok, f'{msg} · {len(weights)} positions · bar {iso}'
                                  if ok else msg)
             except Exception as e:                        # noqa: BLE001

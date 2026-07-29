@@ -84,11 +84,11 @@ def register(hub_url, ident, name, timeout=15):
         return False, f'hub unreachable ({type(e).__name__})'
 
 
-def push(hub_url, ident, tf, bar_close_iso, weights, formula=None, timeout=15):
+def push(hub_url, ident, tf, bar_close_iso, weights, timeout=15):
     """POST a signed signal. -> (ok, detail). Never raises — a hub outage must not
-    disturb the node; the caller just logs the detail.
-    `formula` is an OPTIONAL disclosure: pass it and the hub page shows what the
-    weights came from (handy while testing / for open nodes); omit it for privacy."""
+    disturb the node; the caller just logs the detail. Weights are the WHOLE story:
+    the hub judges nodes by facts (timestamped weights -> its own PnL), never by
+    what produced them — formulas stay on this machine."""
     payload = {
         'v': PROTOCOL_V,
         'node_id': ident['node_id'],
@@ -97,8 +97,6 @@ def push(hub_url, ident, tf, bar_close_iso, weights, formula=None, timeout=15):
         'weights': {str(s): round(float(w), 6) for s, w in weights.items()
                     if abs(float(w)) > 1e-9},
     }
-    if formula:
-        payload['formula'] = str(formula)[:400]
     if not payload['weights']:
         return False, 'nothing to push (all weights ~0)'
     payload['sig'] = sign(ident, payload)
