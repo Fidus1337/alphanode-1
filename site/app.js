@@ -56,7 +56,7 @@
     const ctx = cv.getContext('2d');
     let W, H, pts = [], raf = 0;
     const DPR = Math.min(devicePixelRatio || 1, 2);
-    const N = innerWidth < 700 ? 34 : 64, LINK = 140;
+    const N = innerWidth < 700 ? 26 : 46, LINK = 150;
     const resize = () => {
       const r = cv.parentElement.getBoundingClientRect();
       W = r.width; H = r.height;
@@ -109,28 +109,27 @@
   if (log) {
     let round = 127;
     const lines = () => [
-      [`▶ round ${++round} · 1h bars · 60 pairs · target vol 30%`, 'c'],
-      ['  gen 04/25 · pop 200 · 2.4k evals/s', ''],
-      ['  gen 12/25 · best fit 1.38 · maxDD −9.2%', ''],
-      ['  ♦ champion  cs_rank(ts_roc:30(close)) · fit 1.42', 'a'],
-      ['  🧠 advisor · 10 proposals → 3 survived the simulator', 'b'],
-      ['  ✓ library +2 → 511 alphas · TEST stayed locked', 'g'],
-      ['  ⇪ hub push · 34 weights signed · bar 12:00Z · accepted', 'g'],
+      [`▶ round ${++round} · 1h bars · 60 pairs`, 'c'],
+      ['  gen 12/25 · best fit 1.38 · dd −9.2%', ''],
+      ['  ♦ champion cs_rank(ts_roc:30(close))', 'a'],
+      ['  🧠 advisor: 10 proposed → 3 survived', 'b'],
+      ['  ✓ library +2 → 511 alphas', 'g'],
+      ['  ⇪ hub: 34 weights · bar 12:00Z · ok', 'g'],
     ];
     if (reduced) {
       log.innerHTML = lines().map(([t, c]) => `<span class="${c}">${t}</span>`).join('\n');
     } else {
-      let queue = [], out = [], typing = '', li = 0, ci = 0;
+      let queue = [], out = [], typing = '', ci = 0;
       const render = () =>
         log.innerHTML = out.concat(`${typing}<span class="caret">▌</span>`).join('\n');
       const tick = () => {
-        if (!queue.length) { queue = lines(); li = 0; }
+        if (!queue.length) queue = lines();
         const [text, cls] = queue[0];
         ci += 1 + (Math.random() < .3 ? 1 : 0);
         typing = `<span class="${cls}">${text.slice(0, ci)}</span>`;
         if (ci >= text.length) {
           out.push(`<span class="${cls}">${text}</span>`);
-          if (out.length > 6) out.shift();
+          if (out.length > 5) out.shift();
           queue.shift(); typing = ''; ci = 0;
           render();
           setTimeout(tick, 420 + Math.random() * 500);
