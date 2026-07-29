@@ -149,8 +149,8 @@ DEFAULTS = {
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
     # neuro advisor (the API key is NOT here — see KEY_FILE)
     'advisor': False, 'advisor_max_calls': 8, 'advisor_model': 'claude-opus-5',
-    # alphahub (the Ed25519 identity is NOT here — see HUB_ID_FILE)
-    'hub': False, 'hub_url': '', 'hub_name': 'my-node',
+    # alphahub (the Ed25519 identity is NOT here — see HUB_ID_FILE); pushes are manual-only
+    'hub_url': '', 'hub_name': 'my-node',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -412,7 +412,6 @@ class App:
             advisor=bool(self.v_advisor.get()),
             advisor_max_calls=self._gi(self.v_advcalls, d['advisor_max_calls']),
             advisor_model=(self.v_advmodel.get() or d['advisor_model']).strip(),
-            hub=bool(self.v_hub.get()),
             hub_url=self.v_huburl.get().strip(),
             hub_name=self.v_hubname.get().strip() or 'my-node',
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
@@ -821,13 +820,11 @@ class App:
         self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
             .grid(row=4, column=1, sticky='e', pady=(4, 0))
 
-        # --- alphahub (forward-track notary) ---
+        # --- alphahub (forward-track notary; pushes are MANUAL — the ⇪ Hub button) ---
         g = self._section(inner, 'ALPHAHUB (forward-track, experimental)')
-        self.v_hub = self._chk(g, 'Push signals to AlphaHub', self.cfg.get('hub', False), 0,
-                               tip='Served signals also push their target weights to an AlphaHub\n'
-                                   'before each bar closes. The hub timestamps them and scores them\n'
-                                   'on the NEXT bar — an untamperable forward track record.\n'
-                                   'The hub sees only weights, never formulas.')
+        self._lbl(g, text='Pushes are manual: select an alpha in the leaderboard → ⇪ Hub.',
+                  text_color=MUT, font=(self.UI, 12)).grid(row=0, column=0, columnspan=2,
+                                                           sticky='w', pady=(0, 4))
         self.v_huburl = tk.StringVar(value=self.cfg.get('hub_url', ''))
         self._row(g, 'Hub URL', 1, self._entry(g, self.v_huburl, width=230),
                   tip='e.g. http://my-vps:8899 — where your AlphaHub runs.')
@@ -1473,7 +1470,7 @@ class App:
         self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
         self.v_advcalls.set(c.get('advisor_max_calls', 8))
         self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
-        self.v_hub.set(c.get('hub', False)); self.v_huburl.set(c.get('hub_url', ''))
+        self.v_huburl.set(c.get('hub_url', ''))
         self.v_hubname.set(c.get('hub_name', 'my-node'))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
@@ -1785,7 +1782,7 @@ class App:
                     continue
         return None
 
-    def _serve_signal(self, formulas, label, hub_push=False):
+    def _serve_signal(self, formulas, label):
         if self._tf_gate('The live signal API'):
             return
         formulas = [f for f in (formulas or []) if f and f.strip()]
@@ -1817,10 +1814,6 @@ class App:
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
                    ALPHANODE_SIGNAL_PORT=str(port), ALPHANODE_SIGNAL_REFRESH='900')
-        with_hub = bool(c.get('hub_url')) and (hub_push or c.get('hub'))
-        if with_hub:
-            env.update(ALPHANODE_HUB_URL=c['hub_url'],   # the service pushes weights each refresh
-                       ALPHANODE_HUB_IDENTITY=HUB_ID_FILE)
         log_path = os.path.join(STATE_DIR, f'signal_{port}.log')
         try:
             fh = open(log_path, 'w', buffering=1)
@@ -1833,7 +1826,6 @@ class App:
             return
         self._sigs.append({'port': port, 'proc': proc, 'pid': proc.pid, 'fh': fh, 'log': log_path,
                            'label': label, 'n_formulas': len(formulas), 'n_tickers': len(tickers),
-                           'hub': with_hub,               # this service pushes to AlphaHub
                            'started': time.strftime('%Y-%m-%d %H:%M')})
         self._sig_health[port] = 'starting — fetching live data, computing the first signal…'
         self._sig_save()
@@ -1970,8 +1962,6 @@ class App:
                 age = h.get('age_secs')
                 txt = (f'● serving · updated {h.get("updated_at", "")} ({age:.0f}s ago)'
                        if age is not None else '● serving')
-                if h.get('hub'):                          # last AlphaHub push outcome
-                    txt += f' · hub {h["hub"]}'
             elif h.get('error'):
                 txt = f'⚠ {h["error"]}'
             else:
