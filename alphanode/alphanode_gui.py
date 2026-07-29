@@ -2624,23 +2624,27 @@ class App:
             out.append(r)
         self._save_csv(path, header, out, 'alphas')
 
-    # ---------- PORTFOLIO: combine top-N via the real engine (TEST- or fitness-ranked) ----------
+    # ---------- PORTFOLIO: combine top-N (1d: real engine; intraday: fastsim, same combiner) ----------
     def _build_portfolio(self):
-        if self._tf_gate('The portfolio builder'):
-            return
         if self._pf_proc and self._pf_proc.poll() is None:
             return                                       # already building
         n = self._gi(self.v_pfn, 6)
         sel = 'base' if self.v_pfsel.get() == 'fitness' else 'test'
+        eng = 'real engine, ~1–2 min' if self._tf() == '1d' else f'{self._tf()} fastsim, ~seconds'
         self.btn_pf.configure(state='disabled')
         self.lbl_pf_m.configure(text='', fg=MUT)
         self.lbl_pf.configure(text=f'building portfolio from top-{n} by '
                                    f'{"TEST" if sel == "test" else "fitness min(train,val)"} '
-                                   '(real engine, ~1–2 min)…')
+                                   f'({eng})…')
         env = dict(os.environ)
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
                    ALPHANODE_TF=self._tf(),
-                   ALPHANODE_CONFIG_INI=apppaths.config_ini())
+                   ALPHANODE_CONFIG_INI=apppaths.config_ini(),
+                   # the GUI's date fields, node.py-style — the ini only has daily defaults
+                   ALPHANODE_TRAIN_START=self.cfg.get('train_start', ''),
+                   ALPHANODE_VAL_START=self.cfg.get('val_start', ''),
+                   ALPHANODE_TEST_START=self.cfg.get('test_start', ''),
+                   ALPHANODE_TEST_END=self.cfg.get('test_end', ''))
         try:
             self._pf_proc = subprocess.Popen(
                 _child_cmd('portfolio') + ['--top', str(n), '--select', sel,
@@ -2688,7 +2692,8 @@ class App:
             note = ('⚠ members picked by TEST — its numbers are optimistic (cherry-pick); '
                     'validate with Paper')
             picked = 'by TEST OOS'
-        self.lbl_pf.configure(text=f'top-{doc.get("n")} {picked} combined via the engine  ·  '
+        eng = 'the real engine' if doc.get('tf', '1d') == '1d' else f'fastsim on {doc["tf"]} bars'
+        self.lbl_pf.configure(text=f'top-{doc.get("n")} {picked} combined via {eng}  ·  '
                                 f'TEST {doc.get("test", "")}  ·  built in '
                                 f'{doc.get("built_secs", "?")}s  ·  {note}')
         sh = m.get('sharpe')

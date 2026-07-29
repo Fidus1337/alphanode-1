@@ -73,9 +73,11 @@ def precompute_market(panel, tk, raw=None, vol_window=30):
     return {'C': C, 'R': R, 'V': V, 'F': F, 'base_elig': base_elig, 'index': idx, 'tk': list(tk)}
 
 
-def _sim_kernel_impl(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann, ewma_lambda, out):
+def _sim_kernel_impl(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann, ewma_lambda, out, wl):
     """The sequential day loop -> capital[T]. `out` (N+1 floats) additionally receives the
     LAST bar's dollar weights [0:N] and leverage [N] — the live target for AlphaHub pushes.
+    `wl` ([T,N], or [0,0] = off) receives each bar's weight×leverage — the strategy's position
+    as a fraction of capital, exactly what quantpylib's Portfolio sums across strategies.
 
     State (EWMA vol estimate, capital, positions) carries across days, so this loop is inherently
     sequential and cannot be vectorized over time — which is exactly why it is worth compiling.
@@ -141,6 +143,8 @@ def _sim_kernel_impl(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann, ewma
         units_prev = position
         w_prev = w
         pos_prev = position
+        if wl.shape[0] > 0:                            # engine: leverage uses capital AFTER costs
+            wl[i, :] = w * lev_prev
 
     out[:N] = w_prev
     out[N] = lev_prev
@@ -153,18 +157,21 @@ def _sim_kernel_impl(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann, ewma
 _kernel_jit = _numba.njit(cache=True)(_sim_kernel_impl) if _numba is not None else None
 
 
-def _run_kernel(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann, ewma_lambda, out=None):
+def _run_kernel(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann, ewma_lambda,
+                out=None, wl=None):
     if out is None:
         out = np.zeros(C.shape[1] + 1)
+    if wl is None:
+        wl = np.zeros((0, 0))                          # [0,0] = don't record the weight path
     global _kernel_jit
     if _kernel_jit is not None:
         try:
             return _kernel_jit(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann,
-                               ewma_lambda, out)
+                               ewma_lambda, out, wl)
         except Exception:                              # noqa: BLE001 — any numba failure -> numpy
             _kernel_jit = None
     return _sim_kernel_impl(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann,
-                            ewma_lambda, out)
+                            ewma_lambda, out, wl)
 
 
 def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.10,
@@ -200,3 +207,22 @@ def fast_sim_weights(alpha_values, market, vol_target=0.30, exec_rate=0.001, ine
                 float(ann), float(ewma_lambda), out)
     weights = {t: float(out[i]) for i, t in enumerate(market['tk']) if abs(out[i]) > 1e-9}
     return weights, float(out[-1])
+
+
+def fast_sim_paths(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.10,
+                   ann=TARGET_ANN, ewma_lambda=EWMA_LAMBDA):
+    """(net returns Series, weight×leverage path [T,N]) — the per-bar position of the strategy
+    as a fraction of capital. Summing these paths across strategies and feeding the sum back
+    through the kernel reproduces quantpylib's Portfolio (its compute_forecasts is exactly
+    Σ w·leverage), which is how the intraday portfolio builder combines alphas."""
+    C, R, V, base_elig = market['C'], market['R'], market['V'], market['base_elig']
+    F = market.get('F')
+    if F is None:
+        F = np.zeros_like(C)
+    A = pd.DataFrame(alpha_values).ffill().to_numpy(dtype=np.float64)
+    E = base_elig & np.isfinite(A)
+    wl = np.zeros_like(C)
+    capital = _run_kernel(A, C, R, V, E, F, float(vol_target), float(exec_rate), float(inertia),
+                          float(ann), float(ewma_lambda), wl=wl)
+    ret = pd.Series(capital, index=market['index']).pct_change().fillna(0.0)
+    return ret, wl

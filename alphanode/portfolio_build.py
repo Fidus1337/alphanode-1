@@ -1,5 +1,13 @@
-"""Build a combined PORTFOLIO from the top-N library alphas, using the project's real
-`Portfolio` engine (quantpylib), and write metrics + equity to JSON for the GUI panel.
+"""Build a combined PORTFOLIO from the top-N library alphas and write metrics + equity to JSON
+for the GUI panel.
+
+Two engines, chosen by the active timeframe (same split as hub_push.py, same reasons):
+  1d       — the project's real `Portfolio` engine (quantpylib): matches paper/Serve bar-for-bar.
+  intraday — evolution's fastsim, run TWICE: once per member alpha to record each bar's
+             weight×leverage path, then once more over the SUM of those paths. That sum is
+             literally what quantpylib's Portfolio.compute_forecasts feeds its own loop, so the
+             combination semantics (second vol-targeting + inertia layer) are reproduced in the
+             engine whose numbers the intraday search leaderboard shows.
 
 Two selection modes (--select):
   test  (default) — top-N by held-out TEST Sharpe: picks what actually worked on the recent
@@ -53,10 +61,10 @@ def _testsh(c):
     return t.get('sharpe')
 
 
-def _pick_top(n, select='test'):
+def _pick_top(n, select='test', lib=None):
     """Top-N alphas by the chosen key from the library (diverse, no near-clones)."""
     key = _basesh if select == 'base' else _testsh
-    lib = os.path.join(_state_dir(), 'library.jsonl')
+    lib = lib or os.path.join(_state_dir(), 'library.jsonl')
     rows = []
     for line in open(lib, encoding='utf-8'):
         line = line.strip()
@@ -107,31 +115,69 @@ def _sim_one(arg):
     return i, sdf[keep]
 
 
-def _metrics(capital_ret, lo, hi):
+def _metrics(capital_ret, lo, hi, ann=365):
     r = capital_ret[(capital_ret.index >= lo) & (capital_ret.index < hi)].dropna()
     if len(r) < 5 or r.std() == 0:
         return None
     eq = (1 + r).cumprod()
-    return {'sharpe': float((r.mean() / r.std()) * np.sqrt(365)),
-            'cagr': float(eq.iloc[-1] ** (365 / len(r)) - 1),
+    return {'sharpe': float((r.mean() / r.std()) * np.sqrt(ann)),
+            'cagr': float(eq.iloc[-1] ** (ann / len(r)) - 1),
             'dd': float((eq / eq.cummax() - 1).min()), 'n': int(len(r))}
+
+
+def _write_doc(doc, out_path):
+    tmp = out_path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(doc, f)
+    os.replace(tmp, out_path)
+
+
+def _apply_segments(cfg):
+    """Segment dates, node.py-style: ALPHANODE_{TRAIN,VAL,TEST}_START/TEST_END env (the GUI's
+    date fields) wins; otherwise an intraday tf falls back to its recommended windows — the
+    ini's [segments] are the DAILY defaults and would mislabel intraday TEST."""
+    names = ('TRAIN_START', 'VAL_START', 'TEST_START', 'TEST_END')
+    raw = [os.environ.get('ALPHANODE_' + n) or None for n in names]
+    if not any(raw) and cfg.get('tf', '1d') != '1d':
+        from timeframe import resolve
+        seg = resolve(cfg['tf']).segments
+        raw = [seg['train_start'], seg['val_start'], seg['test_start'], seg['test_end']]
+    if not any(raw):
+        return
+    sp = cfg['splits']
+    cur = [sp['train'][0], sp['val'][0], sp['test'][0], sp['test'][1]]
+    tr, va, te, en = [pd.Timestamp(r, tz='UTC') if r else cur[i] for i, r in enumerate(raw)]
+    cfg['splits'] = {'train': (tr, va), 'val': (va, te), 'test': (te, en)}
+    cfg['start'] = tr.tz_localize(None).to_pydatetime()
+    cfg['end'] = en.tz_localize(None).to_pydatetime()
 
 
 def build(top_n, sim_start, jobs, out_path, select='test'):
     from config import load_config
+
+    cfg = load_config()
+    _apply_segments(cfg)
+    tf = cfg.get('tf', '1d')
+    lib = os.path.join(_state_dir(), f'library{"" if tf == "1d" else "_" + tf}.jsonl')
+    top = _pick_top(top_n, select, lib)
+    if len(top) < 2:
+        raise RuntimeError('need at least 2 scored alphas in the library')
+    if tf == '1d':
+        return _build_daily(cfg, top, sim_start, jobs, out_path, select)
+    return _build_fast(cfg, top, out_path, select)
+
+
+def _build_daily(cfg, top, sim_start, jobs, out_path, select):
+    """1d: the real quantpylib Portfolio — the numbers paper/Serve will reproduce."""
     from evaluator import build_panel, basket_returns
     from quantpylib.simulator.alpha import Portfolio
 
     t0 = time.time()
-    cfg = load_config()
     tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'))
     ts, te = cfg['splits']['test']
     start = pd.Timestamp(sim_start, tz='UTC').tz_localize(None).to_pydatetime()
     end = te.tz_localize(None).to_pydatetime()
 
-    top = _pick_top(top_n, select)
-    if len(top) < 2:
-        raise RuntimeError('need at least 2 scored alphas in the library')
     formulas = [c['formula'] for c in top]
     how = ('by TEST Sharpe (⚠ cherry-pick: combined TEST is optimistic)' if select != 'base'
            else 'by base=min(train,val) — TEST stays held out')
@@ -169,6 +215,7 @@ def build(top_n, sim_start, jobs, out_path, select='test'):
                'W': [[round(float(x), 5) for x in row] for row in cw.to_numpy()]}
 
     doc = {'ok': True, 'n': len(formulas), 'sel': select,   # 'test' | 'base'; docs without 'sel'
+           'tf': '1d',
            'sim_start': str(pd.Timestamp(start).date()),    # predate the selectable picker (=test)
            'test': f'{ts.date()}..{te.date()}',
            'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
@@ -177,12 +224,81 @@ def build(top_n, sim_start, jobs, out_path, select='test'):
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values],
                       'basket': [round(float(x), 5) for x in be.values]},
            'built_secs': round(time.time() - t0, 1)}
-    tmp = out_path + '.tmp'
-    with open(tmp, 'w', encoding='utf-8') as f:
-        json.dump(doc, f)
-    os.replace(tmp, out_path)
+    _write_doc(doc, out_path)
     sh = m['sharpe'] if m else float('nan')
     print(f'✓ portfolio built: Sharpe {sh:+.2f} · {doc["built_secs"]}s → {out_path}', flush=True)
+    return 0
+
+
+def _build_fast(cfg, top, out_path, select):
+    """Intraday: fastsim per member -> Σ(weight×leverage) -> the same kernel once more.
+    The sum is exactly what Portfolio.compute_forecasts produces, so the second vol-targeting +
+    inertia layer is applied with identical semantics — just in the search's engine, with the
+    timeframe's annualization/EWMA. No multiprocessing: fastsim does a member in ~a second."""
+    from genome import parse
+    from evaluator import build_panel, basket_returns, make_market, eval_alpha_panel
+    from fastsim import fast_sim_paths
+
+    t0 = time.time()
+    tf, ann, lam = cfg['tf'], cfg['ann'], cfg['ewma_lambda']
+    formulas = [c['formula'] for c in top]
+    how = ('by TEST Sharpe (⚠ cherry-pick: combined TEST is optimistic)' if select != 'base'
+           else 'by base=min(train,val) — TEST stays held out')
+    print(f'· combining top-{len(formulas)} {how} ({tf} fastsim — the search engine)…', flush=True)
+
+    tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'),
+                                 freq=cfg['freq'])
+    market = make_market(panel, tk, raw, vol_window=cfg['vol_window'])
+    ts, te = cfg['splits']['test']
+
+    rets, paths = [], []
+    for i, formula in enumerate(formulas):
+        ap = eval_alpha_panel(parse(formula), panel)
+        r, wl = fast_sim_paths(ap[tk].to_numpy(dtype=np.float64), market, cfg['vol'], cfg['exec'],
+                               ann=ann, ewma_lambda=lam)
+        rets.append(r)
+        paths.append(wl)
+        print(f'  [{i + 1}/{len(formulas)}] strategy S{i} simulated', flush=True)
+
+    print('· running the Portfolio combiner (same kernel over Σ weight×leverage)…', flush=True)
+    comb_alpha = np.sum(paths, axis=0)        # NaN pre-listing cells stay NaN -> masked eligibility
+    comb_ret, comb_wl = fast_sim_paths(comb_alpha, market, cfg['vol'], cfg['exec'],
+                                       ann=ann, ewma_lambda=lam)
+
+    m = _metrics(comb_ret, ts, te, ann)
+    indiv = [(_metrics(r, ts, te, ann) or {}).get('sharpe') for r in rets]
+    bh = basket_returns(panel)
+    bh_m = _metrics(bh, ts, te, ann)
+
+    fmt = '%Y-%m-%d %H:%M'
+    cr = comb_ret[(comb_ret.index >= ts) & (comb_ret.index < te)].fillna(0.0)
+    ce = (1 + cr).cumprod()
+    br = bh[(bh.index >= ts) & (bh.index < te)].fillna(0.0)
+    be = (1 + br).cumprod()
+    step = max(1, len(ce) // 3000)            # chart payload cap (15m TEST is ~20k bars)
+    dates = [d.strftime(fmt) for d in ce.index[::step]]
+
+    # per-bar dollar weights over TEST: w = wl / Σ|wl| (row gross); NaN cells (pre-listing) -> 0
+    idx = market['index']
+    gross = np.nansum(np.abs(comb_wl), axis=1)
+    W = np.nan_to_num(comb_wl / np.where(gross == 0, 1.0, gross)[:, None], nan=0.0)
+    rows = (idx >= ts) & (idx < te) & (gross > 1e-12)
+    weights = {'dates': [d.strftime(fmt) for d in idx[rows]], 'tickers': list(tk),
+               'W': [[round(float(x), 5) for x in row] for row in W[rows]]}
+
+    doc = {'ok': True, 'n': len(formulas), 'sel': select, 'tf': tf,
+           'sim_start': str(pd.Timestamp(cfg['start']).date()),
+           'test': f'{ts.date()}..{te.date()}',
+           'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
+           'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
+           'weights': weights,
+           'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values[::step]],
+                      'basket': [round(float(x), 5) for x in be.values[::step]]},
+           'built_secs': round(time.time() - t0, 1)}
+    _write_doc(doc, out_path)
+    sh = m['sharpe'] if m else float('nan')
+    print(f'✓ portfolio built ({tf}): Sharpe {sh:+.2f} · {doc["built_secs"]}s → {out_path}',
+          flush=True)
     return 0
 
 
