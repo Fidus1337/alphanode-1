@@ -27,20 +27,55 @@
 </nav>
 
 <header class="hero">
+  <canvas id="net" aria-hidden="true"></canvas>
   <div class="wrap">
-    <h1>Mine trading alphas<br>on <em>your own</em> machine.</h1>
-    <p class="sub">AlphaNode runs evolutionary search over a huge space of signal formulas,
-    scores every candidate through a real portfolio simulator — with strict, locked
-    out-of-sample discipline — and accumulates the robust survivors into your private
-    strategy library. Like a miner, but the output is alphas.</p>
-    <div class="cta">
-      <a class="btn" href="#pricing">Get AlphaNode — from $49/mo</a>
-      <a class="btn ghost" href="docs/quickstart.html">Read the docs</a>
+    <div>
+      <h1>Mine trading alphas<br>on <em>your own</em> machine.</h1>
+      <p class="sub">AlphaNode runs evolutionary search over a huge space of signal formulas,
+      scores every candidate through a real portfolio simulator — with strict, locked
+      out-of-sample discipline — and accumulates the robust survivors into your private
+      strategy library. Like a miner, but the output is alphas.</p>
+      <div class="cta">
+        <a class="btn" href="#pricing">Get AlphaNode — from $49/mo</a>
+        <a class="btn ghost" href="docs/quickstart.html">Read the docs</a>
+      </div>
+      <p class="fine">Desktop app for Linux &amp; Windows · crypto perpetuals (Binance data) ·
+      timeframes 15m / 1h / 4h / 1d · your formulas never leave your machine</p>
     </div>
-    <p class="fine">Desktop app for Linux &amp; Windows · crypto perpetuals (Binance data) ·
-    timeframes 15m / 1h / 4h / 1d · your formulas never leave your machine</p>
+    <div class="term reveal" aria-hidden="true">
+      <div class="term-bar"><i></i><i></i><i></i><em>alphanode — mining</em></div>
+      <pre id="termlog"></pre>
+    </div>
   </div>
 </header>
+
+<div class="ticker" aria-hidden="true">
+  <div class="ticker-track">
+    <span><b>ts_zscore(close,14)</b> — Bollinger, rediscovered in round 2</span>
+    <span><b>sign(sub(ts_mean(close,10),ts_mean(close,20)))</b> — MA-cross</span>
+    <span><b>cs_rank(ts_roc:30(close))</b> — cross-sectional momentum</span>
+    <span><b>neg(cs_rank(ts_mean:30(funding)))</b> — funding carry</span>
+    <span><b>ts_min:3(ema:100(ts_mean:30(ret)))</b> — smoothed trend</span>
+    <span><b>div(ts_sum:120(dvol),ts_std:120(open))</b> — volume pressure</span>
+    <span><b>ts_zscore(close,14)</b> — Bollinger, rediscovered in round 2</span>
+    <span><b>sign(sub(ts_mean(close,10),ts_mean(close,20)))</b> — MA-cross</span>
+    <span><b>cs_rank(ts_roc:30(close))</b> — cross-sectional momentum</span>
+    <span><b>neg(cs_rank(ts_mean:30(funding)))</b> — funding carry</span>
+    <span><b>ts_min:3(ema:100(ts_mean:30(ret)))</b> — smoothed trend</span>
+    <span><b>div(ts_sum:120(dvol),ts_std:120(open))</b> — volume pressure</span>
+  </div>
+</div>
+
+<div class="stats wrap">
+  <div class="stat"><b data-count="110" data-prefix="×">×110</b>
+    <span>faster simulator than the raw engine</span></div>
+  <div class="stat"><b data-count="0.2" data-decimals="1" data-suffix="s">0.2s</b>
+    <span>to fully simulate one candidate</span></div>
+  <div class="stat"><b data-count="150">150</b>
+    <span>Binance perpetual pairs</span></div>
+  <div class="stat"><b data-count="4">4</b>
+    <span>timeframes — 15m to 1d</span></div>
+</div>
 
 <section id="how">
   <div class="wrap">
@@ -265,5 +300,6 @@
   </div>
 </footer>
 
+<script src="app.js" defer></script>
 </body>
 </html>
