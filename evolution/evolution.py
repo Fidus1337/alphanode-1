@@ -119,6 +119,61 @@ def hof_update(hof, res, cfg):
     return hof[:cfg['hof_cap']]
 
 
+# ---------------- champion window polish (coordinate descent) ----------------
+def _polish_windows(hof, runner, cache, cfg, origins, log, top_k=5, max_passes=3):
+    """Windows are continuous now — after evolution, fine-tune the horizons of the top
+    champions: for every windowed node try ×0.8 / ×1.25 (rounded, clamped) and keep any
+    change that raises base = min(train, val). Size is unchanged, so parsimony cancels;
+    the polished twin is ~perfectly correlated with its parent, so hof_update simply
+    replaces the parent when the tuned variant is better."""
+    import primitives as P
+
+    def _clamp(w):
+        return max(P.W_MIN, min(P.W_MAX, int(round(w))))
+
+    polished = 0
+    for h in list(hof[:top_k]):
+        cur_canon, cur_base = h['canon'], h['base']
+        src_origin = origins.get(cur_canon)
+        for _ in range(max_passes):
+            tree = parse(cur_canon)
+            slots = [n for n in tree.all_nodes() if n.window is not None]
+            cands = []
+            for i in range(len(slots)):
+                for f in (0.8, 1.25):
+                    t = parse(cur_canon)
+                    s = [n for n in t.all_nodes() if n.window is not None][i]
+                    w = _clamp(s.window * f)
+                    if w == s.window:
+                        continue
+                    s.window = w
+                    if t.canon() not in (c[1] for c in cands):
+                        cands.append((t, t.canon()))
+            unseen = [t for t, c in cands if c not in cache]
+            for n, r in zip(unseen, runner.map(unseen)):
+                cache[n.canon()] = r
+            best_c, best_b = None, cur_base
+            for _t, c in cands:
+                r = cache.get(c)
+                if r is None:
+                    continue
+                b = min(r['train_sharpe'], r['val_sharpe'])
+                if np.isfinite(b) and b > best_b + 1e-6:
+                    best_c, best_b = c, b
+            if best_c is None:
+                break
+            cur_canon, cur_base = best_c, best_b
+        if cur_canon != h['canon']:
+            polished += 1
+            if src_origin:                       # a polished LLM champion is still LLM-born
+                origins[cur_canon] = src_origin
+            log(f'  window polish: base {h["base"]:+.3f} -> {cur_base:+.3f}  {cur_canon}')
+            hof = hof_update(hof, cache[cur_canon], cfg)
+    if polished:
+        log(f'window polish: {polished}/{min(top_k, len(hof))} champions improved')
+    return hof
+
+
 # ---------------- selection / new generation ----------------
 def _rand_sized(rng, cfg):
     """A random tree within max_size (a limited number of attempts, otherwise as-is)."""
@@ -270,6 +325,10 @@ def evolve(cfg, log=print):
 
             if gen < cfg['gens'] - 1:
                 pop = _next_pop(scored, rng, cfg, extra=proposals)
+
+        # --- final step: continuous fine-tuning of the champions' windows ---
+        if hof and cfg.get('window_polish', True):
+            hof = _polish_windows(hof, runner, cache, cfg, origins, log)
     finally:
         runner.close()
 

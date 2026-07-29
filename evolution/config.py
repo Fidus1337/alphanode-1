@@ -90,6 +90,8 @@ def load_config(path=None):
         'corr_thresh': cp.getfloat('fitness', 'corr_threshold'),
         'corr_penalty': cp.getfloat('fitness', 'corr_penalty'),
         'hof_cap': cp.getint('fitness', 'hof_capacity'),
+        # final coordinate-descent tuning of champions' windows (continuous, off-grid)
+        'window_polish': cp.getboolean('search', 'window_polish', fallback=True),
         # --- neuro-symbolic advisor (optional; needs the anthropic SDK + credentials) ---
         'advisor': (os.environ.get('ALPHANODE_ADVISOR', '').strip() in ('1', 'true', 'yes')
                     or cp.getboolean('advisor', 'enabled', fallback=False)),
