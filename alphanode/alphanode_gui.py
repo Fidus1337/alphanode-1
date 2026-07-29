@@ -1141,10 +1141,10 @@ class App:
         self.btn_lb_hub = self._btn(hrow, '⇪ Hub', self._push_selected_to_hub, height=24, width=64)
         self.btn_lb_hub.pack(side='right', padx=(10, 0))
         self._tip(self.btn_lb_hub,
-                  'Serve the SELECTED alpha as a live signal and push its target weights\n'
-                  'to AlphaHub before every bar close (forward track record).\n'
-                  'The hub keeps one signal per node+timeframe — pushing another alpha\n'
-                  'replaces the current one.')
+                  'One-shot push of the SELECTED alpha to AlphaHub: compute its current\n'
+                  'target weights on live data and send them (formula disclosed) as your\n'
+                  'forward signal for the next daily close. Push again any time — the hub\n'
+                  'keeps the last version sent before the bar closes.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -1207,7 +1207,7 @@ class App:
         self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
-        self._menu.add_command(label='Push to AlphaHub (serve + push weights)',
+        self._menu.add_command(label='Push to AlphaHub (one-shot: weights + formula)',
                                command=self._push_selected_to_hub)
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
@@ -2422,32 +2422,76 @@ class App:
 
     # ---------- copy formula ----------
     def _push_selected_to_hub(self):
-        """Leaderboard 'Push → Hub': serve the selected alpha as a live signal WITH AlphaHub
-        push. The hub keeps ONE signal per (node, timeframe, bar) — last write wins — so only
-        one pushing service makes sense; an existing one is replaced after confirmation."""
+        """Leaderboard 'Push → Hub' — the MANUAL one-shot flow: you pick an alpha, the node
+        computes its CURRENT target weights on live data and pushes them (with the formula
+        disclosed) to the hub ONCE. No background service — push again tomorrow, or push a
+        different alpha (same bar = the hub keeps the last write). Simple to test and debug;
+        the automatic serve+push loop still exists via Settings → ALPHAHUB + Serve."""
         c = self._selected_champ()
         if not c or not c.get('formula'):
             messagebox.showinfo('AlphaHub', 'Select an alpha in the leaderboard first.',
                                 parent=self.root)
             return
-        if not (self.cfg.get('hub_url') or '').strip():
+        hub_url = (self.cfg.get('hub_url') or '').strip()
+        if not hub_url:
             messagebox.showinfo(
                 'AlphaHub', 'No hub configured.\nSettings → ALPHAHUB: set the Hub URL and '
                             'press Register, then try again.', parent=self.root)
             return
-        pushing = [s for s in self._sigs if s.get('hub')]
-        if pushing:
-            names = ', '.join(s['label'] for s in pushing)
-            if not messagebox.askyesno(
-                    'AlphaHub', f'The hub keeps ONE signal per node and timeframe, and '
-                                f'"{names}" is already pushing.\nReplace it with the selected '
-                                f'alpha?', parent=self.root):
+        if self._tf_gate('Pushing to AlphaHub'):          # weights come from the daily engine
+            return
+        formula = c['formula']
+        if not messagebox.askyesno(
+                'AlphaHub', f'Push this alpha to {hub_url}?\n\n{formula}\n\n'
+                            'The node will fetch fresh daily candles, compute the current '
+                            'target weights and send them (formula included) as your forward '
+                            'signal for the next daily close.', parent=self.root):
+            return
+        cfg = self.cfg
+        if cfg.get('universe_all', True):
+            try:
+                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
+            except Exception as e:                        # noqa: BLE001
+                messagebox.showerror('AlphaHub', f'Cannot read the loaded data: {e}',
+                                     parent=self.root)
                 return
-            for s in pushing:
-                self._stop_signal(s)
-            self._render_signal_rows()
-        f = c['formula']
-        self._serve_signal([f], 'hub_' + hashlib.md5(f.encode()).hexdigest()[:6], hub_push=True)
+        else:
+            tickers = [x.strip().upper() for x in cfg.get('universe_list', '').split(',')
+                       if x.strip()]
+        self._flash_lb('⇪ computing current weights on live data…', ms=60000)
+        holder = {}
+
+        def work():
+            try:
+                import hub_client
+                import signal_service
+                from datetime import datetime as _dt, timezone as _tz
+                ident = hub_client.ensure_identity(HUB_ID_FILE)
+                sig = signal_service.compute_signal(
+                    [formula], tickers, cfg_start, self.cfg['target_vol'],
+                    self.cfg['exec_cost'])
+                weights = {p['ticker']: p['weight'] for p in sig['positions']}
+                nxt = (int(time.time()) // 86400 + 1) * 86400   # next daily close, 00:00 UTC
+                iso = _dt.fromtimestamp(nxt, tz=_tz.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+                ok, msg = hub_client.push(hub_url, ident, '1d', iso, weights, formula=formula)
+                holder['res'] = (ok, f'{msg} · {len(weights)} positions · bar {iso}'
+                                 if ok else msg)
+            except Exception as e:                        # noqa: BLE001
+                holder['res'] = (False, f'{type(e).__name__}: {str(e)[:120]}')
+
+        from datetime import datetime as _dt0
+        cfg_start = _dt0.fromisoformat(self.cfg['train_start'])
+        threading.Thread(target=work, daemon=True).start()
+
+        def poll():
+            if 'res' not in holder:
+                self.root.after(300, poll)
+                return
+            ok, msg = holder['res']
+            self._flash_lb(('✓ hub: ' if ok else '✗ hub: ') + msg, ms=8000)
+            if not ok:
+                messagebox.showwarning('AlphaHub', f'Push failed:\n{msg}', parent=self.root)
+        self.root.after(300, poll)
 
     def _selected_champ(self):
         item = self.tree.focus() or (self.tree.selection()[0] if self.tree.selection() else '')
