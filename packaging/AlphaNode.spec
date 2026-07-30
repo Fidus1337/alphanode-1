@@ -18,6 +18,8 @@ hiddenimports = (
      'signal_service', 'metrics_worker', 'pdf_report', 'pdf_worker', 'rescore_library',
      'config', 'evolution', 'evaluator', 'fastsim', 'genome', 'primitives',
      'report', 'evolved_strategy', 'experiments',
+     'advisor', 'anthropic',                         # round analyst (LLM reads the library)
+     'hub_client', 'hub_push', 'cryptography',       # AlphaHub client (Ed25519 identity + push)
      'aiosonic', 'orjson', 'onecache', 'pytz',       # pytz: imported by quantpylib.wrappers.binance
      'customtkinter', 'darkdetect']                  # GUI toolkit (assets come from the contrib hook)
     + collect_submodules('quantpylib')

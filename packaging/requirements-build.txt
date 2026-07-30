@@ -15,5 +15,8 @@ requests          # quantpylib.throttler.aiosonic imports requests
 aiosonic==0.31.1  # quantpylib is verified on 0.31.x (the API changed in 1.x)
 orjson
 onecache
+anthropic         # round ANALYST (evolution/advisor.py): the LLM that reviews the library.
+                  # Imported lazily at runtime, but MUST be frozen in or the feature dies in builds.
+cryptography      # AlphaHub Ed25519 identity (hub_client.py sign/register/push)
 pillow            # icon generation (make_icon.py)
 pyinstaller>=6.0
