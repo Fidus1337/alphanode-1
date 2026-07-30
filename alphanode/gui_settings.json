@@ -35,10 +35,10 @@
   "val_start": "2021-11-01",
   "test_start": "2023-01-01",
   "test_end": "2026-07-05",
-  "theme": "dark",
+  "theme": "light",
   "settings_open": false,
   "lb_mode": "all",
-  "split_w": 0,
-  "chart_h": 0,
-  "pf_h": 0
+  "split_w": 229,
+  "chart_h": 168,
+  "pf_h": 204
 }
