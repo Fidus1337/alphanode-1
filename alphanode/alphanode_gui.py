@@ -164,6 +164,7 @@ DEFAULTS = {
     'test_start': '2023-01-01', 'test_end': '2026-07-05',
     # appearance
     'theme': '',            # 'light' | 'dark' | '' = follow the OS on first run
+    'settings_open': False,  # settings pane hidden by default; toggled by the header button
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
     'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
     'chart_h': 0,           # progress-chart height, 100%-DPI px; 0 = default (170)
@@ -635,6 +636,20 @@ class App:
         self._lbl(top, text='background search for trading strategies', text_color=MUT,
                      font=(self.UI, 13)).pack(side='left', padx=(14, 0), pady=(6, 0))
         self._build_theme_pick(top)
+        # header controls: the node is driven from here — defaults just work, the full settings
+        # panel stays hidden until the Settings button is pressed
+        self.btn_settings = self._btn(top, '⚙  Settings', self._toggle_settings, kind='soft',
+                                      height=34, width=112)
+        self.btn_settings.pack(side='right', padx=(0, 16), pady=(2, 0))
+        self.btn_stop = self._btn(top, '■  Stop', self.stop, kind='soft', height=34, width=88)
+        self.btn_stop.configure(state='disabled')
+        self.btn_stop.pack(side='right', padx=(0, 8), pady=(2, 0))
+        self.btn_start = self._btn(top, '▶  Start node', self.start, kind='accent',
+                                   height=34, width=136)
+        self.btn_start.pack(side='right', padx=(0, 8), pady=(2, 0))
+        self._tip(self.btn_start, 'Start the background search with the current settings.')
+        self._tip(self.btn_stop, 'Gently stop the search (the current round will finish).')
+        self._tip(self.btn_settings, 'Show / hide the search settings panel.')
         self._box(self._shell, bg=BORDER, height=1).pack(fill='x')       # hairline
 
         # settings | dashboard live in a PanedWindow so the split is mouse-draggable; the sash
@@ -647,8 +662,7 @@ class App:
 
         self._build_settings(body)
         self._build_status(body)
-        if self.cfg.get('split_w'):
-            self.root.after(120, self._sash_restore)
+        self._apply_settings_vis()
         body.bind('<ButtonRelease-1>', self._sash_save)
         body.bind('<Double-1>', self._sash_reset)
 
@@ -693,7 +707,27 @@ class App:
         if self._pf_doc:
             self._render_portfolio(self._pf_doc)
 
-    # ---------- left panel: ALL settings (scrollable) ----------
+    # ---------- left panel: ALL settings (scrollable, hidden by default) ----------
+    def _toggle_settings(self):
+        if self.cfg.get('settings_open'):
+            self._sash_save()                            # remember the width the user chose
+        self.cfg['settings_open'] = not self.cfg.get('settings_open')
+        self._apply_settings_vis()
+        self._save()
+
+    def _apply_settings_vis(self):
+        """Show/hide the settings pane (tk paned '-hide': the pane and its sash vanish together).
+        The default view is just the dashboard; the choice persists across restarts."""
+        shown = bool(self.cfg.get('settings_open'))
+        try:
+            self._paned.paneconfigure(self._settings_outer, hide=not shown)
+        except tk.TclError:
+            pass
+        if shown and self.cfg.get('split_w'):
+            self.root.after(120, self._sash_restore)
+        self.btn_settings.configure(border_color=(ACC if shown else BORDER),
+                                    text_color=(ACC if shown else TXT))
+
     # ---------- draggable split (settings | dashboard) ----------
     def _sash_restore(self):
         try:
@@ -702,6 +736,8 @@ class App:
             pass
 
     def _sash_save(self, _e=None):
+        if not self.cfg.get('settings_open'):            # no visible sash — nothing to remember
+            return
         try:
             x = self._paned.sash_coord(0)[0]
         except tk.TclError:
@@ -723,7 +759,10 @@ class App:
         self._save()
 
     def _build_settings(self, body):
+        # Always built (every tk variable must exist for _collect/start), but shown only while
+        # cfg['settings_open'] — see _apply_settings_vis().
         outer = self._card(body)
+        self._settings_outer = outer
         body.add(outer, minsize=int(230 * self.SCALE), stretch='never')
         # hand-rolled scroller rather than CTkScrollableFrame: the width has to come from the content
         # itself (_sync), which stays correct under HiDPI font scaling — a fixed width would clip.
@@ -955,20 +994,13 @@ class App:
         self.v_end = self._txt(g, 'TEST end', self.cfg['test_end'], 3,
                                tip='End of the entire data period.')
 
-        # --- buttons ---
+        # --- buttons (Start/Stop live in the header — always visible) ---
         btns = self._box(inner)
         btns.pack(fill='x', pady=(16, 0))
-        self.btn_start = self._btn(btns, '▶  Start node', self.start, kind='accent', height=38)
-        self.btn_start.pack(fill='x', pady=(0, 6))
-        self.btn_stop = self._btn(btns, '■  Stop', self.stop, kind='soft')
-        self.btn_stop.configure(state='disabled')
-        self.btn_stop.pack(fill='x', pady=(0, 6))
         b_reset = self._btn(btns, 'Reset to defaults', self._reset)
         b_reset.pack(fill='x', pady=(0, 6))
         b_wipe = self._btn(btns, 'Clear all history', self._wipe_history, kind='danger')
         b_wipe.pack(fill='x', pady=(14, 0))
-        self._tip(self.btn_start, 'Start the background search with the current settings.')
-        self._tip(self.btn_stop, 'Gently stop the search (the current round will finish).')
         self._tip(b_reset, 'Return all settings to their default values.')
         self._tip(b_wipe, 'Delete all history and found alphas (with confirmation).')
 
@@ -1318,9 +1350,9 @@ class App:
         self.btn_pf_pdf = self._btn(ctl, 'PDF', self._pf_pdf_report, width=64)
         self.btn_pf_pdf.configure(state='disabled')
         self.btn_pf_pdf.pack(side='left', padx=(6, 0))
-        self._tip(self.btn_pf_pdf, 'Аналитический дашборд портфеля в PDF: KPI, equity,\n'
-                                   'экспозиция и обороты, структура весов, помесячные\n'
-                                   'доходности и выводы (период TEST).')
+        self._tip(self.btn_pf_pdf, 'Portfolio analytics dashboard as PDF: KPIs, equity,\n'
+                                   'exposure and turnover, weight structure, monthly\n'
+                                   'returns and conclusions (TEST period).')
         self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
                                    'weight per asset per bar on TEST, with the asset\'s OHLCV on\n'
                                    'that bar (same as for a single alpha).')
@@ -1380,7 +1412,9 @@ class App:
         self.e_uni.configure(state='disabled' if self.v_uniall.get() else 'normal')
 
     def _reset(self):
+        keep = {k: self.cfg.get(k) for k in ('theme', 'settings_open')}   # appearance, not search
         self.cfg = dict(DEFAULTS)
+        self.cfg.update(keep)
         try:
             os.remove(SETTINGS)
         except OSError:
@@ -2971,9 +3005,9 @@ class App:
                   width=176).pack(side='left', padx=(8, 0))
         pdf_btn = self._btn(btnrow, 'PDF report', lambda: self._pdf_report_alpha(champ), width=110)
         pdf_btn.pack(side='left', padx=(8, 0))
-        self._tip(pdf_btn, 'Аналитический дашборд в PDF: KPI, equity и просадка,\n'
-                           'экспозиция и обороты, структура весов, помесячные\n'
-                           'доходности, разбивка TRAIN/VAL/TEST и выводы.')
+        self._tip(pdf_btn, 'Analytics dashboard as PDF: KPIs, equity and drawdown,\n'
+                           'exposure and turnover, weight structure, monthly returns,\n'
+                           'TRAIN/VAL/TEST breakdown and conclusions.')
 
         body = self._box(win)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 14))
@@ -3150,7 +3184,7 @@ class App:
         seg = {k: dict(champ[k]) for k in ('train', 'val', 'test')
                if isinstance(champ.get(k), dict)}
         payload = {'kind': 'alpha', 'formula': formula, 'seg_metrics': seg,
-                   'title': 'AlphaNode — отчёт по альфе', 'subtitle': formula,
+                   'title': 'AlphaNode — alpha report', 'subtitle': formula,
                    'stamp': f'AlphaNode · {datetime.now():%d.%m.%Y %H:%M} · {name}',
                    **self._worker_cfg()}
         self._run_pdf_report(payload, path)
@@ -3170,7 +3204,7 @@ class App:
             return
         slim = {k: doc.get(k) for k in ('weights', 'equity', 'test', 'metrics', 'n')}
         payload = {'kind': 'portfolio', 'doc': slim,
-                   'title': f'AlphaNode — портфель top-{doc.get("n", "?")}',
+                   'title': f'AlphaNode — top-{doc.get("n", "?")} portfolio',
                    'subtitle': ' + '.join(doc.get('formulas', []))[:110],
                    'stamp': f'AlphaNode · {datetime.now():%d.%m.%Y %H:%M} · portfolio '
                             f'top-{doc.get("n", "?")} · TEST {doc.get("test", "")}',
