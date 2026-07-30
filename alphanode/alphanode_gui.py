@@ -195,22 +195,22 @@ PALETTE = {
         TIP_BG='#0f172a', TIP_FG='#e5e7eb', TIP_BD='#334155',    # tooltips (dark on light)
     ),
     'dark': dict(
-        BG='#0e1014',
-        CARD='#171a21',
-        BORDER='#272c38',
+        BG='#0b0d12',        # a step deeper than the cards — the panels read as raised surfaces
+        CARD='#151824',
+        BORDER='#252b3a',
         TXT='#e8ebf2',
         MUT='#9aa4b6',
         FAINT='#6c7789',
         ACC='#818cf8',       # indigo-400: the 500 is too dim on a dark card
         ACC_HI='#a5b4fc',
         ACC_DN='#6366f1',
-        ACC_SOFT='#20243a',
+        ACC_SOFT='#232947',
         POS='#34d399',       # emerald-400 / rose-400: the 600s fail contrast on dark
         NEG='#fb7185',
-        HEAD_BG='#1d212b',
-        HEAD_HI='#252a36',
-        STRIPE='#1b1f27',
-        GRID='#252a36',
+        HEAD_BG='#1c2130',
+        HEAD_HI='#242a3b',
+        STRIPE='#1a1e2a',
+        GRID='#222736',
         TIP_BG='#2b313f', TIP_FG='#e8ebf2', TIP_BD='#3d4557',    # lighter than the card, not darker
     ),
 }
@@ -236,6 +236,20 @@ def _system_theme():
         return 'dark' if (darkdetect.theme() or '').lower() == 'dark' else 'light'
     except Exception:                                       # noqa: BLE001 — optional, any failure -> light
         return 'light'
+
+
+def _mix(c1, c2, t):
+    """Blend two '#rrggbb' colours; t=0 -> c1, t=1 -> c2. Canvas has no alpha — this is it."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return '#%02x%02x%02x' % tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def _rrect(cv, x0, y0, x1, y1, r, **kw):
+    """A rounded rectangle on a tk.Canvas (smoothed polygon — Tk has no native one)."""
+    pts = (x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
+           x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0)
+    return cv.create_polygon(pts, smooth=True, **kw)
 
 
 class App:
@@ -561,12 +575,12 @@ class App:
         # rowheight/fonts are deliberately roomier than ttk's defaults: this table IS the app.
         # bordercolor matters: clam draws a frame around the field, which reads as a stray light
         # rectangle on a dark card unless it matches the card
-        s.configure('Treeview', rowheight=int(30 * self.SCALE), fieldbackground=CARD, background=CARD,
+        s.configure('Treeview', rowheight=int(32 * self.SCALE), fieldbackground=CARD, background=CARD,
                     foreground=TXT, borderwidth=0, relief='flat', bordercolor=CARD,
                     lightcolor=CARD, darkcolor=CARD, font=(self.MONO, self._px(12)))
-        s.configure('Treeview.Heading', font=(F, self._px(12), 'bold'), foreground=MUT,
+        s.configure('Treeview.Heading', font=(F, self._px(10.5), 'bold'), foreground=FAINT,
                     background=HEAD_BG, relief='flat',
-                    padding=(int(8 * self.SCALE), int(8 * self.SCALE)), bordercolor=BORDER)
+                    padding=(int(8 * self.SCALE), int(9 * self.SCALE)), bordercolor=BORDER)
         s.map('Treeview.Heading', background=[('active', HEAD_HI)])
         s.map('Treeview', background=[('selected', ACC_SOFT)], foreground=[('selected', TXT)])
         s.layout('Treeview.Item',                        # drop the indent reserved for tree handles
@@ -612,12 +626,12 @@ class App:
     def _card(self, parent, **kw):
         """A card: the surface every panel sits on. Stays CTk — the rounded border is the point."""
         return ctk.CTkFrame(parent, fg_color=CARD, border_color=BORDER, border_width=1,
-                            corner_radius=10, **kw)
+                            corner_radius=14, **kw)
 
     def _pad(self, card):
         """Inner padding frame for a card (CTkFrame has no padding option)."""
         f = self._box(card)
-        f.pack(fill='both', expand=True, padx=16, pady=14)
+        f.pack(fill='both', expand=True, padx=18, pady=16)
         return f
 
     # ---------- layout ----------
@@ -626,15 +640,30 @@ class App:
         # touching the root's other children (open dialogs, tooltips).
         self._shell = self._box(self.root, bg=BG)
         self._shell.pack(fill='both', expand=True)
-        self._box(self._shell, bg=ACC, height=3).pack(fill='x')          # accent bar
+        bar = tk.Canvas(self._shell, height=3, bg=ACC, highlightthickness=0)   # accent gradient bar
+        bar.pack(fill='x')
+
+        def _grad(e, cv=bar):
+            cv.delete('all')
+            n = 64
+            for i in range(n):
+                cv.create_rectangle(e.width * i / n, 0, e.width * (i + 1) / n + 1, 4,
+                                    fill=_mix(ACC, ACC_DN, i / (n - 1)), outline='')
+        bar.bind('<Configure>', _grad)
         top = self._box(self._shell, bg=BG)
         top.pack(fill='x', padx=20, pady=(14, 11))
         brand = self._box(top, bg=BG)
         brand.pack(side='left')
-        self._lbl(brand, text='Alpha', font=(self.UI, 24, 'bold'), text_color=TXT).pack(side='left')
-        self._lbl(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC).pack(side='left')
+        ms = int(30 * self.SCALE)                        # logo mark: rounded square with an alpha
+        mark = tk.Canvas(brand, width=ms, height=ms, bg=BG, highlightthickness=0)
+        _rrect(mark, 1, 1, ms - 1, ms - 1, int(9 * self.SCALE), fill=ACC, outline='')
+        mark.create_text(ms / 2, ms / 2 - 1 * self.SCALE, text='α', fill='#ffffff',
+                         font=self._font(self.UI, 17, 'bold'))
+        mark.pack(side='left', padx=(0, 10), pady=(2, 0))
+        self._lbl(brand, text='Alpha', font=(self.UI, 24, 'bold'), text_color=TXT, bg=BG).pack(side='left')
+        self._lbl(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC, bg=BG).pack(side='left')
         self._lbl(top, text='background search for trading strategies', text_color=MUT,
-                     font=(self.UI, 13)).pack(side='left', padx=(14, 0), pady=(6, 0))
+                     font=(self.UI, 13), bg=BG).pack(side='left', padx=(14, 0), pady=(6, 0))
         self._build_theme_pick(top)
         # header controls: the node is driven from here — defaults just work, the full settings
         # panel stays hidden until the Settings button is pressed
@@ -1014,10 +1043,10 @@ class App:
 
     def _btn(self, parent, text, command, kind='plain', height=32, **kw):
         fill, hover, fg, border = self._BTN[kind]()
-        return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=8,
+        return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=9,
                              fg_color=fill, hover_color=hover, text_color=fg, border_color=border,
                              border_width=1, text_color_disabled=FAINT,
-                             font=(self.UI, 10, 'bold' if kind == 'accent' else 'normal'), **kw)
+                             font=(self.UI, 11, 'bold' if kind == 'accent' else 'normal'), **kw)
 
     def _entry(self, parent, var, width=None):
         kw = {'width': width} if width else {}
@@ -1035,8 +1064,12 @@ class App:
         return self._lbl(parent, text=text, text_color=FAINT, font=(self.UI, 12, 'bold'))
 
     def _section(self, parent, title):
-        self._lbl(parent, text=title, text_color=ACC,
-                     font=(self.UI, 12, 'bold')).pack(anchor='w', pady=(14, 6))
+        row = self._box(parent)
+        row.pack(anchor='w', fill='x', pady=(16, 6))
+        tick = self._box(row, bg=ACC, width=max(2, int(3 * self.SCALE)),
+                         height=int(13 * self.SCALE))
+        tick.pack(side='left', padx=(0, 7))
+        self._lbl(row, text=title, text_color=ACC, font=(self.UI, 12, 'bold')).pack(side='left')
         f = self._box(parent)
         f.pack(fill='x')
         f.columnconfigure(0, weight=1)
@@ -1177,10 +1210,13 @@ class App:
         pad = self._pad(card)
         head = self._box(pad)
         head.pack(fill='x')
-        self.lbl_state = self._lbl(head, text='● stopped', font=(self.UI, 16, 'bold'), text_color=MUT)
-        self.lbl_state.pack(side='left')
+        pill = ctk.CTkFrame(head, fg_color=HEAD_BG, corner_radius=999, border_width=0)
+        pill.pack(side='left')
+        self.lbl_state = self._lbl(pill, text='● stopped', font=(self.UI, 14, 'bold'),
+                                   text_color=MUT, bg=HEAD_BG)
+        self.lbl_state.pack(padx=int(13 * self.SCALE), pady=int(5 * self.SCALE))
         self.lbl_res = self._lbl(head, text='', text_color=MUT, font=(self.UI, 13))
-        self.lbl_res.pack(side='right')
+        self.lbl_res.pack(side='right', pady=(4, 0))
 
         stats = self._box(pad)
         stats.pack(fill='x', pady=(14, 0))
@@ -1194,13 +1230,15 @@ class App:
         self.lbl_adv = self._lbl(pad, text='', text_color=ACC, font=(self.MONO, 12),
                                  anchor='w', justify='left')
         # LIVE LOG — the node's human-readable activity feed (status.json 'events')
-        self.logbox = tk.Text(pad, height=7, bg=STRIPE, fg=MUT, bd=0, highlightthickness=0,
+        logwrap = ctk.CTkFrame(pad, fg_color=STRIPE, corner_radius=10, border_width=0)
+        logwrap.pack(fill='x', pady=(10, 0))
+        self.logbox = tk.Text(logwrap, height=7, bg=STRIPE, fg=MUT, bd=0, highlightthickness=0,
                               font=(self.MONO, 11), wrap='word', state='disabled',
-                              cursor='arrow', padx=10, pady=8)
+                              cursor='arrow', padx=6, pady=4)
         for tag, col in (('round', TXT), ('llm', ACC), ('best', POS), ('polish', ACC_HI),
                          ('warn', NEG), ('err', NEG), ('ts', FAINT), ('i', MUT)):
             self.logbox.tag_configure(tag, foreground=col)
-        self.logbox.pack(fill='x', pady=(8, 0))
+        self.logbox.pack(fill='both', expand=True, padx=8, pady=6)
         self._events_last = None
         self._log_placeholder()
 
@@ -1405,12 +1443,16 @@ class App:
             b.configure(state='disabled')
 
     def _stat(self, parent, label, col):
-        f = self._box(parent)
-        f.grid(row=0, column=col, sticky='w', padx=(0, 34))
-        val = self._lbl(f, text='0', text_color=TXT, font=(self.UI, 30, 'bold'), anchor='w')
+        """A stat tile: big number + caption on its own soft rounded surface."""
+        tile = ctk.CTkFrame(parent, fg_color=HEAD_BG, corner_radius=12, border_width=0)
+        tile.grid(row=0, column=col, sticky='w', padx=(0, 12))
+        f = self._box(tile, bg=HEAD_BG)
+        f.pack(padx=int(16 * self.SCALE), pady=int(9 * self.SCALE))
+        val = self._lbl(f, text='0', text_color=TXT, font=(self.UI, 28, 'bold'),
+                        bg=HEAD_BG, anchor='w')
         val.pack(anchor='w')
-        self._lbl(f, text=label.upper(), text_color=FAINT, font=(self.UI, 11),
-                     anchor='w').pack(anchor='w')
+        self._lbl(f, text=label.upper(), text_color=FAINT, font=(self.UI, 10, 'bold'),
+                  bg=HEAD_BG, anchor='w').pack(anchor='w')
         return val
 
     # ---------- helpers ----------
@@ -2191,7 +2233,7 @@ class App:
             m = (hi + lo) / 2
             lo, hi = m - 0.15, m + 0.15
         S = self.SCALE
-        padL, padR, padT, padB = (int(v * S) for v in (56, 18, 18, 24))
+        padL, padR, padT, padB = (int(v * S) for v in (56, 18, 32, 24))
         n = len(pts)
         plotw, ploth = w - padL - padR, h - padT - padB
         base_y = padT + ploth
@@ -2202,23 +2244,37 @@ class App:
         def Y(v):
             return padT + ploth * (1 - (v - lo) / (hi - lo))
 
-        for frac in (0.0, 0.5, 1.0):                       # grid + Y labels
+        k = max(2, min(4, int(ploth / (26 * S)) + 1))      # each Y label needs ~26px of air
+        for frac in (i / (k - 1) for i in range(k)):       # dashed grid + Y labels
             val = lo + (hi - lo) * frac
             y = Y(val)
-            cv.create_line(padL, y, w - padR, y, fill=GRID)
+            cv.create_line(padL, y, w - padR, y, fill=GRID, dash=(2, 5))
             cv.create_text(padL - 9 * S, y, text=f'{val:+.2f}', anchor='e', fill=FAINT,
                            font=self._font(self.UI, 10))
 
         line = []
         for i, (_, v) in enumerate(pts):
             line += [X(i), Y(v)]
-        cv.create_polygon(padL, base_y, *line, X(n - 1), base_y, fill=ACC_SOFT, outline='')  # fill
-        cv.create_line(*line, fill=ACC, width=2, capstyle='round', joinstyle='round')
+        # fake gradient (canvas has no alpha): a faint full fill, then a stronger ribbon that
+        # hugs the line — reads as a glow fading toward the baseline
+        cv.create_polygon(padL, base_y, *line, X(n - 1), base_y,
+                          fill=_mix(ACC_SOFT, CARD, 0.45), outline='')
+        ribbon = list(line)
+        for i in range(n - 1, -1, -1):
+            ribbon += [X(i), min(Y(pts[i][1]) + 14 * S, base_y)]
+        cv.create_polygon(*ribbon, fill=ACC_SOFT, outline='')
+        cv.create_line(*line, fill=ACC, width=2.5, capstyle='round', joinstyle='round')
         lx, ly = X(n - 1), Y(ys[-1])
-        r_ = 4 * S
-        cv.create_oval(lx - r_, ly - r_, lx + r_, ly + r_, fill=ACC, outline=CARD, width=2)
-        cv.create_text(w - padR, padT - 6 * S, text=f'fitness {ys[-1]:+.2f}', anchor='ne',
-                       fill=ACC, font=self._font(self.UI, 13, 'bold'))
+        cv.create_oval(lx - 7 * S, ly - 7 * S, lx + 7 * S, ly + 7 * S,
+                       fill=_mix(ACC, CARD, 0.72), outline='')
+        cv.create_oval(lx - 4 * S, ly - 4 * S, lx + 4 * S, ly + 4 * S,
+                       fill=ACC, outline=CARD, width=2)
+        txt = f'fitness {ys[-1]:+.2f}'
+        f12 = self._font(self.UI, 12, 'bold')
+        bx1, by0 = w - padR, 3 * S
+        bx0, by1 = bx1 - f12.measure(txt) - int(20 * S), by0 + int(23 * S)
+        _rrect(cv, bx0, by0, bx1, by1, int(11 * S), fill=ACC_SOFT, outline='')
+        cv.create_text((bx0 + bx1) / 2, (by0 + by1) / 2 + 1, text=txt, fill=ACC_HI, font=f12)
         cv.create_text(padL, h - 6 * S, text=f'round {pts[0][0]}', anchor='w', fill=FAINT,
                        font=self._font(self.UI, 10))
         cv.create_text(w - padR, h - 6 * S, text=f'round {pts[-1][0]}', anchor='e', fill=FAINT,
@@ -2275,7 +2331,7 @@ class App:
     def _update_headings(self):
         for c, txt in self._HEAD.items():
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
-            self.tree.heading(c, text=txt + arrow)
+            self.tree.heading(c, text=txt.upper() + arrow)
 
     def _lb_head_text_for(self, select):
         scope = 'every alpha' if self._lb_mode == 'all' else 'best alpha per family'
