@@ -306,12 +306,16 @@ def evolve(cfg, log=print):
             # --- plateau detector for the advisor: consult only when the blind search stalls
             proposals = []
             if best is not None and best[2] > best_fit_ever + 1e-9:
+                if best_fit_ever > -1e17:           # skip the trivial first-gen "improvement"
+                    log(f'★ gen {gen}: new best fit {best[2]:+.2f} — {best[1]["canon"]}')
                 best_fit_ever, stall = best[2], 0
             else:
                 stall += 1
             if (adv is not None and gen < cfg['gens'] - 1
                     and stall >= cfg.get('advisor_patience', 4)
                     and adv.stats['calls'] < cfg.get('advisor_max_calls', 8)):
+                log(f'🧠 plateau: best fitness flat for {stall} generations — asking '
+                    f'{cfg.get("advisor_model", "the LLM")} for fresh hypotheses…')
                 top = [{'canon': r['canon'], 'fit': f, 'train': r['train_sharpe'],
                         'val': r['val_sharpe'], 'size': r['size']}
                        for (_n, r, f) in sorted(valid, key=lambda s: -s[2])[:10]]
@@ -321,6 +325,9 @@ def evolve(cfg, log=print):
                         origins[c] = 'llm'
                         proposals.append(node)
                         log(f'  advisor -> {c}  [{hypo}]')
+                if proposals:
+                    log(f'🧠 {len(proposals)} advisor ideas take the random-injection slots of the '
+                        f'next generation — the simulator will judge them like any mutant')
                 stall = 0                           # cooldown: don't consult every generation
 
             if gen < cfg['gens'] - 1:

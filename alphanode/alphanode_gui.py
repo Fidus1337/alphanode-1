@@ -1159,6 +1159,16 @@ class App:
         # LLM advisor footprint — appears only once the advisor has actually done something
         self.lbl_adv = self._lbl(pad, text='', text_color=ACC, font=(self.MONO, 12),
                                  anchor='w', justify='left')
+        # LIVE LOG — the node's human-readable activity feed (status.json 'events')
+        self.logbox = tk.Text(pad, height=7, bg=STRIPE, fg=MUT, bd=0, highlightthickness=0,
+                              font=(self.MONO, 11), wrap='word', state='disabled',
+                              cursor='arrow', padx=10, pady=8)
+        for tag, col in (('round', TXT), ('llm', ACC), ('best', POS), ('polish', ACC_HI),
+                         ('warn', NEG), ('err', NEG), ('ts', FAINT), ('i', MUT)):
+            self.logbox.tag_configure(tag, foreground=col)
+        self.logbox.pack(fill='x', pady=(8, 0))
+        self._events_last = None
+        self._log_placeholder()
 
         self._build_signals_card(right)                  # row 1 — hidden while nothing is served
 
@@ -2026,6 +2036,25 @@ class App:
         self._sig_health[port] = txt
 
     # ---------- status polling ----------
+    def _log_placeholder(self):
+        self.logbox.configure(state='normal')
+        self.logbox.delete('1.0', 'end')
+        self.logbox.insert('end', 'live log — round starts, advisor consults, new champions and '
+                                  'round summaries will appear here once the node runs.', 'i')
+        self.logbox.configure(state='disabled')
+
+    def _render_events(self, evs):
+        """Rebuild the LIVE LOG feed (newest at the bottom, auto-scrolled, colored by kind)."""
+        at_end = self.logbox.yview()[1] > 0.999          # don't yank the view if the user scrolled up
+        self.logbox.configure(state='normal')
+        self.logbox.delete('1.0', 'end')
+        for e in evs[-80:]:
+            self.logbox.insert('end', f"{e.get('ts', '')}  ", 'ts')
+            self.logbox.insert('end', f"{e.get('t', '')}\n", e.get('k', 'i'))
+        if at_end:
+            self.logbox.see('end')
+        self.logbox.configure(state='disabled')
+
     def _poll(self):
         running = bool(self.proc and self.proc.poll() is None)
         self._set_running(running)
@@ -2064,6 +2093,10 @@ class App:
                     self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
             elif self.lbl_adv.winfo_ismapped():
                 self.lbl_adv.pack_forget()
+            evs = st.get('events') or []
+            if evs and evs != self._events_last:
+                self._events_last = evs
+                self._render_events(evs)
             self._refresh_leaderboard(st.get('best', []))
             self._history = st.get('history', [])
             self._draw_chart()

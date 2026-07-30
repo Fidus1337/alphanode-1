@@ -99,6 +99,14 @@ def save_status():
         pass
 
 
+def log_event(kind, text):
+    """Append to the human-readable activity feed (GUI 'LIVE LOG' + status page).
+    kinds: round | llm | best | polish | warn | err — the GUI colors by them."""
+    ev = status.setdefault('events', [])
+    ev.append({'ts': time.strftime('%H:%M:%S'), 'k': kind, 't': str(text)})
+    del ev[:-80]
+
+
 # ---- library (dedup by formula) + leaderboard by fitness base=min(train,val) + round history ----
 seen = set()
 leaderboard = []
@@ -248,8 +256,13 @@ def render_html():
         adv_card = (f"<div class=card><div class=k>🧠 LLM advisor</div>"
                     f"<b>{adv.get('consults', 0)}</b> consults · {adv.get('injected', 0)} injected "
                     f"· {adv.get('lib_llm', 0)} champions</div>")
-    adv_lines = ''.join(f'<div>{ln}</div>' for ln in status.get('advisor_log', [])[-4:])
-    adv_log = f'<div class=gen>{adv_lines}</div>' if adv_lines else ''
+    evs = status.get('events') or []
+    ev_lines = ''.join(
+        f"<div class='e {e.get('k', '')}'><span>{e.get('ts', '')}</span>{e.get('t', '')}</div>"
+        for e in reversed(evs[-16:]))
+    adv_log = (f"<div class=card style='margin-bottom:16px'>"
+               f"<div class=k style='margin-bottom:6px'>live log — what the node is doing</div>"
+               f"{ev_lines}</div>") if ev_lines else ''
     return f"""<!doctype html><meta charset=utf-8><title>AlphaNode</title>
 <style>body{{font:14px system-ui;background:#0f1115;color:#d7dce3;margin:0;padding:26px;max-width:1100px}}
 h1{{margin:0 0 2px;font-size:20px}} .sub{{color:#8a93a2;margin:0 0 18px}} .k{{color:#8a93a2;font-size:12px}}
@@ -258,7 +271,10 @@ b{{color:#fff}} .grid{{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px}}
 table{{width:100%;border-collapse:collapse}} td,th{{padding:6px 8px;border-bottom:1px solid #232833;text-align:right;font-size:12px}}
 th{{color:#8a93a2}} td.f,th.f{{text-align:left;font-family:ui-monospace,monospace;color:#cbd5e1}} td.t{{color:#4ade80}}
 .dot{{width:9px;height:9px;border-radius:50%;background:#4ade80;display:inline-block;margin-right:7px;animation:p 1.1s infinite}}
-@keyframes p{{50%{{opacity:.35}}}} .gen{{font-family:ui-monospace,monospace;font-size:11px;color:#8a93a2;margin:0 0 14px}}</style>
+@keyframes p{{50%{{opacity:.35}}}} .gen{{font-family:ui-monospace,monospace;font-size:11px;color:#8a93a2;margin:0 0 14px}}
+.e{{font-family:ui-monospace,monospace;font-size:11.5px;padding:2px 0;white-space:pre-wrap;word-break:break-word;color:#8a93a2}}
+.e span{{color:#5b6470;margin-right:9px}} .e.llm{{color:#a78bfa}} .e.best{{color:#4ade80}}
+.e.round{{color:#d7dce3}} .e.polish{{color:#7fb3ff}} .e.err,.e.warn{{color:#f87171}}</style>
 <h1><span class=dot></span>AlphaNode <span style="color:#8a93a2;font-weight:400;font-size:13px">— {status['state']}</span></h1>
 <p class=sub>background alpha-search node · page refreshes itself</p>
 <div class=grid>
@@ -306,12 +322,23 @@ _last_save = [0.0]
 
 
 def _cb(msg):
-    m = str(msg)
-    status['gen'] = m
-    if 'advisor' in m:                                 # consults + proposals -> a rolling trace
-        alog = status.setdefault('advisor_log', [])    # the GUI/status page shows what the LLM did
-        alog.append(m.strip())
+    m = str(msg).rstrip()
+    ms = m.strip()
+    if ms.startswith('advisor ->'):                    # a concrete proposal -> rolling trace + feed
+        alog = status.setdefault('advisor_log', [])    # the GUI status strip shows the last one
+        alog.append(ms)
         del alog[:-8]
+        log_event('llm', ms)
+    elif ms.startswith('🧠') or ms.startswith('advisor:'):
+        log_event('llm', ms)
+    elif ms.startswith('★'):
+        log_event('best', ms)
+    elif 'window polish' in ms:
+        log_event('polish', ms)
+    elif ms.startswith('WARNING'):
+        log_event('warn', ms)
+    else:                                              # per-generation progress -> the live ticker
+        status['gen'] = m
     now = time.time()
     if now - _last_save[0] > 1.0:                      # live progress for GUI/page (throttle 1s)
         _last_save[0] = now
@@ -343,6 +370,13 @@ def main():
         mode = 'refining best' if refine else 'exploring new'
         status['mode'] = mode
         status['current'] = f'round {rnd}: {mode} (seed {seed})…'
+        if refine:
+            log_event('round', f'▶ round {rnd}: REFINE — population warm-started from '
+                               f'{len(seeds)} library champions; evolution mutates around what '
+                               f'already works (every {EXPLORE_EVERY}th round explores from scratch)')
+        else:
+            log_event('round', f'▶ round {rnd}: EXPLORE — a fresh random population, no '
+                               f'warm-start; hunting for new formula families')
         save_status()
         t0 = time.time()
         cfg = build_cfg(seed, seeds)
@@ -352,6 +386,7 @@ def main():
             break
         except Exception as e:                         # noqa: BLE001
             status['current'] = f'round {rnd}: error {type(e).__name__}: {e}'
+            log_event('err', f'✗ round {rnd} failed: {type(e).__name__}: {e}')
             save_status()
             time.sleep(PAUSE)
             continue
@@ -412,6 +447,21 @@ def main():
                       history=history[-300:],
                       current=f'round {rnd} done [{mode}]: +{new} new · fitness {bb_s} · '
                               f'TEST(OOS) {bt_s}{llm_s} · {time.time()-t0:.0f}s')
+        champs_s = (f'{new} new champion{"s" if new != 1 else ""} entered the library'
+                    + (f' ({new_llm} born from 🧠)' if new_llm else '')
+                    if new else 'no new champions — the library kept its bar')
+        log_event('round', f'✓ round {rnd} done in {time.time() - t0:.0f}s — {len(cache):,} '
+                           f'formulas simulated; {champs_s}. Best fitness {bb_s}, '
+                           f'its held-out TEST {bt_s}')
+        if astats:
+            if astats.get('error'):
+                log_event('err', f'🧠 advisor error this round: {astats["error"]} — '
+                                 f'search continued as plain GA')
+            elif astats['calls']:
+                log_event('llm', f'🧠 round {rnd} advisor summary: {astats["calls"]} consult(s), '
+                                 f'{astats["proposed"]} proposed, {astats["valid"]} passed the DSL '
+                                 f'check, {astats["hof_llm"]}/{astats["hof_total"]} of the round\'s '
+                                 f'Hall of Fame is LLM-born')
         save_status()
         print(status['current'])
 
