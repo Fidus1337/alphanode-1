@@ -1171,8 +1171,16 @@ class App:
             self._tip_win.destroy()
             self._tip_win = None
 
-    def _bind_wheel(self, canvas):
+    def _bind_wheel(self, canvas, through=False):
+        """Wheel-scroll `canvas` while the pointer is anywhere inside it. With through=True,
+        events over widgets that scroll themselves (Treeview / Text) are left to them."""
         def _w(e):
+            if through:
+                w = e.widget
+                while w is not None and w is not canvas:
+                    if isinstance(w, (ttk.Treeview, tk.Text)):
+                        return
+                    w = getattr(w, 'master', None)
             d = -1 if (getattr(e, 'num', None) == 4 or getattr(e, 'delta', 0) > 0) else 1
             canvas.yview_scroll(d, 'units')
 
@@ -1207,8 +1215,30 @@ class App:
         return outer
 
     def _build_status(self, body):
-        right = self._box(body, bg=BG)
-        body.add(right, minsize=int(420 * self.SCALE), stretch='always')
+        # The dashboard column SCROLLS: on a short window the cards keep their natural heights
+        # and the scrollbar moves between blocks; on a tall one the inner frame is stretched to
+        # the viewport and the leaderboard absorbs the slack exactly as before (grid weight).
+        outer = self._box(body, bg=BG)
+        body.add(outer, minsize=int(420 * self.SCALE), stretch='always')
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        vsb = ctk.CTkScrollbar(outer, orientation='vertical', command=canvas.yview,
+                               fg_color=BG, button_color=BORDER, button_hover_color=FAINT,
+                               width=12)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side='right', fill='y', padx=(6, 0))
+        canvas.pack(side='left', fill='both', expand=True)
+        right = self._box(canvas, bg=BG)
+        item = canvas.create_window((0, 0), window=right, anchor='nw')
+
+        def _fit(_e=None):
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+            H = max(h, right.winfo_reqheight())
+            canvas.itemconfigure(item, width=w, height=H)
+            canvas.configure(scrollregion=(0, 0, w, H))
+        canvas.bind('<Configure>', _fit)
+        right.bind('<Configure>', _fit)      # cards appear/grow -> refresh the scrollregion
+        self._bind_wheel(canvas, through=True)
+        self._dash_canvas = canvas
         right.rowconfigure(4, weight=1)                  # the leaderboard takes the slack
         right.columnconfigure(0, weight=1)
 
