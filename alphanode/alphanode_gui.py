@@ -305,13 +305,45 @@ class App:
         except Exception:
             return d
 
+    @staticmethod
+    def _api_err_text(e, model):
+        """SDK exception -> a short human diagnosis + what to do (instead of a raw repr)."""
+        name = type(e).__name__
+        code = getattr(e, 'status_code', None)
+        body = getattr(e, 'body', None)
+        msg = ''
+        if isinstance(body, dict):
+            msg = str((body.get('error') or {}).get('message') or '')[:160]
+        if not msg:
+            msg = str(e)[:160]
+        if code == 401:
+            return ('✗ Key rejected (401 — authentication failed).\n'
+                    'The key is invalid, revoked, or pasted with a typo. Get a fresh one at\n'
+                    'console.anthropic.com → API Keys (it starts with sk-ant-…) and paste it whole.')
+        if code == 403:
+            return (f'✗ Access denied (403).\nThe key itself works, but it has no access to '
+                    f'{model} —\ncheck the workspace/plan in the Anthropic console or pick another model.')
+        if code == 404:
+            return (f'✗ Model not found (404).\n{model} is not available to this key — '
+                    'pick another model from the list.')
+        if code == 429:
+            return ('✗ Rate limited (429).\nGood news: the key works. Too many requests '
+                    'right now — try again in a minute.')
+        if name == 'APIConnectionError':
+            return ('✗ Could not reach api.anthropic.com.\nCheck the internet connection / '
+                    'VPN / proxy and try again.')
+        if code and code >= 500:
+            return (f'✗ Anthropic server error ({code}).\nThe key is probably fine — '
+                    'their side is having trouble; retry in a minute.')
+        return f'✗ {name}{f" ({code})" if code else ""}: {msg}'
+
     def _check_api_key(self):
         """Cheap live probe of the pasted key (models.retrieve — free, auth-validating).
         Runs in a thread; the label is updated by MAIN-THREAD polling of a holder dict —
         cross-thread root.after is unreliable here (same pattern as the PDF worker)."""
         key = (self.v_apikey.get() or '').strip()
         if not key:
-            self.lbl_advkey.configure(text='no key entered', fg=NEG)
+            self.lbl_advkey.configure(text='no key entered — paste an Anthropic API key first', fg=NEG)
             return
         model = (self.v_advmodel.get() or 'claude-opus-5').strip()
         holder = {}
@@ -322,7 +354,7 @@ class App:
                 anthropic.Anthropic(api_key=key).models.retrieve(model)
                 holder['res'] = (f'✓ key works — {model} reachable', POS)
             except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
-                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
+                holder['res'] = (self._api_err_text(e, model), NEG)
 
         threading.Thread(target=work, daemon=True).start()
         self.lbl_advkey.configure(text='checking…', fg=MUT)
@@ -334,6 +366,25 @@ class App:
             else:
                 self.root.after(150, poll)
         self.root.after(150, poll)
+
+    @staticmethod
+    def _hub_err_text(e):
+        """Network exception -> what actually went wrong at that URL, in plain words."""
+        s = str(e)
+        low = s.lower()
+        if 'refused' in low:
+            return ('✗ Connection refused — nothing is listening at that URL.\n'
+                    'Is the hub container running? Check the port in the URL.')
+        if 'timed out' in low or 'timeout' in low:
+            return ('✗ Timeout — the URL does not answer from this machine.\n'
+                    'Wrong host, closed firewall port, or the hub is down.')
+        if 'name or service not known' in low or 'getaddrinfo' in low or 'nodename' in low:
+            return '✗ DNS: host not found — check the URL spelling (http(s)://host:port).'
+        if 'http error 404' in low:
+            return '✗ 404 — something answered, but it is not an AlphaHub (/health missing).'
+        if 'certificate' in low or 'ssl' in low:
+            return '✗ TLS/certificate problem — try http:// for a local hub, or fix the cert.'
+        return f'✗ {type(e).__name__}: {s[:120]}'
 
     def _check_hub(self):
         """Probe <hub>/health in a worker thread; same main-thread polling pattern as Check key."""
@@ -353,7 +404,7 @@ class App:
                 else:
                     holder['res'] = ('✗ hub responded but not ok', NEG)
             except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
-                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
+                holder['res'] = (self._hub_err_text(e), NEG)
 
         threading.Thread(target=work, daemon=True).start()
         self.lbl_hub.configure(text='checking…', fg=MUT)
@@ -815,7 +866,8 @@ class App:
                   tip='Key from console.anthropic.com (sk-ant-…). Stored in its own file with\n'
                       'owner-only permissions — never in gui_settings.json, never in git:\n'
                       f'{KEY_FILE}')
-        self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12))
+        self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12),
+                                    justify='left', anchor='w')
         self.lbl_advkey.grid(row=4, column=0, sticky='w', pady=(4, 0))
         self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
             .grid(row=4, column=1, sticky='e', pady=(4, 0))
@@ -845,7 +897,8 @@ class App:
         self._tip(self.lbl_hubid,
                   'Auto-generated Ed25519 keypair; the PRIVATE key stays in\n'
                   f'{HUB_ID_FILE}\n(owner-only, gitignored). Delete that file for a fresh identity.')
-        self.lbl_hub = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12))
+        self.lbl_hub = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12),
+                                 justify='left', anchor='w')
         self.lbl_hub.grid(row=4, column=0, sticky='w', pady=(4, 0))
         row_btns = self._box(g)
         row_btns.grid(row=4, column=1, sticky='e', pady=(4, 0))
