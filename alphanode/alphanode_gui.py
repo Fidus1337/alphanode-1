@@ -176,47 +176,50 @@ DEFAULTS = {
 # constants below, which the whole file reads — so a widget just says fg=TXT and stays theme-correct.
 PALETTE = {
     'light': dict(
-        BG='#eef0f4',        # app background (cool light gray)
+        BG='#edeff5',        # app background (cool light gray)
         CARD='#ffffff',      # cards
-        BORDER='#e3e6ec',    # hairline borders
-        TXT='#0f172a',       # text (slate-900)
-        MUT='#64748b',       # muted (slate-500)
-        FAINT='#94a3b8',     # even fainter (slate-400)
+        BORDER='#e7eaf1',    # hairline borders (controls); cards keep a whisper of it
+        TXT='#111a2e',       # text (slate-900, a touch softer)
+        MUT='#66738a',       # muted (slate-500)
+        FAINT='#97a3b8',     # even fainter (slate-400)
         ACC='#6366f1',       # accent (indigo-500)
         ACC_HI='#4f46e5',    # hover
         ACC_DN='#4338ca',    # pressed
-        ACC_SOFT='#eef2ff',  # soft fill / row highlight (indigo-50)
+        ACC_SOFT='#eceffe',  # soft fill / row highlight (indigo-50)
         POS='#059669',       # gain (emerald-600)
         NEG='#e11d48',       # loss (rose-600)
-        HEAD_BG='#f1f3f7',   # table headers / soft backgrounds
-        HEAD_HI='#e8ecf3',   # table header hover
-        STRIPE='#fafbfc',    # row zebra striping
-        GRID='#edf0f5',      # chart gridlines
-        TIP_BG='#0f172a', TIP_FG='#e5e7eb', TIP_BD='#334155',    # tooltips (dark on light)
+        HEAD_BG='#f3f5f9',   # tonal surfaces: tiles, buttons, fields
+        HEAD_HI='#eaedf4',   # their hover
+        STRIPE='#f9fafd',    # row zebra striping
+        GRID='#eef1f6',      # chart gridlines
+        CARD_BW=1,           # cards on white need a hairline to separate
+        TIP_BG='#111a2e', TIP_FG='#e5e7eb', TIP_BD='#334155',    # tooltips (dark on light)
     ),
     'dark': dict(
-        BG='#0b0d12',        # a step deeper than the cards — the panels read as raised surfaces
-        CARD='#151824',
-        BORDER='#252b3a',
-        TXT='#e8ebf2',
-        MUT='#9aa4b6',
-        FAINT='#6c7789',
+        BG='#0a0c11',        # a step deeper than the cards — the panels read as raised surfaces
+        CARD='#151926',
+        BORDER='#242a3a',
+        TXT='#e7eaf2',
+        MUT='#9fa9bc',
+        FAINT='#6e7a90',
         ACC='#818cf8',       # indigo-400: the 500 is too dim on a dark card
         ACC_HI='#a5b4fc',
         ACC_DN='#6366f1',
-        ACC_SOFT='#232947',
+        ACC_SOFT='#262d52',
         POS='#34d399',       # emerald-400 / rose-400: the 600s fail contrast on dark
         NEG='#fb7185',
-        HEAD_BG='#1c2130',
-        HEAD_HI='#242a3b',
-        STRIPE='#1a1e2a',
-        GRID='#222736',
+        HEAD_BG='#1d2233',
+        HEAD_HI='#262c40',
+        STRIPE='#1a1f2d',
+        GRID='#212637',
+        CARD_BW=0,           # borderless cards: depth comes from the surface tones alone
         TIP_BG='#2b313f', TIP_FG='#e8ebf2', TIP_BD='#3d4557',    # lighter than the card, not darker
     ),
 }
 # Published by _apply_palette(); declared here so the names exist at import time.
 BG = CARD = BORDER = TXT = MUT = FAINT = ACC = ACC_HI = ACC_DN = ACC_SOFT = ''
 POS = NEG = HEAD_BG = HEAD_HI = STRIPE = GRID = TIP_BG = TIP_FG = TIP_BD = ''
+CARD_BW = 0
 
 
 def _apply_palette(theme):
@@ -564,10 +567,11 @@ class App:
             pass
         s.configure('.', background=CARD, foreground=TXT, font=(F, self._px(13)))
 
-        # numeric spinboxes — CustomTkinter has no spinbox, so these stay ttk
-        s.configure('TSpinbox', fieldbackground=CARD, background=CARD, foreground=TXT, arrowcolor=MUT,
-                    bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, borderwidth=1,
-                    padding=int(4 * self.SCALE), insertcolor=TXT, font=self._font(F, 13))
+        # numeric spinboxes — CustomTkinter has no spinbox, so these stay ttk (tonal, like _entry)
+        s.configure('TSpinbox', fieldbackground=HEAD_BG, background=HEAD_BG, foreground=TXT,
+                    arrowcolor=MUT, bordercolor=BORDER, lightcolor=HEAD_BG, darkcolor=HEAD_BG,
+                    borderwidth=1, padding=int(4 * self.SCALE), insertcolor=TXT,
+                    font=self._font(F, 13))
         s.map('TSpinbox', bordercolor=[('focus', ACC)], lightcolor=[('focus', ACC)],
               darkcolor=[('focus', ACC)])
 
@@ -579,9 +583,9 @@ class App:
                     foreground=TXT, borderwidth=0, relief='flat', bordercolor=CARD,
                     lightcolor=CARD, darkcolor=CARD, font=(self.MONO, self._px(12)))
         s.configure('Treeview.Heading', font=(F, self._px(10.5), 'bold'), foreground=FAINT,
-                    background=HEAD_BG, relief='flat',
-                    padding=(int(8 * self.SCALE), int(9 * self.SCALE)), bordercolor=BORDER)
-        s.map('Treeview.Heading', background=[('active', HEAD_HI)])
+                    background=CARD, relief='flat',
+                    padding=(int(8 * self.SCALE), int(9 * self.SCALE)), bordercolor=CARD)
+        s.map('Treeview.Heading', background=[('active', HEAD_BG)])
         s.map('Treeview', background=[('selected', ACC_SOFT)], foreground=[('selected', TXT)])
         s.layout('Treeview.Item',                        # drop the indent reserved for tree handles
                  [('Treeitem.padding', {'sticky': 'nswe', 'children':
@@ -624,8 +628,9 @@ class App:
         return tk.Frame(parent, bg=(bg or CARD), **kw)
 
     def _card(self, parent, **kw):
-        """A card: the surface every panel sits on. Stays CTk — the rounded border is the point."""
-        return ctk.CTkFrame(parent, fg_color=CARD, border_color=BORDER, border_width=1,
+        """A card: the surface every panel sits on. Stays CTk — the rounded corner is the point.
+        Dark theme drops the border entirely (CARD_BW=0): depth comes from surface tones."""
+        return ctk.CTkFrame(parent, fg_color=CARD, border_color=BORDER, border_width=CARD_BW,
                             corner_radius=14, **kw)
 
     def _pad(self, card):
@@ -822,7 +827,7 @@ class App:
         self.lbl_cpu.pack(anchor='w', pady=(2, 0))
         sc = ctk.CTkSlider(inner, from_=5, to=95, variable=self.v_cpu, command=lambda e: self._cpu_lbl(),
                            button_color=ACC, button_hover_color=ACC_HI, progress_color=ACC,
-                           fg_color=HEAD_BG, height=16)
+                           fg_color=HEAD_BG, height=14)
         sc.pack(fill='x', pady=(4, 12))
         self._cpu_lbl()
         cpu_tip = 'How many cores to give the search. More — faster, but higher load on the PC.'
@@ -1034,24 +1039,26 @@ class App:
         self._tip(b_wipe, 'Delete all history and found alphas (with confirmation).')
 
     # ---------- widget factories (one place where the palette meets CustomTkinter) ----------
-    _BTN = {                                             # kind -> (fill, hover, text, border)
-        'plain':  lambda: (CARD, HEAD_BG, TXT, BORDER),
-        'accent': lambda: (ACC, ACC_HI, '#ffffff', ACC),
-        'soft':   lambda: (HEAD_BG, HEAD_HI, TXT, BORDER),
-        'danger': lambda: (CARD, HEAD_HI, NEG, NEG),
+    # Tonal buttons (soft fills, no outlines) — the filled surface IS the affordance.
+    _BTN = {                                             # kind -> (fill, hover, text)
+        'plain':  lambda: (HEAD_BG, HEAD_HI, TXT),
+        'accent': lambda: (ACC, ACC_HI, '#ffffff'),
+        'soft':   lambda: (HEAD_BG, HEAD_HI, TXT),
+        'danger': lambda: (_mix(NEG, CARD, 0.88), _mix(NEG, CARD, 0.80), NEG),
     }
 
     def _btn(self, parent, text, command, kind='plain', height=32, **kw):
-        fill, hover, fg, border = self._BTN[kind]()
-        return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=9,
-                             fg_color=fill, hover_color=hover, text_color=fg, border_color=border,
-                             border_width=1, text_color_disabled=FAINT,
+        fill, hover, fg = self._BTN[kind]()
+        return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=10,
+                             fg_color=fill, hover_color=hover, text_color=fg, border_width=0,
+                             text_color_disabled=FAINT,
                              font=(self.UI, 11, 'bold' if kind == 'accent' else 'normal'), **kw)
 
     def _entry(self, parent, var, width=None):
         kw = {'width': width} if width else {}
-        return ctk.CTkEntry(parent, textvariable=var, height=30, corner_radius=7, fg_color=CARD,
-                            border_color=BORDER, text_color=TXT, font=(self.UI, 13), **kw)
+        return ctk.CTkEntry(parent, textvariable=var, height=30, corner_radius=9,
+                            fg_color=HEAD_BG, border_color=BORDER, border_width=1,
+                            text_color=TXT, font=(self.UI, 13), **kw)
 
     def _radio(self, parent, text, var, value):
         return ctk.CTkRadioButton(parent, text=text, variable=var, value=value,
@@ -1210,9 +1217,9 @@ class App:
         pad = self._pad(card)
         head = self._box(pad)
         head.pack(fill='x')
-        pill = ctk.CTkFrame(head, fg_color=HEAD_BG, corner_radius=999, border_width=0)
-        pill.pack(side='left')
-        self.lbl_state = self._lbl(pill, text='● stopped', font=(self.UI, 14, 'bold'),
+        self.pill_state = ctk.CTkFrame(head, fg_color=HEAD_BG, corner_radius=999, border_width=0)
+        self.pill_state.pack(side='left')
+        self.lbl_state = self._lbl(self.pill_state, text='● stopped', font=(self.UI, 14, 'bold'),
                                    text_color=MUT, bg=HEAD_BG)
         self.lbl_state.pack(padx=int(13 * self.SCALE), pady=int(5 * self.SCALE))
         self.lbl_res = self._lbl(head, text='', text_color=MUT, font=(self.UI, 13))
@@ -1609,7 +1616,7 @@ class App:
         self.lbl_adv.configure(text='')
         if self.lbl_adv.winfo_ismapped():
             self.lbl_adv.pack_forget()
-        self.lbl_state.configure(text='● stopped', fg=MUT)
+        self._state_pill('● stopped', MUT)
         self._reset_portfolio_ui()                        # clear the Portfolio panel too
 
     def _apply_cfg_to_widgets(self):
@@ -1639,6 +1646,12 @@ class App:
     def _set_running(self, running):
         self.btn_start.configure(state='disabled' if running else 'normal')
         self.btn_stop.configure(state='normal' if running else 'disabled')
+
+    def _state_pill(self, text, color):
+        """The status pill: text + a soft wash of the state colour behind it."""
+        tint = HEAD_BG if color == MUT else _mix(color, CARD, 0.87)
+        self.pill_state.configure(fg_color=tint)
+        self.lbl_state.configure(text=text, fg=color, bg=tint)
 
     # ---------- timeframe-aware paths ----------
     def _on_tf_change(self, _evt=None):
@@ -2156,7 +2169,7 @@ class App:
         if st:
             state = st.get('state', '—')
             color = {'running': POS, 'starting': ACC}.get(state, MUT)
-            self.lbl_state.configure(text=f'● {"running" if state=="running" else state}', fg=color)
+            self._state_pill(f'● {"running" if state == "running" else state}', color)
             vol = st.get('target_vol')
             vol_s = f' · vol {vol:g}' if isinstance(vol, (int, float)) else ''
             self.lbl_res.configure(text=f'{st.get("cpu_percent","?")}% · {st.get("n_jobs","?")}/{st.get("cores","?")} cores '
@@ -2190,7 +2203,7 @@ class App:
             self._draw_chart()
         if not running and (not st or st.get('state') != 'running'):
             if not (self.proc and self.proc.poll() is None):
-                self.lbl_state.configure(text='● stopped', fg=MUT)
+                self._state_pill('● stopped', MUT)
         try:
             while True:
                 self.logq.get_nowait()
