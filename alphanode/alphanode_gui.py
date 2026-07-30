@@ -148,7 +148,7 @@ DEFAULTS = {
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
     # neuro advisor (the API key is NOT here — see KEY_FILE)
-    'advisor': False, 'advisor_max_calls': 8, 'advisor_model': 'claude-opus-5',
+    'advisor': False, 'advisor_max_calls': 1, 'advisor_model': 'claude-opus-5',
     # alphahub (the Ed25519 identity is NOT here — see HUB_ID_FILE); pushes are manual-only
     'hub_url': '', 'hub_name': 'my-node',
     # simulation
@@ -839,26 +839,28 @@ class App:
         self.v_seedlib = self._chk(g, 'Warm-start from library', self.cfg['seed_from_lib'], 3,
                                    tip='Seed the new generation with the best found alphas (fine-tuning). Off — always from scratch.')
 
-        # --- neuro advisor (LLM) ---
-        g = self._section(inner, 'NEURO ADVISOR (LLM, experimental)')
-        self.v_advisor = self._chk(g, 'LLM proposes formulas on plateaus', self.cfg.get('advisor', False), 0,
-                                   tip='When the search stalls, Claude sees the current best formulas and\n'
-                                       'proposes new ones (carry/flow/vol hypotheses). The simulator stays\n'
-                                       'the only judge — bad ideas die in selection like any random mutation.\n'
-                                       'Cost: one consult is roughly $0.05-0.15 — cap them below.')
+        # --- neuro analyst (LLM reads the library after rounds; it never touches the search) ---
+        g = self._section(inner, 'NEURO ANALYST (LLM, experimental)')
+        self.v_advisor = self._chk(g, 'Round analyst: LLM reviews the library', self.cfg.get('advisor', False), 0,
+                                   tip='After a round, Claude reads the accumulated evidence — the library\n'
+                                       'with its metrics, round history, base↔TEST gaps, operator usage —\n'
+                                       'and writes a research report into the LIVE LOG: overfitting\n'
+                                       'suspicions, diversity audit, what is under-explored. It has ZERO\n'
+                                       'authority over the search — the GA runs pure, the report is for you.\n'
+                                       'Cost: one report is roughly $0.05-0.15.')
         self.v_advmodel = tk.StringVar(value=self.cfg.get('advisor_model', 'claude-opus-5'))
         model_box = ttk.Combobox(g, textvariable=self.v_advmodel, values=ADVISOR_MODELS, width=19)
         self._row(g, 'Model', 1, model_box,
-                  tip='Which Claude model proposes formulas (per consult, roughly):\n'
-                      '  claude-opus-5    — smartest, ~$0.05-0.15\n'
+                  tip='Which Claude model writes the report (per report, roughly):\n'
+                      '  claude-opus-5    — deepest analysis, ~$0.05-0.15\n'
                       '  claude-sonnet-5  — solid mid-tier, ~$0.02-0.06\n'
                       '  claude-haiku-4-5 — cheapest, ~$0.01-0.03\n'
                       'The box is editable — any other model id can be typed in.')
-        self.v_advcalls = self._num(g, 'Max LLM consults per round', self.cfg.get('advisor_max_calls', 8),
+        self.v_advcalls = self._num(g, 'Analyze every N rounds', self.cfg.get('advisor_max_calls', 1),
                                     2, 0, 99, 1,
-                                    tip='Hard cap on Claude consults within one search round.\n'
-                                        '1 = at most one consult per round (cheapest meaningful setting);\n'
-                                        '0 = never consult (same as unticking the box above).')
+                                    tip='How often the analyst reads the library.\n'
+                                        '1 = a report after every round; 3 = after every third;\n'
+                                        '0 = never (same as unticking the box above).')
         self.v_apikey = tk.StringVar(value=_load_api_key())
         e_key = self._entry(g, self.v_apikey, width=230)
         e_key.configure(show='•')
@@ -1533,7 +1535,7 @@ class App:
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
         self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
-        self.v_advcalls.set(c.get('advisor_max_calls', 8))
+        self.v_advcalls.set(c.get('advisor_max_calls', 1))
         self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
         self.v_huburl.set(c.get('hub_url', ''))
         self.v_hubname.set(c.get('hub_name', 'my-node'))
@@ -1656,9 +1658,9 @@ class App:
                            ALPHANODE_ADVISOR_MODEL=c['advisor_model'])
             else:
                 messagebox.showinfo(
-                    'Advisor has no key',
-                    'The LLM advisor is ON but no Anthropic API key is set — the node will run '
-                    'a plain GA search.\nPaste a key in NEURO ADVISOR (and press Check key), '
+                    'Analyst has no key',
+                    'The round analyst is ON but no Anthropic API key is set — the node will '
+                    'search without reports.\nPaste a key in NEURO ANALYST (and press Check key), '
                     'then restart the search.', parent=self.root)
         self.proc = subprocess.Popen(_child_cmd('node'), env=env,
                                      cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
@@ -2075,20 +2077,18 @@ class App:
             self.s_trials.configure(text=f'{st.get("trials_total", 0):,}')
             self.s_found.configure(text=str(st.get('found', len(st.get('best', [])))))
             self.lbl_cur.configure(text=(st.get('current', '') + '   ' + st.get('gen', ''))[:120])
-            adv = st.get('advisor') or {}
-            if adv.get('error'):
+            anst = st.get('analyst') or {}
+            ana = st.get('analysis') or {}
+            if anst.get('error'):
                 self.lbl_adv.configure(
-                    fg=NEG, text=f'🧠 LLM advisor: {adv["error"]} — running plain GA '
-                                 f'(fix the key in Settings → NEURO ADVISOR, press Check key)'[:150])
+                    fg=NEG, text=f'🧠 analyst: {anst["error"]} — search runs without reports '
+                                 f'(fix the key in Settings → NEURO ANALYST, press Check key)'[:150])
                 if not self.lbl_adv.winfo_ismapped():
                     self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
-            elif adv.get('consults') or adv.get('lib_llm'):
-                alog = st.get('advisor_log') or []
-                last = ('   ·   ' + alog[-1]) if alog else ''
+            elif ana:
                 self.lbl_adv.configure(
-                    fg=ACC, text=(f'🧠 LLM advisor: {adv.get("consults", 0)} consults · '
-                                  f'{adv.get("injected", 0)} formulas injected · '
-                                  f'{adv.get("lib_llm", 0)} champions in library{last}')[:150])
+                    fg=ACC, text=(f'🧠 analyst · after round {ana.get("round")}: '
+                                  f'{ana.get("summary", "")}')[:150])
                 if not self.lbl_adv.winfo_ismapped():
                     self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
             elif self.lbl_adv.winfo_ismapped():

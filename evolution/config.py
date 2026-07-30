@@ -100,5 +100,5 @@ def load_config(path=None):
         'advisor_patience': cp.getint('advisor', 'patience', fallback=4),
         'advisor_n': cp.getint('advisor', 'proposals', fallback=10),
         'advisor_max_calls': int(os.environ.get('ALPHANODE_ADVISOR_MAX_CALLS', '').strip()
-                                 or cp.getint('advisor', 'max_calls', fallback=8)),
+                                 or cp.getint('advisor', 'max_calls', fallback=1)),
     }

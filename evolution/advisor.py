@@ -1,19 +1,16 @@
-"""Neuro-symbolic advisor: an LLM proposes formulas when the GP search stalls.
+"""Round ANALYST: after a search round, an LLM reads the accumulated evidence — the alpha
+library with its metrics, the round history, operator/feature usage — and returns a
+structured research report: what the library really contains, where overfitting is likely,
+what is under-explored, what to try next.
 
-Division of labor is strict — THE LLM ONLY PROPOSES, THE SIMULATOR JUDGES. Proposals are
-plain DSL formulas that enter the population like any other genome: they are evaluated by
-fast_sim on TRAIN/VAL, scored by the same honest fitness, and die in selection if they are
-bad. The advisor never sees market data, cannot look ahead, and cannot inflate a score —
-it only replaces part of the *blind* random mutation with an informed guess.
+This replaced the old formula-proposing advisor (removed 2026-07): injecting one-shot LLM
+formulas into the GA added little over random injection — the model's comparative advantage
+is READING evidence, not guessing formulas. The analyst has ZERO authority over the search:
+it never scores, never selects, never mutates. Its report goes to the human (LIVE LOG,
+status page, analysis journal) and nowhere else.
 
-Wire-up (see evolution.evolve): when the best fitness hasn't improved for `patience`
-generations, evolve() sends the advisor the current top formulas + their metrics + the
-Hall-of-Fame it must stay decorrelated from, and injects the valid proposals into the
-next generation, tagged origin='llm' so the experiment is measurable.
-
-Requires the `anthropic` SDK and credentials (ANTHROPIC_API_KEY env, or a profile from
-`ant auth login`). When either is missing, `Advisor.available` is False and evolution
-runs EXACTLY as before — the advisor is a pure add-on, never a dependency.
+Driven by node.py at round boundaries (in a background thread — the next round never waits).
+Needs the `anthropic` SDK + ANTHROPIC_API_KEY; without them the node runs exactly as before.
 """
 import json
 import os
@@ -23,189 +20,105 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)
 
-import primitives as P                      # noqa: E402
-from genome import parse                    # noqa: E402
-
 DEFAULT_MODEL = 'claude-opus-5'
 
 # The response is constrained to this schema — no free-text parsing, the API validates.
 _SCHEMA = {
     'type': 'object',
     'properties': {
-        'proposals': {
+        'summary': {'type': 'string'},
+        'findings': {
             'type': 'array',
             'items': {
                 'type': 'object',
                 'properties': {
-                    'hypothesis': {'type': 'string'},
-                    'formula': {'type': 'string'},
+                    'severity': {'type': 'string', 'enum': ['info', 'warn', 'critical']},
+                    'title': {'type': 'string'},
+                    'detail': {'type': 'string'},
                 },
-                'required': ['hypothesis', 'formula'],
+                'required': ['severity', 'title', 'detail'],
+                'additionalProperties': False,
+            },
+        },
+        'suggestions': {
+            'type': 'array',
+            'items': {
+                'type': 'object',
+                'properties': {
+                    'title': {'type': 'string'},
+                    'detail': {'type': 'string'},
+                },
+                'required': ['title', 'detail'],
                 'additionalProperties': False,
             },
         },
     },
-    'required': ['proposals'],
+    'required': ['summary', 'findings', 'suggestions'],
     'additionalProperties': False,
 }
 
-_SYSTEM = """You are the mutation advisor inside a genetic-programming search for \
-cross-sectional crypto-perp alpha signals. The search is stuck on a fitness plateau; \
-your job is to propose NEW candidate formulas that explore hypotheses the blind random \
-search is unlikely to stumble on. Every proposal will be simulated on held-out-honest \
-data and scored as min(TRAIN Sharpe, VAL Sharpe); bad ideas die in selection — so be \
-bold and DIVERSE rather than safe and similar.
+_SYSTEM = """You are the research analyst of an evolutionary alpha-search node for crypto \
+perpetuals. After each search round you receive the node's accumulated evidence as JSON:
 
-THE DSL (this grammar is exact — anything else fails to parse):
-  formula   := feature | op(args)
-  feature   := one of: {features}
-  windowed time-series ops (SUFFIX the window with a colon, e.g. ts_mean:20(close)):
-    {un_ts}   with windows from: {windows}
-  element-wise unary ops (no window): {un_elem}
-  binary ops (no window, two args): {binary}
-  cross-sectional ops (no window, rank/normalize ACROSS coins on each bar): {un_cs}
+  * champions — the alpha library (formula, base = min(TRAIN,VAL) Sharpe used for selection,
+    held-out TEST Sharpe/drawdown, the round each entered);
+  * base_test_corr — correlation between selection fitness and held-out TEST across the
+    library (the single most important honesty number: negative or ~0 means the search
+    optimizes something that does not transfer);
+  * rounds — recent round history (best base, its TEST, mode refine/explore, library size);
+  * usage — how often each operator/feature appears across library formulas;
+  * config — timeframe, universe size, population/generations.
 
-Semantics you must respect:
-  * data is a wide table (rows = bars, columns = coins); ts_* ops look BACK along time
-    within each coin; cs_* ops compare coins against each other on the same bar.
-  * the output is a signal: positive = long, negative = short; the engine cross-sectionally
-    normalizes it, so only the RELATIVE ordering across coins matters.
-  * 'funding' is the perp funding rate paid within the bar (longs pay when positive) —
-    carry/squeeze hypotheses live here. 'volume'/'dvol' = activity, 'ret' = bar return.
-  * complexity is penalized: prefer trees of size 3-{max_size} nodes, depth <= {max_depth}.
+Your job is the analysis a disciplined quant would do, NOT idea generation:
+  1. Overfitting forensics first: base vs TEST gaps and their trend, families that look
+     great in-sample and die held-out, suspiciously spiky windows.
+  2. Diversity audit: is the library one family wearing twenty masks? Which operator/feature
+     clusters dominate; what is genuinely uncorrelated.
+  3. Coverage gaps: features/operators barely used (e.g. funding, volume) that deserve rounds.
+  4. Process health: refine vs explore balance, is the library bar rising or has it stalled.
 
-Rules:
-  1. Output ONLY formulas in the exact DSL above. No new operators, no numeric literals,
-     no features not in the list. Windows must come from the allowed list.
-  2. Each proposal must encode a DIFFERENT economic hypothesis (carry, flow, reversal,
-     vol-structure, liquidity, momentum-quality, ...). State the hypothesis in one line.
-  3. Stay DECORRELATED from the Hall of Fame formulas you are shown — do not rephrase
-     them; attack from angles they do not cover.
-  4. Windowed ops use `op:window(arg)` syntax, binary ops `op(a,b)`, e.g.:
-     neg(cs_rank(ts_mean:30(funding)))   div(ts_std:10(ret), ts_std:60(ret))"""
+Rules: cite the NUMBERS you were given (rounds, Sharpes, counts) — no generic advice; be
+skeptical and terse; at most 5 findings and 3 suggestions, ordered by importance; severity
+'critical' only for things that invalidate conclusions (e.g. negative base↔TEST correlation).
+Suggestions must be actions the user can take in this product (change segments, universe,
+timeframe, parsimony/correlation knobs, run explore rounds, distrust certain families) —
+NOT new formulas and NOT code changes."""
 
 
-def _fmt_top(top):
-    return '\n'.join(f'  fit {t["fit"]:+.2f} train {t["train"]:+.2f} val {t["val"]:+.2f} '
-                     f'size {t["size"]:2d}  {t["canon"]}' for t in top) or '  (none valid yet)'
+class Analyst:
+    """Thin, fail-safe wrapper: analyze(payload) -> report dict, or None (error in .last_error)."""
 
-
-def validate_formula(s, cfg):
-    """Parse + strictly validate an LLM proposal -> Node, or None if it breaks the DSL.
-    genome.parse is permissive (unknown ops only explode later, at eval) — here we reject
-    them up front so a hallucinated operator never wastes a population slot."""
-    try:
-        node = parse(str(s).strip())
-    except Exception:                              # noqa: BLE001 — not even parseable
-        return None
-    if not (1 < node.size() <= cfg['max_size'] and node.depth() <= cfg['max_depth']):
-        return None
-    for n in node.all_nodes():
-        if n.is_terminal:                          # is_terminal == op in FEATURES
-            continue
-        if n.op not in P.ARITY or len(n.children) != P.ARITY[n.op]:
-            return None
-        if P.NEEDS_WINDOW[n.op] != (n.window is not None):
-            return None
-        if n.window is not None and not (2 <= int(n.window) <= 500):
-            return None
-    return node
-
-
-class Advisor:
-    """Thin, fail-safe wrapper around the Claude API. Any failure -> [] and a log line."""
-
-    def __init__(self, model=None, n_proposals=10, log=print):
+    def __init__(self, model=None, log=print):
         self.model = model or DEFAULT_MODEL
-        self.n = n_proposals
         self.log = log
-        self._client = None
-        self._dead = False           # set after an unrecoverable error (bad creds, no SDK)
-        self.stats = {'calls': 0, 'proposed': 0, 'valid': 0, 'errors': 0}
-        self.last_error = None       # short human-readable reason (surfaced in the GUI/status)
+        self.last_error = None
 
-    # ---------- availability ----------
-    def available(self):
-        if self._dead:
-            return False
-        return self._ensure_client() is not None
-
-    def _ensure_client(self):
-        if self._dead:
-            return None
-        if self._client is not None:
-            return self._client
+    def analyze(self, payload):
         try:
             import anthropic
-            self._client = anthropic.Anthropic()   # key from env or an `ant auth login` profile
-        except Exception as e:                     # noqa: BLE001 — no SDK / no creds -> advisor off
-            self._dead = True
-            self.log(f'advisor: unavailable ({type(e).__name__}: {e}) — running without it')
-            self._client = None
-        return self._client
-
-    # ---------- the call ----------
-    def propose(self, top, hof_canons, plateau_gens, cfg):
-        """-> list of (Node, hypothesis) validated against the DSL and size limits.
-        `top`: [{'canon','fit','train','val','size'}...] best current genomes."""
-        client = self._ensure_client()
-        if client is None:
-            return []
-
-        system = _SYSTEM.format(
-            features=', '.join(P.FEATURES),
-            un_ts=', '.join(P.UN_TS), un_elem=', '.join(P.UN_ELEM),
-            binary=', '.join(P.BINARY), un_cs=', '.join(P.UN_CS),
-            windows=', '.join(map(str, P.WINDOWS)),
-            max_size=cfg['max_size'], max_depth=cfg['max_depth'],
-        )
-        user = (
-            f'Timeframe: {cfg.get("tf", "1d")} bars. Fitness has not improved for '
-            f'{plateau_gens} generations.\n\n'
-            f'Current best genomes (fitness = min(train,val) Sharpe - parsimony):\n'
-            f'{_fmt_top(top)}\n\n'
-            f'Hall of Fame (stay DECORRELATED from these, do not rephrase them):\n'
-            + ('\n'.join(f'  {c}' for c in hof_canons) or '  (empty)')
-            + f'\n\nPropose {self.n} formulas, each testing a distinct hypothesis.'
-        )
-
-        try:
-            self.stats['calls'] += 1
+            client = anthropic.Anthropic()         # key from env or an `ant auth login` profile
             resp = client.messages.create(
                 model=self.model,
-                max_tokens=16000,
-                system=system,
+                max_tokens=8000,
+                system=_SYSTEM,
                 output_config={'format': {'type': 'json_schema', 'schema': _SCHEMA}},
-                messages=[{'role': 'user', 'content': user}],
+                messages=[{'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
             )
-            if resp.stop_reason == 'refusal':      # safety classifiers said no — just skip
-                self.log('advisor: request refused — skipping this consult')
-                return []
+            if resp.stop_reason == 'refusal':
+                self.last_error = 'request refused'
+                return None
             text = next(b.text for b in resp.content if b.type == 'text')
-            raw = json.loads(text).get('proposals', [])
-        except Exception as e:                     # noqa: BLE001 — network/auth/parse: never crash evolve
-            self.stats['calls'] -= 1               # 'calls' counts consults that actually happened
-            self.stats['errors'] += 1
+            rep = json.loads(text)
+        except Exception as e:                     # noqa: BLE001 — never crash the node
             self.last_error = f'{type(e).__name__}: {str(e)[:110]}'
-            import anthropic
-            if isinstance(e, anthropic.AuthenticationError):
-                self.last_error = 'API key invalid (401)'
-            if isinstance(e, (anthropic.AuthenticationError, anthropic.PermissionDeniedError,
-                              TypeError)):         # TypeError = SDK "could not resolve auth method"
-                self._dead = True                  # credentials won't appear mid-run — stop retrying
-            self.log(f'advisor: call failed ({type(e).__name__}: {e}) — continuing without it')
-            return []
-
-        out, seen = [], set()
-        for p in raw:
-            self.stats['proposed'] += 1
-            node = validate_formula(p.get('formula', ''), cfg)
-            if node is None:
-                continue
-            c = node.canon()
-            if c in seen:
-                continue
-            seen.add(c)
-            self.stats['valid'] += 1
-            out.append((node, str(p.get('hypothesis', ''))[:120]))
-        return out
+            try:
+                import anthropic
+                if isinstance(e, anthropic.AuthenticationError):
+                    self.last_error = 'API key invalid (401)'
+            except Exception:                      # noqa: BLE001
+                pass
+            self.log(f'analyst: call failed ({self.last_error})')
+            return None
+        rep['findings'] = rep.get('findings', [])[:5]
+        rep['suggestions'] = rep.get('suggestions', [])[:3]
+        return rep
