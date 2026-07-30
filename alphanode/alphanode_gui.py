@@ -1286,9 +1286,19 @@ class App:
         vsb = ctk.CTkScrollbar(wrap, orientation='vertical', command=self.tree.yview, fg_color=CARD,
                                button_color=BORDER, button_hover_color=FAINT, width=14)
         self._vsb = vsb
-        self.tree.configure(yscrollcommand=self._on_tree_scroll)   # scroll -> load metrics for the viewport
-        self.tree.pack(side='left', fill='both', expand=True)
+        # formulas render FULL length: the column is sized to the widest row and the horizontal
+        # bar scrolls to the tail (_fit_formula_col); measuring needs the tree's own font
+        self._tree_font = tkfont.Font(family=self.MONO, size=self._px(12))
+        self._lb_need_px = 0
+        hsb = ctk.CTkScrollbar(wrap, orientation='horizontal', command=self.tree.xview,
+                               fg_color=CARD, button_color=BORDER, button_hover_color=FAINT,
+                               height=14)
+        self.tree.configure(yscrollcommand=self._on_tree_scroll,   # scroll -> load metrics for the viewport
+                            xscrollcommand=hsb.set)
         vsb.pack(side='right', fill='y', padx=(4, 0))
+        hsb.pack(side='bottom', fill='x', pady=(4, 0))
+        self.tree.pack(side='left', fill='both', expand=True)
+        self.tree.bind('<Configure>', lambda e: self._fit_formula_col())
         self.tree.bind('<Double-1>', self._on_row_open)
         self.tree.bind('<Button-3>', self._on_row_menu)             # right-click — context menu
         self.tree.bind('<Control-c>', lambda e: self._copy_formula())
@@ -1544,6 +1554,8 @@ class App:
             self.tree.delete(i)
         self._treesig = None
         self._shown = []
+        self._lb_need_px = 0                              # collapse the formula column back
+        self._fit_formula_col()
         self._lib_cache = {'mtime': None, 'all': [], 'families': [], 'computing': False,
                            'dirty': False, 'ts': 0.0, 'computed': False, 'select': None}
         self._history = []
@@ -2373,6 +2385,7 @@ class App:
         for i in self.tree.get_children():
             self.tree.delete(i)
         self._row_items = {}
+        need = 0
         for i, c in enumerate(best):
             t = c.get('test') if isinstance(c.get('test'), dict) else {}
             ts = t.get('sharpe')                         # honest held-out OOS — colored by it
@@ -2380,9 +2393,10 @@ class App:
             sign = 'pos' if (ts is not None and ts >= 0) else ('neg' if ts is not None else 'even')
             stripe = 'odd' if i % 2 else 'even'
             formula = c.get('formula', '')
-            f = formula if len(formula) <= 78 else formula[:78] + '…'
+            f = formula                                  # full length — the column fits the widest row
             if c.get('origin') == 'llm':                 # proposed by the advisor, survived selection
                 f = '🧠 ' + f
+            need = max(need, self._tree_font.measure(f))
             m = self._metrics_cache.get(formula)
             ls, act, win = self._fmt_metrics(m)
             item = self.tree.insert('', 'end', values=(
@@ -2390,6 +2404,8 @@ class App:
                 f'{ts:+.2f}' if ts is not None else '—', ls, act, win, f),
                 tags=(sign, stripe))
             self._row_items[formula] = item
+        self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
+        self._fit_formula_col()
         if top:
             self.tree.yview_moveto(top)                  # a background recompute must not yank you to the top
         self.root.after_idle(self._pump_metrics)         # trade stats for what is actually on screen
@@ -2403,6 +2419,19 @@ class App:
         self.lbl_lb_head.configure(text=self._lb_head_text)
         self._treesig = None                             # force a redraw with the other set
         self._render_lb(self._lb_rows())
+
+    def _fit_formula_col(self):
+        """Size the formula column to the widest row (full formulas, no ellipsis). Wider than
+        the visible area -> the horizontal scrollbar takes over; narrower -> the column still
+        stretches to fill the card. Re-run on every render and on tree resize."""
+        try:
+            fixed = sum(int(self.tree.column(c, 'width'))
+                        for c in ('rank', 'fit', 'test', 'ls', 'act', 'win'))
+        except tk.TclError:                              # theme rebuild mid-flight
+            return
+        avail = self.tree.winfo_width() - fixed - int(4 * self.SCALE)
+        w = max(self._lb_need_px, avail, int(260 * self.SCALE))
+        self.tree.column('formula', width=w, stretch=False)
 
     def _on_tree_scroll(self, first, last):
         """Tk's yscrollcommand: keep the scrollbar in sync AND (debounced) load metrics for the rows
