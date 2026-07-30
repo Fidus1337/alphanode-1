@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AlphaHub — AlphaNode Docs</title>
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛏️</text></svg>">
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="logo" href="../index.html">Alpha<b>Node</b></a>
+    <div class="links">
+      <a href="quickstart.html">Quickstart</a>
+      <a href="gui.html">GUI guide</a>
+      <a href="timeframes.html">Timeframes</a>
+      <a href="advisor.html">Neuro Advisor</a>
+      <a href="alphahub.html">AlphaHub</a>
+    </div>
+    <a class="btn small" href="../index.html#pricing">Get AlphaNode</a>
+  </div>
+</nav>
+
+<div class="doc wrap">
+  <div class="crumbs"><a href="../index.html">Home</a> / Docs / AlphaHub</div>
+  <h1>AlphaHub — the forward-track notary</h1>
+  <p>A backtest is an argument; a forward track is a fact. AlphaHub is a small server that
+  <b>timestamps your target weights before the bar closes</b> and scores them on the next
+  bar from public exchange prices. It turns "trust me, it works" into a verifiable ledger —
+  without ever seeing your formula.</p>
+
+  <h2>What the hub receives — and what it never does</h2>
+  <table>
+    <tr><th>Sent (signed)</th><th>Never sent</th></tr>
+    <tr>
+      <td>node id + name, timeframe, bar close time, target weights per symbol</td>
+      <td>your formula, your parameters, your data, your code</td>
+    </tr>
+  </table>
+  <p>The protocol has <b>no field for a formula at all</b> — disclosure is structurally
+  impossible, not merely promised.</p>
+
+  <h2>Identity: keys, not accounts</h2>
+  <p>On first run your node generates an Ed25519 keypair locally. Your node id is derived
+  from the public key; the private key never leaves your machine and signs every message.
+  Registration is a single signed hello — no email, no password, nothing to leak or reset.
+  Delete the identity file and you're a fresh node.</p>
+
+  <h2>Pushing a signal</h2>
+  <ol>
+    <li>Select an alpha in the leaderboard and press <b>⇪ Hub</b> (or use the row menu).</li>
+    <li>The node computes the alpha's <i>current</i> target weights on live market data —
+      on the daily timeframe through the real engine, intraday through the search engine.</li>
+    <li>The weights are signed and sent for the <b>next bar close</b>. The hub accepts them
+      only while that bar is still open — by its own clock.</li>
+  </ol>
+  <p>Pushes are deliberately manual one-shots: you choose what goes public and when.
+  Re-pushing before the deadline overwrites (last write wins).</p>
+
+  <h2>Scoring — designed to be ungameable</h2>
+  <pre><code>bar return = Σ (weight × symbol return) / Σ |weight|</code></pre>
+  <ul>
+    <li><b>Gross-normalized:</b> scaling all weights ×10 changes nothing — leverage cannot
+      inflate the score. The ledger measures direction quality, as if every node ran $1.</li>
+    <li><b>Public prices:</b> settlement uses exchange klines anyone can re-fetch and verify.</li>
+    <li><b>Hard deadline:</b> a push a second after the close is rejected. No hindsight.</li>
+    <li><b>Quarantine:</b> a node's first 60 days are visibly tagged — a week of luck doesn't
+      make a track record.</li>
+  </ul>
+
+  <h2>The leaderboard</h2>
+  <p>Per node and timeframe: settled bars, total return, annualized forward Sharpe and hit
+  rate — plus a live list of recent pushes waiting for their bar. Missing a bar is not
+  penalized; the ledger simply has no entry for it.</p>
+
+  <h2>Running your own hub</h2>
+  <p>The hub is a single Docker container (FastAPI + SQLite) with a built-in scorer loop.
+  Point your nodes at its URL, approve registrations (or enable auto-approve), and you have a
+  private forward-track board for your team.</p>
+
+  <div class="note">Key loss = identity loss: back up the identity file if the track record
+  matters to you. The hub cannot reset what it never had.</div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026 AlphaNode · hypothetical backtests, not investment advice.</div>
+    <div><a href="../index.html">Home</a> · <a href="mailto:yurbusht@gmail.com">Contact</a></div>
+  </div>
+</footer>
+
+<script src="../app.js" defer></script>
+</body>
+</html>

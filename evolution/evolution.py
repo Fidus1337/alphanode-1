@@ -119,6 +119,61 @@ def hof_update(hof, res, cfg):
     return hof[:cfg['hof_cap']]
 
 
+# ---------------- champion window polish (coordinate descent) ----------------
+def _polish_windows(hof, runner, cache, cfg, origins, log, top_k=5, max_passes=3):
+    """Windows are continuous now — after evolution, fine-tune the horizons of the top
+    champions: for every windowed node try ×0.8 / ×1.25 (rounded, clamped) and keep any
+    change that raises base = min(train, val). Size is unchanged, so parsimony cancels;
+    the polished twin is ~perfectly correlated with its parent, so hof_update simply
+    replaces the parent when the tuned variant is better."""
+    import primitives as P
+
+    def _clamp(w):
+        return max(P.W_MIN, min(P.W_MAX, int(round(w))))
+
+    polished = 0
+    for h in list(hof[:top_k]):
+        cur_canon, cur_base = h['canon'], h['base']
+        src_origin = origins.get(cur_canon)
+        for _ in range(max_passes):
+            tree = parse(cur_canon)
+            slots = [n for n in tree.all_nodes() if n.window is not None]
+            cands = []
+            for i in range(len(slots)):
+                for f in (0.8, 1.25):
+                    t = parse(cur_canon)
+                    s = [n for n in t.all_nodes() if n.window is not None][i]
+                    w = _clamp(s.window * f)
+                    if w == s.window:
+                        continue
+                    s.window = w
+                    if t.canon() not in (c[1] for c in cands):
+                        cands.append((t, t.canon()))
+            unseen = [t for t, c in cands if c not in cache]
+            for n, r in zip(unseen, runner.map(unseen)):
+                cache[n.canon()] = r
+            best_c, best_b = None, cur_base
+            for _t, c in cands:
+                r = cache.get(c)
+                if r is None:
+                    continue
+                b = min(r['train_sharpe'], r['val_sharpe'])
+                if np.isfinite(b) and b > best_b + 1e-6:
+                    best_c, best_b = c, b
+            if best_c is None:
+                break
+            cur_canon, cur_base = best_c, best_b
+        if cur_canon != h['canon']:
+            polished += 1
+            if src_origin:                       # a polished LLM champion is still LLM-born
+                origins[cur_canon] = src_origin
+            log(f'  window polish: base {h["base"]:+.3f} -> {cur_base:+.3f}  {cur_canon}')
+            hof = hof_update(hof, cache[cur_canon], cfg)
+    if polished:
+        log(f'window polish: {polished}/{min(top_k, len(hof))} champions improved')
+    return hof
+
+
 # ---------------- selection / new generation ----------------
 def _rand_sized(rng, cfg):
     """A random tree within max_size (a limited number of attempts, otherwise as-is)."""
@@ -202,16 +257,9 @@ def evolve(cfg, log=print):
     cache = {}          # canon -> res (already-evaluated formulas aren't recomputed)
     hof, history = [], []
     n_eval = 0
-
-    # --- neuro-symbolic advisor (optional; see advisor.py). The LLM proposes, the sim judges.
-    adv = None
-    origins = {}        # canon -> 'llm' (provenance: is the advisor actually pulling weight?)
-    best_fit_ever, stall = -1e18, 0
-    if cfg.get('advisor'):
-        from advisor import Advisor
-        adv = Advisor(model=cfg.get('advisor_model'), n_proposals=cfg.get('advisor_n', 10), log=log)
-        if not adv.available():
-            adv = None                              # no SDK/creds -> behave exactly as before
+    best_fit_ever = -1e18
+    # NOTE: the LLM lives OUTSIDE this loop now — it is a round ANALYST (see advisor.Analyst,
+    # driven by node.py after each round), not a formula proposer. The search itself is pure GA.
 
     try:
         pop = _init_pop(rng, cfg)
@@ -248,41 +296,18 @@ def evolve(cfg, log=print):
                 f'| best fit {best[2] if best else float("nan"):+.2f} '
                 f'| HoF[0] base {hb:+.2f} size {len(hof)}')
 
-            # --- plateau detector for the advisor: consult only when the blind search stalls
-            proposals = []
             if best is not None and best[2] > best_fit_ever + 1e-9:
-                best_fit_ever, stall = best[2], 0
-            else:
-                stall += 1
-            if (adv is not None and gen < cfg['gens'] - 1
-                    and stall >= cfg.get('advisor_patience', 4)
-                    and adv.stats['calls'] < cfg.get('advisor_max_calls', 8)):
-                top = [{'canon': r['canon'], 'fit': f, 'train': r['train_sharpe'],
-                        'val': r['val_sharpe'], 'size': r['size']}
-                       for (_n, r, f) in sorted(valid, key=lambda s: -s[2])[:10]]
-                for node, hypo in adv.propose(top, [h['canon'] for h in hof], stall, cfg):
-                    c = node.canon()
-                    if c not in cache:              # already tried -> not worth a slot
-                        origins[c] = 'llm'
-                        proposals.append(node)
-                        log(f'  advisor -> {c}  [{hypo}]')
-                stall = 0                           # cooldown: don't consult every generation
+                if best_fit_ever > -1e17:           # skip the trivial first-gen "improvement"
+                    log(f'★ gen {gen}: new best fit {best[2]:+.2f} — {best[1]["canon"]}')
+                best_fit_ever = best[2]
 
             if gen < cfg['gens'] - 1:
-                pop = _next_pop(scored, rng, cfg, extra=proposals)
+                pop = _next_pop(scored, rng, cfg)
+
+        # --- final step: continuous fine-tuning of the champions' windows ---
+        if hof and cfg.get('window_polish', True):
+            hof = _polish_windows(hof, runner, cache, cfg, {}, log)
     finally:
         runner.close()
 
-    if adv is not None:
-        for h in hof:
-            h['origin'] = origins.get(h['canon'], 'ga')
-        n_llm = sum(1 for h in hof if h['origin'] == 'llm')
-        s = adv.stats
-        log(f'advisor: {s["calls"]} calls, {s["proposed"]} proposed, {s["valid"]} valid '
-            f'-> {n_llm}/{len(hof)} of the Hall of Fame is LLM-born')
-        # surface the run's advisor activity to the caller (node.py -> status page/GUI);
-        # cfg is built fresh per round, so this never leaks across rounds
-        cfg['advisor_stats'] = {**s, 'injected': len(origins),
-                                'hof_llm': n_llm, 'hof_total': len(hof),
-                                'error': adv.last_error}
     return hof, history, cache

@@ -71,10 +71,10 @@ def _fetch_json(url, retries=4):
             time.sleep(1.5 * (i + 1))
 
 
-def fetch_klines(symbol, start_ms, end_ms):
+def fetch_klines(symbol, start_ms, end_ms, interval='1d'):
     out, cur = [], start_ms
     while cur < end_ms:
-        url = f'{KLINES}?symbol={symbol}&interval=1d&startTime={cur}&endTime={end_ms}&limit=1500'
+        url = f'{KLINES}?symbol={symbol}&interval={interval}&startTime={cur}&endTime={end_ms}&limit=1500'
         data = _fetch_json(url)
         if not data:
             break

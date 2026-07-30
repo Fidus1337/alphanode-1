@@ -7,7 +7,22 @@ Node.op — either a feature name (FEATURES, then it's a leaf), or a primitive n
 Node.window — the window for time-series primitives (otherwise None).
 canon() — the canonical string: both a human-readable form and the cache/dedup key.
 """
+import math
+
 import primitives as P
+
+
+def mutate_window_value(w, rng):
+    """Smart window step: a log-normal jitter around the CURRENT horizon (30 -> 34, 30 -> 24 …,
+    any integer in [W_MIN, W_MAX]) so evolution can TUNE a horizon, not just hop the coarse
+    grid; ~20% of the time a global jump onto the grid prior keeps exploration alive."""
+    if w is None or rng.random() < 0.2:
+        return rng.choice(P.WINDOWS)
+    for _ in range(4):
+        nw = max(P.W_MIN, min(P.W_MAX, round(w * math.exp(rng.gauss(0.0, 0.35)))))
+        if nw != w:
+            return nw
+    return max(P.W_MIN, min(P.W_MAX, w + (1 if rng.random() < 0.5 else -1)))
 
 
 class Node:
@@ -169,7 +184,10 @@ def _mutate_point(tree, rng):
     for grp in P.COMPAT_GROUPS:
         if n.op in grp:
             n.op = rng.choice(grp)
-            n.window = rng.choice(P.WINDOWS) if P.NEEDS_WINDOW[n.op] else None
+            # swapping the statistic KEEPS the horizon (ts_mean:30 -> ema:30) — the idea
+            # "a monthly signal" survives the operator swap instead of being re-rolled
+            n.window = ((n.window or rng.choice(P.WINDOWS))
+                        if P.NEEDS_WINDOW[n.op] else None)
             break
 
 
@@ -178,7 +196,7 @@ def _mutate_window(tree, rng):
     if not windowed:
         return _mutate_point(tree, rng)      # nothing to tune — fall back to point mutation
     n = rng.choice(windowed)
-    n.window = rng.choice(P.WINDOWS)
+    n.window = mutate_window_value(n.window, rng)
 
 
 # ================= parse a canonical string back into a tree =================

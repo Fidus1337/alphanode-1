@@ -92,28 +92,38 @@ def _tf_clean(tf):
 # gui_settings.json: in dev mode that file is tracked by git and a key stored there
 # would end up on GitHub with the next settings commit.
 KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'anthropic_key')
+HUB_ID_FILE = os.path.join(os.path.dirname(SETTINGS), 'alphahub_identity')
 
 
-def _load_api_key():
+def _load_keyfile(path):
     try:
-        with open(KEY_FILE, encoding='utf-8') as f:
+        with open(path, encoding='utf-8') as f:
             return f.read().strip()
     except OSError:
         return ''
 
 
-def _save_api_key(key):
+def _save_keyfile(path, key):
+    """Secrets live in their own 0600 files, never in the (git-tracked) settings JSON."""
     key = (key or '').strip()
     try:
         if not key:
-            if os.path.exists(KEY_FILE):
-                os.remove(KEY_FILE)                     # cleared in the GUI -> gone from disk
+            if os.path.exists(path):
+                os.remove(path)                         # cleared in the GUI -> gone from disk
             return
-        with open(KEY_FILE, 'w', encoding='utf-8') as f:
+        with open(path, 'w', encoding='utf-8') as f:
             f.write(key + '\n')
-        os.chmod(KEY_FILE, 0o600)                       # owner-only (no-op on Windows)
+        os.chmod(path, 0o600)                           # owner-only (no-op on Windows)
     except OSError:
         pass
+
+
+def _load_api_key():
+    return _load_keyfile(KEY_FILE)
+
+
+def _save_api_key(key):
+    _save_keyfile(KEY_FILE, key)
 
 
 def _child_cmd(role):
@@ -138,7 +148,9 @@ DEFAULTS = {
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
     # neuro advisor (the API key is NOT here — see KEY_FILE)
-    'advisor': False, 'advisor_max_calls': 8, 'advisor_model': 'claude-opus-5',
+    'advisor': False, 'advisor_max_calls': 1, 'advisor_model': 'claude-opus-5',
+    # alphahub (the Ed25519 identity is NOT here — see HUB_ID_FILE); pushes are manual-only
+    'hub_url': '', 'hub_name': 'my-node',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -152,6 +164,7 @@ DEFAULTS = {
     'test_start': '2023-01-01', 'test_end': '2026-07-05',
     # appearance
     'theme': '',            # 'light' | 'dark' | '' = follow the OS on first run
+    'settings_open': False,  # settings pane hidden by default; toggled by the header button
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
     'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
     'chart_h': 0,           # progress-chart height, 100%-DPI px; 0 = default (170)
@@ -163,47 +176,50 @@ DEFAULTS = {
 # constants below, which the whole file reads — so a widget just says fg=TXT and stays theme-correct.
 PALETTE = {
     'light': dict(
-        BG='#eef0f4',        # app background (cool light gray)
+        BG='#edeff5',        # app background (cool light gray)
         CARD='#ffffff',      # cards
-        BORDER='#e3e6ec',    # hairline borders
-        TXT='#0f172a',       # text (slate-900)
-        MUT='#64748b',       # muted (slate-500)
-        FAINT='#94a3b8',     # even fainter (slate-400)
+        BORDER='#e7eaf1',    # hairline borders (controls); cards keep a whisper of it
+        TXT='#111a2e',       # text (slate-900, a touch softer)
+        MUT='#66738a',       # muted (slate-500)
+        FAINT='#97a3b8',     # even fainter (slate-400)
         ACC='#6366f1',       # accent (indigo-500)
         ACC_HI='#4f46e5',    # hover
         ACC_DN='#4338ca',    # pressed
-        ACC_SOFT='#eef2ff',  # soft fill / row highlight (indigo-50)
+        ACC_SOFT='#eceffe',  # soft fill / row highlight (indigo-50)
         POS='#059669',       # gain (emerald-600)
         NEG='#e11d48',       # loss (rose-600)
-        HEAD_BG='#f1f3f7',   # table headers / soft backgrounds
-        HEAD_HI='#e8ecf3',   # table header hover
-        STRIPE='#fafbfc',    # row zebra striping
-        GRID='#edf0f5',      # chart gridlines
-        TIP_BG='#0f172a', TIP_FG='#e5e7eb', TIP_BD='#334155',    # tooltips (dark on light)
+        HEAD_BG='#f3f5f9',   # tonal surfaces: tiles, buttons, fields
+        HEAD_HI='#eaedf4',   # their hover
+        STRIPE='#f9fafd',    # row zebra striping
+        GRID='#eef1f6',      # chart gridlines
+        CARD_BW=1,           # cards on white need a hairline to separate
+        TIP_BG='#111a2e', TIP_FG='#e5e7eb', TIP_BD='#334155',    # tooltips (dark on light)
     ),
     'dark': dict(
-        BG='#0e1014',
-        CARD='#171a21',
-        BORDER='#272c38',
-        TXT='#e8ebf2',
-        MUT='#9aa4b6',
-        FAINT='#6c7789',
+        BG='#0a0c11',        # a step deeper than the cards — the panels read as raised surfaces
+        CARD='#151926',
+        BORDER='#242a3a',
+        TXT='#e7eaf2',
+        MUT='#9fa9bc',
+        FAINT='#6e7a90',
         ACC='#818cf8',       # indigo-400: the 500 is too dim on a dark card
         ACC_HI='#a5b4fc',
         ACC_DN='#6366f1',
-        ACC_SOFT='#20243a',
+        ACC_SOFT='#262d52',
         POS='#34d399',       # emerald-400 / rose-400: the 600s fail contrast on dark
         NEG='#fb7185',
-        HEAD_BG='#1d212b',
-        HEAD_HI='#252a36',
-        STRIPE='#1b1f27',
-        GRID='#252a36',
+        HEAD_BG='#1d2233',
+        HEAD_HI='#262c40',
+        STRIPE='#1a1f2d',
+        GRID='#212637',
+        CARD_BW=0,           # borderless cards: depth comes from the surface tones alone
         TIP_BG='#2b313f', TIP_FG='#e8ebf2', TIP_BD='#3d4557',    # lighter than the card, not darker
     ),
 }
 # Published by _apply_palette(); declared here so the names exist at import time.
 BG = CARD = BORDER = TXT = MUT = FAINT = ACC = ACC_HI = ACC_DN = ACC_SOFT = ''
 POS = NEG = HEAD_BG = HEAD_HI = STRIPE = GRID = TIP_BG = TIP_FG = TIP_BD = ''
+CARD_BW = 0
 
 
 def _apply_palette(theme):
@@ -223,6 +239,20 @@ def _system_theme():
         return 'dark' if (darkdetect.theme() or '').lower() == 'dark' else 'light'
     except Exception:                                       # noqa: BLE001 — optional, any failure -> light
         return 'light'
+
+
+def _mix(c1, c2, t):
+    """Blend two '#rrggbb' colours; t=0 -> c1, t=1 -> c2. Canvas has no alpha — this is it."""
+    a = [int(c1[i:i + 2], 16) for i in (1, 3, 5)]
+    b = [int(c2[i:i + 2], 16) for i in (1, 3, 5)]
+    return '#%02x%02x%02x' % tuple(round(x + (y - x) * t) for x, y in zip(a, b))
+
+
+def _rrect(cv, x0, y0, x1, y1, r, **kw):
+    """A rounded rectangle on a tk.Canvas (smoothed polygon — Tk has no native one)."""
+    pts = (x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
+           x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0)
+    return cv.create_polygon(pts, smooth=True, **kw)
 
 
 class App:
@@ -293,13 +323,45 @@ class App:
         except Exception:
             return d
 
+    @staticmethod
+    def _api_err_text(e, model):
+        """SDK exception -> a short human diagnosis + what to do (instead of a raw repr)."""
+        name = type(e).__name__
+        code = getattr(e, 'status_code', None)
+        body = getattr(e, 'body', None)
+        msg = ''
+        if isinstance(body, dict):
+            msg = str((body.get('error') or {}).get('message') or '')[:160]
+        if not msg:
+            msg = str(e)[:160]
+        if code == 401:
+            return ('✗ Key rejected (401 — authentication failed).\n'
+                    'The key is invalid, revoked, or pasted with a typo. Get a fresh one at\n'
+                    'console.anthropic.com → API Keys (it starts with sk-ant-…) and paste it whole.')
+        if code == 403:
+            return (f'✗ Access denied (403).\nThe key itself works, but it has no access to '
+                    f'{model} —\ncheck the workspace/plan in the Anthropic console or pick another model.')
+        if code == 404:
+            return (f'✗ Model not found (404).\n{model} is not available to this key — '
+                    'pick another model from the list.')
+        if code == 429:
+            return ('✗ Rate limited (429).\nGood news: the key works. Too many requests '
+                    'right now — try again in a minute.')
+        if name == 'APIConnectionError':
+            return ('✗ Could not reach api.anthropic.com.\nCheck the internet connection / '
+                    'VPN / proxy and try again.')
+        if code and code >= 500:
+            return (f'✗ Anthropic server error ({code}).\nThe key is probably fine — '
+                    'their side is having trouble; retry in a minute.')
+        return f'✗ {name}{f" ({code})" if code else ""}: {msg}'
+
     def _check_api_key(self):
         """Cheap live probe of the pasted key (models.retrieve — free, auth-validating).
         Runs in a thread; the label is updated by MAIN-THREAD polling of a holder dict —
         cross-thread root.after is unreliable here (same pattern as the PDF worker)."""
         key = (self.v_apikey.get() or '').strip()
         if not key:
-            self.lbl_advkey.configure(text='no key entered', text_color=NEG)
+            self.lbl_advkey.configure(text='no key entered — paste an Anthropic API key first', fg=NEG)
             return
         model = (self.v_advmodel.get() or 'claude-opus-5').strip()
         holder = {}
@@ -310,15 +372,95 @@ class App:
                 anthropic.Anthropic(api_key=key).models.retrieve(model)
                 holder['res'] = (f'✓ key works — {model} reachable', POS)
             except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
-                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
+                holder['res'] = (self._api_err_text(e, model), NEG)
 
         threading.Thread(target=work, daemon=True).start()
-        self.lbl_advkey.configure(text='checking…', text_color=MUT)
+        self.lbl_advkey.configure(text='checking…', fg=MUT)
 
         def poll():
             if 'res' in holder:
                 txt, col = holder['res']
-                self.lbl_advkey.configure(text=txt, text_color=col)
+                self.lbl_advkey.configure(text=txt, fg=col)
+            else:
+                self.root.after(150, poll)
+        self.root.after(150, poll)
+
+    @staticmethod
+    def _hub_err_text(e):
+        """Network exception -> what actually went wrong at that URL, in plain words."""
+        s = str(e)
+        low = s.lower()
+        if 'refused' in low:
+            return ('✗ Connection refused — nothing is listening at that URL.\n'
+                    'Is the hub container running? Check the port in the URL.')
+        if 'timed out' in low or 'timeout' in low:
+            return ('✗ Timeout — the URL does not answer from this machine.\n'
+                    'Wrong host, closed firewall port, or the hub is down.')
+        if 'name or service not known' in low or 'getaddrinfo' in low or 'nodename' in low:
+            return '✗ DNS: host not found — check the URL spelling (http(s)://host:port).'
+        if 'http error 404' in low:
+            return '✗ 404 — something answered, but it is not an AlphaHub (/health missing).'
+        if 'certificate' in low or 'ssl' in low:
+            return '✗ TLS/certificate problem — try http:// for a local hub, or fix the cert.'
+        return f'✗ {type(e).__name__}: {s[:120]}'
+
+    def _check_hub(self):
+        """Probe <hub>/health in a worker thread; same main-thread polling pattern as Check key."""
+        url = (self.v_huburl.get() or '').strip()
+        if not url:
+            self.lbl_hub.configure(text='no hub URL entered', fg=NEG)
+            return
+        holder = {}
+
+        def work():
+            try:
+                import urllib.request
+                with urllib.request.urlopen(url.rstrip('/') + '/health', timeout=10) as r:
+                    d = json.loads(r.read())
+                if d.get('ok'):
+                    holder['res'] = (f'✓ hub alive — protocol v{d.get("protocol")}', POS)
+                else:
+                    holder['res'] = ('✗ hub responded but not ok', NEG)
+            except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
+                holder['res'] = (self._hub_err_text(e), NEG)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.lbl_hub.configure(text='checking…', fg=MUT)
+
+        def poll():
+            if 'res' in holder:
+                txt, col = holder['res']
+                self.lbl_hub.configure(text=txt, fg=col)
+            else:
+                self.root.after(150, poll)
+        self.root.after(150, poll)
+
+    def _register_hub(self):
+        """One-click node registration: sends node_id + PUBLIC key, signed. The private
+        key never leaves this machine. Worker thread + main-thread polling, as usual."""
+        url = (self.v_huburl.get() or '').strip()
+        if not url:
+            self.lbl_hub.configure(text='no hub URL entered', fg=NEG)
+            return
+        name = (self.v_hubname.get() or 'my-node').strip()
+        holder = {}
+
+        def work():
+            try:
+                import hub_client
+                ident = hub_client.ensure_identity(HUB_ID_FILE)
+                ok, msg = hub_client.register(url, ident, name)
+                holder['res'] = (('✓ ' if ok else '✗ ') + msg, POS if ok else NEG)
+            except Exception as e:                     # noqa: BLE001
+                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
+
+        threading.Thread(target=work, daemon=True).start()
+        self.lbl_hub.configure(text='registering…', fg=MUT)
+
+        def poll():
+            if 'res' in holder:
+                txt, col = holder['res']
+                self.lbl_hub.configure(text=txt, fg=col)
             else:
                 self.root.after(150, poll)
         self.root.after(150, poll)
@@ -339,6 +481,8 @@ class App:
             advisor=bool(self.v_advisor.get()),
             advisor_max_calls=self._gi(self.v_advcalls, d['advisor_max_calls']),
             advisor_model=(self.v_advmodel.get() or d['advisor_model']).strip(),
+            hub_url=self.v_huburl.get().strip(),
+            hub_name=self.v_hubname.get().strip() or 'my-node',
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -423,10 +567,11 @@ class App:
             pass
         s.configure('.', background=CARD, foreground=TXT, font=(F, self._px(13)))
 
-        # numeric spinboxes — CustomTkinter has no spinbox, so these stay ttk
-        s.configure('TSpinbox', fieldbackground=CARD, background=CARD, foreground=TXT, arrowcolor=MUT,
-                    bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER, borderwidth=1,
-                    padding=int(4 * self.SCALE), insertcolor=TXT, font=self._font(F, 13))
+        # numeric spinboxes — CustomTkinter has no spinbox, so these stay ttk (tonal, like _entry)
+        s.configure('TSpinbox', fieldbackground=HEAD_BG, background=HEAD_BG, foreground=TXT,
+                    arrowcolor=MUT, bordercolor=BORDER, lightcolor=HEAD_BG, darkcolor=HEAD_BG,
+                    borderwidth=1, padding=int(4 * self.SCALE), insertcolor=TXT,
+                    font=self._font(F, 13))
         s.map('TSpinbox', bordercolor=[('focus', ACC)], lightcolor=[('focus', ACC)],
               darkcolor=[('focus', ACC)])
 
@@ -434,13 +579,13 @@ class App:
         # rowheight/fonts are deliberately roomier than ttk's defaults: this table IS the app.
         # bordercolor matters: clam draws a frame around the field, which reads as a stray light
         # rectangle on a dark card unless it matches the card
-        s.configure('Treeview', rowheight=int(30 * self.SCALE), fieldbackground=CARD, background=CARD,
+        s.configure('Treeview', rowheight=int(32 * self.SCALE), fieldbackground=CARD, background=CARD,
                     foreground=TXT, borderwidth=0, relief='flat', bordercolor=CARD,
                     lightcolor=CARD, darkcolor=CARD, font=(self.MONO, self._px(12)))
-        s.configure('Treeview.Heading', font=(F, self._px(12), 'bold'), foreground=MUT,
-                    background=HEAD_BG, relief='flat',
-                    padding=(int(8 * self.SCALE), int(8 * self.SCALE)), bordercolor=BORDER)
-        s.map('Treeview.Heading', background=[('active', HEAD_HI)])
+        s.configure('Treeview.Heading', font=(F, self._px(10.5), 'bold'), foreground=FAINT,
+                    background=CARD, relief='flat',
+                    padding=(int(8 * self.SCALE), int(9 * self.SCALE)), bordercolor=CARD)
+        s.map('Treeview.Heading', background=[('active', HEAD_BG)])
         s.map('Treeview', background=[('selected', ACC_SOFT)], foreground=[('selected', TXT)])
         s.layout('Treeview.Item',                        # drop the indent reserved for tree handles
                  [('Treeitem.padding', {'sticky': 'nswe', 'children':
@@ -483,14 +628,15 @@ class App:
         return tk.Frame(parent, bg=(bg or CARD), **kw)
 
     def _card(self, parent, **kw):
-        """A card: the surface every panel sits on. Stays CTk — the rounded border is the point."""
-        return ctk.CTkFrame(parent, fg_color=CARD, border_color=BORDER, border_width=1,
-                            corner_radius=10, **kw)
+        """A card: the surface every panel sits on. Stays CTk — the rounded corner is the point.
+        Dark theme drops the border entirely (CARD_BW=0): depth comes from surface tones."""
+        return ctk.CTkFrame(parent, fg_color=CARD, border_color=BORDER, border_width=CARD_BW,
+                            corner_radius=14, **kw)
 
     def _pad(self, card):
         """Inner padding frame for a card (CTkFrame has no padding option)."""
         f = self._box(card)
-        f.pack(fill='both', expand=True, padx=16, pady=14)
+        f.pack(fill='both', expand=True, padx=18, pady=16)
         return f
 
     # ---------- layout ----------
@@ -499,16 +645,45 @@ class App:
         # touching the root's other children (open dialogs, tooltips).
         self._shell = self._box(self.root, bg=BG)
         self._shell.pack(fill='both', expand=True)
-        self._box(self._shell, bg=ACC, height=3).pack(fill='x')          # accent bar
+        bar = tk.Canvas(self._shell, height=3, bg=ACC, highlightthickness=0)   # accent gradient bar
+        bar.pack(fill='x')
+
+        def _grad(e, cv=bar):
+            cv.delete('all')
+            n = 64
+            for i in range(n):
+                cv.create_rectangle(e.width * i / n, 0, e.width * (i + 1) / n + 1, 4,
+                                    fill=_mix(ACC, ACC_DN, i / (n - 1)), outline='')
+        bar.bind('<Configure>', _grad)
         top = self._box(self._shell, bg=BG)
         top.pack(fill='x', padx=20, pady=(14, 11))
         brand = self._box(top, bg=BG)
         brand.pack(side='left')
-        self._lbl(brand, text='Alpha', font=(self.UI, 24, 'bold'), text_color=TXT).pack(side='left')
-        self._lbl(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC).pack(side='left')
+        ms = int(30 * self.SCALE)                        # logo mark: rounded square with an alpha
+        mark = tk.Canvas(brand, width=ms, height=ms, bg=BG, highlightthickness=0)
+        _rrect(mark, 1, 1, ms - 1, ms - 1, int(9 * self.SCALE), fill=ACC, outline='')
+        mark.create_text(ms / 2, ms / 2 - 1 * self.SCALE, text='α', fill='#ffffff',
+                         font=self._font(self.UI, 17, 'bold'))
+        mark.pack(side='left', padx=(0, 10), pady=(2, 0))
+        self._lbl(brand, text='Alpha', font=(self.UI, 24, 'bold'), text_color=TXT, bg=BG).pack(side='left')
+        self._lbl(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC, bg=BG).pack(side='left')
         self._lbl(top, text='background search for trading strategies', text_color=MUT,
-                     font=(self.UI, 13)).pack(side='left', padx=(14, 0), pady=(6, 0))
+                     font=(self.UI, 13), bg=BG).pack(side='left', padx=(14, 0), pady=(6, 0))
         self._build_theme_pick(top)
+        # header controls: the node is driven from here — defaults just work, the full settings
+        # panel stays hidden until the Settings button is pressed
+        self.btn_settings = self._btn(top, '⚙  Settings', self._toggle_settings, kind='soft',
+                                      height=34, width=112)
+        self.btn_settings.pack(side='right', padx=(0, 16), pady=(2, 0))
+        self.btn_stop = self._btn(top, '■  Stop', self.stop, kind='soft', height=34, width=88)
+        self.btn_stop.configure(state='disabled')
+        self.btn_stop.pack(side='right', padx=(0, 8), pady=(2, 0))
+        self.btn_start = self._btn(top, '▶  Start node', self.start, kind='accent',
+                                   height=34, width=136)
+        self.btn_start.pack(side='right', padx=(0, 8), pady=(2, 0))
+        self._tip(self.btn_start, 'Start the background search with the current settings.')
+        self._tip(self.btn_stop, 'Gently stop the search (the current round will finish).')
+        self._tip(self.btn_settings, 'Show / hide the search settings panel.')
         self._box(self._shell, bg=BORDER, height=1).pack(fill='x')       # hairline
 
         # settings | dashboard live in a PanedWindow so the split is mouse-draggable; the sash
@@ -521,8 +696,7 @@ class App:
 
         self._build_settings(body)
         self._build_status(body)
-        if self.cfg.get('split_w'):
-            self.root.after(120, self._sash_restore)
+        self._apply_settings_vis()
         body.bind('<ButtonRelease-1>', self._sash_save)
         body.bind('<Double-1>', self._sash_reset)
 
@@ -567,7 +741,27 @@ class App:
         if self._pf_doc:
             self._render_portfolio(self._pf_doc)
 
-    # ---------- left panel: ALL settings (scrollable) ----------
+    # ---------- left panel: ALL settings (scrollable, hidden by default) ----------
+    def _toggle_settings(self):
+        if self.cfg.get('settings_open'):
+            self._sash_save()                            # remember the width the user chose
+        self.cfg['settings_open'] = not self.cfg.get('settings_open')
+        self._apply_settings_vis()
+        self._save()
+
+    def _apply_settings_vis(self):
+        """Show/hide the settings pane (tk paned '-hide': the pane and its sash vanish together).
+        The default view is just the dashboard; the choice persists across restarts."""
+        shown = bool(self.cfg.get('settings_open'))
+        try:
+            self._paned.paneconfigure(self._settings_outer, hide=not shown)
+        except tk.TclError:
+            pass
+        if shown and self.cfg.get('split_w'):
+            self.root.after(120, self._sash_restore)
+        self.btn_settings.configure(border_color=(ACC if shown else BORDER),
+                                    text_color=(ACC if shown else TXT))
+
     # ---------- draggable split (settings | dashboard) ----------
     def _sash_restore(self):
         try:
@@ -576,6 +770,8 @@ class App:
             pass
 
     def _sash_save(self, _e=None):
+        if not self.cfg.get('settings_open'):            # no visible sash — nothing to remember
+            return
         try:
             x = self._paned.sash_coord(0)[0]
         except tk.TclError:
@@ -597,7 +793,10 @@ class App:
         self._save()
 
     def _build_settings(self, body):
+        # Always built (every tk variable must exist for _collect/start), but shown only while
+        # cfg['settings_open'] — see _apply_settings_vis().
         outer = self._card(body)
+        self._settings_outer = outer
         body.add(outer, minsize=int(230 * self.SCALE), stretch='never')
         # hand-rolled scroller rather than CTkScrollableFrame: the width has to come from the content
         # itself (_sync), which stays correct under HiDPI font scaling — a fixed width would clip.
@@ -628,7 +827,7 @@ class App:
         self.lbl_cpu.pack(anchor='w', pady=(2, 0))
         sc = ctk.CTkSlider(inner, from_=5, to=95, variable=self.v_cpu, command=lambda e: self._cpu_lbl(),
                            button_color=ACC, button_hover_color=ACC_HI, progress_color=ACC,
-                           fg_color=HEAD_BG, height=16)
+                           fg_color=HEAD_BG, height=14)
         sc.pack(fill='x', pady=(4, 12))
         self._cpu_lbl()
         cpu_tip = 'How many cores to give the search. More — faster, but higher load on the PC.'
@@ -713,26 +912,28 @@ class App:
         self.v_seedlib = self._chk(g, 'Warm-start from library', self.cfg['seed_from_lib'], 3,
                                    tip='Seed the new generation with the best found alphas (fine-tuning). Off — always from scratch.')
 
-        # --- neuro advisor (LLM) ---
-        g = self._section(inner, 'NEURO ADVISOR (LLM, experimental)')
-        self.v_advisor = self._chk(g, 'LLM proposes formulas on plateaus', self.cfg.get('advisor', False), 0,
-                                   tip='When the search stalls, Claude sees the current best formulas and\n'
-                                       'proposes new ones (carry/flow/vol hypotheses). The simulator stays\n'
-                                       'the only judge — bad ideas die in selection like any random mutation.\n'
-                                       'Cost: one consult is roughly $0.05-0.15 — cap them below.')
+        # --- neuro analyst (LLM reads the library after rounds; it never touches the search) ---
+        g = self._section(inner, 'NEURO ANALYST (LLM, experimental)')
+        self.v_advisor = self._chk(g, 'Round analyst: LLM reviews the library', self.cfg.get('advisor', False), 0,
+                                   tip='After a round, Claude reads the accumulated evidence — the library\n'
+                                       'with its metrics, round history, base↔TEST gaps, operator usage —\n'
+                                       'and writes a research report into the LIVE LOG: overfitting\n'
+                                       'suspicions, diversity audit, what is under-explored. It has ZERO\n'
+                                       'authority over the search — the GA runs pure, the report is for you.\n'
+                                       'Cost: one report is roughly $0.05-0.15.')
         self.v_advmodel = tk.StringVar(value=self.cfg.get('advisor_model', 'claude-opus-5'))
         model_box = ttk.Combobox(g, textvariable=self.v_advmodel, values=ADVISOR_MODELS, width=19)
         self._row(g, 'Model', 1, model_box,
-                  tip='Which Claude model proposes formulas (per consult, roughly):\n'
-                      '  claude-opus-5    — smartest, ~$0.05-0.15\n'
+                  tip='Which Claude model writes the report (per report, roughly):\n'
+                      '  claude-opus-5    — deepest analysis, ~$0.05-0.15\n'
                       '  claude-sonnet-5  — solid mid-tier, ~$0.02-0.06\n'
                       '  claude-haiku-4-5 — cheapest, ~$0.01-0.03\n'
                       'The box is editable — any other model id can be typed in.')
-        self.v_advcalls = self._num(g, 'Max LLM consults per round', self.cfg.get('advisor_max_calls', 8),
+        self.v_advcalls = self._num(g, 'Analyze every N rounds', self.cfg.get('advisor_max_calls', 1),
                                     2, 0, 99, 1,
-                                    tip='Hard cap on Claude consults within one search round.\n'
-                                        '1 = at most one consult per round (cheapest meaningful setting);\n'
-                                        '0 = never consult (same as unticking the box above).')
+                                    tip='How often the analyst reads the library.\n'
+                                        '1 = a report after every round; 3 = after every third;\n'
+                                        '0 = never (same as unticking the box above).')
         self.v_apikey = tk.StringVar(value=_load_api_key())
         e_key = self._entry(g, self.v_apikey, width=230)
         e_key.configure(show='•')
@@ -740,10 +941,45 @@ class App:
                   tip='Key from console.anthropic.com (sk-ant-…). Stored in its own file with\n'
                       'owner-only permissions — never in gui_settings.json, never in git:\n'
                       f'{KEY_FILE}')
-        self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12))
+        self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12),
+                                    justify='left', anchor='w')
         self.lbl_advkey.grid(row=4, column=0, sticky='w', pady=(4, 0))
         self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
             .grid(row=4, column=1, sticky='e', pady=(4, 0))
+
+        # --- alphahub (forward-track notary; pushes are MANUAL — the ⇪ Hub button) ---
+        g = self._section(inner, 'ALPHAHUB (forward-track, experimental)')
+        self._lbl(g, text='Pushes are manual: select an alpha in the leaderboard → ⇪ Hub.',
+                  text_color=MUT, font=(self.UI, 12)).grid(row=0, column=0, columnspan=2,
+                                                           sticky='w', pady=(0, 4))
+        self.v_huburl = tk.StringVar(value=self.cfg.get('hub_url', ''))
+        self._row(g, 'Hub URL', 1, self._entry(g, self.v_huburl, width=230),
+                  tip='e.g. http://my-vps:8899 — where your AlphaHub runs.')
+        self.v_hubname = tk.StringVar(value=self.cfg.get('hub_name', 'my-node'))
+        self._row(g, 'Node name', 2, self._entry(g, self.v_hubname, width=230),
+                  tip='How this node appears on the hub leaderboard.')
+        # identity is born HERE, on this machine — the hub only ever sees the public key
+        node_id = ''
+        try:
+            import hub_client
+            node_id = hub_client.ensure_identity(HUB_ID_FILE)['node_id']
+        except Exception:                                # noqa: BLE001 — no cryptography pkg etc.
+            pass
+        self.lbl_hubid = self._lbl(g, text=(f'identity: {node_id}' if node_id
+                                            else 'identity: unavailable (cryptography pkg missing)'),
+                                   text_color=(MUT if node_id else NEG), font=(self.MONO, 11))
+        self.lbl_hubid.grid(row=3, column=0, sticky='w', pady=(4, 0))
+        self._tip(self.lbl_hubid,
+                  'Auto-generated Ed25519 keypair; the PRIVATE key stays in\n'
+                  f'{HUB_ID_FILE}\n(owner-only, gitignored). Delete that file for a fresh identity.')
+        self.lbl_hub = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12),
+                                 justify='left', anchor='w')
+        self.lbl_hub.grid(row=4, column=0, sticky='w', pady=(4, 0))
+        row_btns = self._box(g)
+        row_btns.grid(row=4, column=1, sticky='e', pady=(4, 0))
+        self._btn(row_btns, 'Check hub', self._check_hub, height=26, width=92).pack(side='left')
+        self._btn(row_btns, 'Register', self._register_hub, height=26, width=92)\
+            .pack(side='left', padx=(8, 0))
 
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
@@ -792,42 +1028,37 @@ class App:
         self.v_end = self._txt(g, 'TEST end', self.cfg['test_end'], 3,
                                tip='End of the entire data period.')
 
-        # --- buttons ---
+        # --- buttons (Start/Stop live in the header — always visible) ---
         btns = self._box(inner)
         btns.pack(fill='x', pady=(16, 0))
-        self.btn_start = self._btn(btns, '▶  Start node', self.start, kind='accent', height=38)
-        self.btn_start.pack(fill='x', pady=(0, 6))
-        self.btn_stop = self._btn(btns, '■  Stop', self.stop, kind='soft')
-        self.btn_stop.configure(state='disabled')
-        self.btn_stop.pack(fill='x', pady=(0, 6))
         b_reset = self._btn(btns, 'Reset to defaults', self._reset)
         b_reset.pack(fill='x', pady=(0, 6))
         b_wipe = self._btn(btns, 'Clear all history', self._wipe_history, kind='danger')
         b_wipe.pack(fill='x', pady=(14, 0))
-        self._tip(self.btn_start, 'Start the background search with the current settings.')
-        self._tip(self.btn_stop, 'Gently stop the search (the current round will finish).')
         self._tip(b_reset, 'Return all settings to their default values.')
         self._tip(b_wipe, 'Delete all history and found alphas (with confirmation).')
 
     # ---------- widget factories (one place where the palette meets CustomTkinter) ----------
-    _BTN = {                                             # kind -> (fill, hover, text, border)
-        'plain':  lambda: (CARD, HEAD_BG, TXT, BORDER),
-        'accent': lambda: (ACC, ACC_HI, '#ffffff', ACC),
-        'soft':   lambda: (HEAD_BG, HEAD_HI, TXT, BORDER),
-        'danger': lambda: (CARD, HEAD_HI, NEG, NEG),
+    # Tonal buttons (soft fills, no outlines) — the filled surface IS the affordance.
+    _BTN = {                                             # kind -> (fill, hover, text)
+        'plain':  lambda: (HEAD_BG, HEAD_HI, TXT),
+        'accent': lambda: (ACC, ACC_HI, '#ffffff'),
+        'soft':   lambda: (HEAD_BG, HEAD_HI, TXT),
+        'danger': lambda: (_mix(NEG, CARD, 0.88), _mix(NEG, CARD, 0.80), NEG),
     }
 
     def _btn(self, parent, text, command, kind='plain', height=32, **kw):
-        fill, hover, fg, border = self._BTN[kind]()
-        return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=8,
-                             fg_color=fill, hover_color=hover, text_color=fg, border_color=border,
-                             border_width=1, text_color_disabled=FAINT,
-                             font=(self.UI, 10, 'bold' if kind == 'accent' else 'normal'), **kw)
+        fill, hover, fg = self._BTN[kind]()
+        return ctk.CTkButton(parent, text=text, command=command, height=height, corner_radius=10,
+                             fg_color=fill, hover_color=hover, text_color=fg, border_width=0,
+                             text_color_disabled=FAINT,
+                             font=(self.UI, 11, 'bold' if kind == 'accent' else 'normal'), **kw)
 
     def _entry(self, parent, var, width=None):
         kw = {'width': width} if width else {}
-        return ctk.CTkEntry(parent, textvariable=var, height=30, corner_radius=7, fg_color=CARD,
-                            border_color=BORDER, text_color=TXT, font=(self.UI, 13), **kw)
+        return ctk.CTkEntry(parent, textvariable=var, height=30, corner_radius=9,
+                            fg_color=HEAD_BG, border_color=BORDER, border_width=1,
+                            text_color=TXT, font=(self.UI, 13), **kw)
 
     def _radio(self, parent, text, var, value):
         return ctk.CTkRadioButton(parent, text=text, variable=var, value=value,
@@ -840,8 +1071,12 @@ class App:
         return self._lbl(parent, text=text, text_color=FAINT, font=(self.UI, 12, 'bold'))
 
     def _section(self, parent, title):
-        self._lbl(parent, text=title, text_color=ACC,
-                     font=(self.UI, 12, 'bold')).pack(anchor='w', pady=(14, 6))
+        row = self._box(parent)
+        row.pack(anchor='w', fill='x', pady=(16, 6))
+        tick = self._box(row, bg=ACC, width=max(2, int(3 * self.SCALE)),
+                         height=int(13 * self.SCALE))
+        tick.pack(side='left', padx=(0, 7))
+        self._lbl(row, text=title, text_color=ACC, font=(self.UI, 12, 'bold')).pack(side='left')
         f = self._box(parent)
         f.pack(fill='x')
         f.columnconfigure(0, weight=1)
@@ -982,10 +1217,13 @@ class App:
         pad = self._pad(card)
         head = self._box(pad)
         head.pack(fill='x')
-        self.lbl_state = self._lbl(head, text='● stopped', font=(self.UI, 16, 'bold'), text_color=MUT)
-        self.lbl_state.pack(side='left')
+        self.pill_state = ctk.CTkFrame(head, fg_color=HEAD_BG, corner_radius=999, border_width=0)
+        self.pill_state.pack(side='left')
+        self.lbl_state = self._lbl(self.pill_state, text='● stopped', font=(self.UI, 14, 'bold'),
+                                   text_color=MUT, bg=HEAD_BG)
+        self.lbl_state.pack(padx=int(13 * self.SCALE), pady=int(5 * self.SCALE))
         self.lbl_res = self._lbl(head, text='', text_color=MUT, font=(self.UI, 13))
-        self.lbl_res.pack(side='right')
+        self.lbl_res.pack(side='right', pady=(4, 0))
 
         stats = self._box(pad)
         stats.pack(fill='x', pady=(14, 0))
@@ -998,6 +1236,18 @@ class App:
         # LLM advisor footprint — appears only once the advisor has actually done something
         self.lbl_adv = self._lbl(pad, text='', text_color=ACC, font=(self.MONO, 12),
                                  anchor='w', justify='left')
+        # LIVE LOG — the node's human-readable activity feed (status.json 'events')
+        logwrap = ctk.CTkFrame(pad, fg_color=STRIPE, corner_radius=10, border_width=0)
+        logwrap.pack(fill='x', pady=(10, 0))
+        self.logbox = tk.Text(logwrap, height=7, bg=STRIPE, fg=MUT, bd=0, highlightthickness=0,
+                              font=(self.MONO, 11), wrap='word', state='disabled',
+                              cursor='arrow', padx=6, pady=4)
+        for tag, col in (('round', TXT), ('llm', ACC), ('best', POS), ('polish', ACC_HI),
+                         ('warn', NEG), ('err', NEG), ('ts', FAINT), ('i', MUT)):
+            self.logbox.tag_configure(tag, foreground=col)
+        self.logbox.pack(fill='both', expand=True, padx=8, pady=6)
+        self._events_last = None
+        self._log_placeholder()
 
         self._build_signals_card(right)                  # row 1 — hidden while nothing is served
 
@@ -1027,6 +1277,14 @@ class App:
         # width/height are raw: CTk scales them itself (set_widget_scaling), unlike a tk pixel.
         self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_library, height=24, width=52)
         self.btn_lb_csv.pack(side='right', padx=(10, 0))
+        self.btn_lb_hub = self._btn(hrow, '⇪ Hub', self._push_selected_to_hub, height=24, width=64)
+        self.btn_lb_hub.pack(side='right', padx=(10, 0))
+        self._tip(self.btn_lb_hub,
+                  'One-shot push of the SELECTED alpha to AlphaHub: compute its current\n'
+                  'target weights on live data (at the active timeframe) and send ONLY\n'
+                  'the weights as your forward signal for the next bar close. The formula\n'
+                  'never leaves this machine. Push again any time — the hub keeps the\n'
+                  'last version sent before the bar closes.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -1073,9 +1331,19 @@ class App:
         vsb = ctk.CTkScrollbar(wrap, orientation='vertical', command=self.tree.yview, fg_color=CARD,
                                button_color=BORDER, button_hover_color=FAINT, width=14)
         self._vsb = vsb
-        self.tree.configure(yscrollcommand=self._on_tree_scroll)   # scroll -> load metrics for the viewport
-        self.tree.pack(side='left', fill='both', expand=True)
+        # formulas render FULL length: the column is sized to the widest row and the horizontal
+        # bar scrolls to the tail (_fit_formula_col); measuring needs the tree's own font
+        self._tree_font = tkfont.Font(family=self.MONO, size=self._px(12))
+        self._lb_need_px = 0
+        hsb = ctk.CTkScrollbar(wrap, orientation='horizontal', command=self.tree.xview,
+                               fg_color=CARD, button_color=BORDER, button_hover_color=FAINT,
+                               height=14)
+        self.tree.configure(yscrollcommand=self._on_tree_scroll,   # scroll -> load metrics for the viewport
+                            xscrollcommand=hsb.set)
         vsb.pack(side='right', fill='y', padx=(4, 0))
+        hsb.pack(side='bottom', fill='x', pady=(4, 0))
+        self.tree.pack(side='left', fill='both', expand=True)
+        self.tree.bind('<Configure>', lambda e: self._fit_formula_col())
         self.tree.bind('<Double-1>', self._on_row_open)
         self.tree.bind('<Button-3>', self._on_row_menu)             # right-click — context menu
         self.tree.bind('<Control-c>', lambda e: self._copy_formula())
@@ -1089,6 +1357,8 @@ class App:
         self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
+        self._menu.add_command(label='Push to AlphaHub (one-shot, weights only)',
+                               command=self._push_selected_to_hub)
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
         self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
@@ -1135,11 +1405,12 @@ class App:
         self.btn_pf_pdf = self._btn(ctl, 'PDF', self._pf_pdf_report, width=64)
         self.btn_pf_pdf.configure(state='disabled')
         self.btn_pf_pdf.pack(side='left', padx=(6, 0))
-        self._tip(self.btn_pf_pdf, 'Аналитический дашборд портфеля в PDF: KPI, equity,\n'
-                                   'экспозиция и обороты, структура весов, помесячные\n'
-                                   'доходности и выводы (период TEST).')
+        self._tip(self.btn_pf_pdf, 'Portfolio analytics dashboard as PDF: KPIs, equity,\n'
+                                   'exposure and turnover, weight structure, monthly\n'
+                                   'returns and conclusions (TEST period).')
         self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
-                                   'weight per asset per day on TEST (same as for a single alpha).')
+                                   'weight per asset per bar on TEST, with the asset\'s OHLCV on\n'
+                                   'that bar (same as for a single alpha).')
         self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
                                      'portfolio (all N alphas combined via the real Portfolio engine)\n'
                                      'to run daily on live Binance data — same as for a single alpha.')
@@ -1179,12 +1450,16 @@ class App:
             b.configure(state='disabled')
 
     def _stat(self, parent, label, col):
-        f = self._box(parent)
-        f.grid(row=0, column=col, sticky='w', padx=(0, 34))
-        val = self._lbl(f, text='0', text_color=TXT, font=(self.UI, 30, 'bold'), anchor='w')
+        """A stat tile: big number + caption on its own soft rounded surface."""
+        tile = ctk.CTkFrame(parent, fg_color=HEAD_BG, corner_radius=12, border_width=0)
+        tile.grid(row=0, column=col, sticky='w', padx=(0, 12))
+        f = self._box(tile, bg=HEAD_BG)
+        f.pack(padx=int(16 * self.SCALE), pady=int(9 * self.SCALE))
+        val = self._lbl(f, text='0', text_color=TXT, font=(self.UI, 28, 'bold'),
+                        bg=HEAD_BG, anchor='w')
         val.pack(anchor='w')
-        self._lbl(f, text=label.upper(), text_color=FAINT, font=(self.UI, 11),
-                     anchor='w').pack(anchor='w')
+        self._lbl(f, text=label.upper(), text_color=FAINT, font=(self.UI, 10, 'bold'),
+                  bg=HEAD_BG, anchor='w').pack(anchor='w')
         return val
 
     # ---------- helpers ----------
@@ -1196,7 +1471,9 @@ class App:
         self.e_uni.configure(state='disabled' if self.v_uniall.get() else 'normal')
 
     def _reset(self):
+        keep = {k: self.cfg.get(k) for k in ('theme', 'settings_open')}   # appearance, not search
         self.cfg = dict(DEFAULTS)
+        self.cfg.update(keep)
         try:
             os.remove(SETTINGS)
         except OSError:
@@ -1326,6 +1603,8 @@ class App:
             self.tree.delete(i)
         self._treesig = None
         self._shown = []
+        self._lb_need_px = 0                              # collapse the formula column back
+        self._fit_formula_col()
         self._lib_cache = {'mtime': None, 'all': [], 'families': [], 'computing': False,
                            'dirty': False, 'ts': 0.0, 'computed': False, 'select': None}
         self._history = []
@@ -1337,7 +1616,7 @@ class App:
         self.lbl_adv.configure(text='')
         if self.lbl_adv.winfo_ismapped():
             self.lbl_adv.pack_forget()
-        self.lbl_state.configure(text='● stopped', fg=MUT)
+        self._state_pill('● stopped', MUT)
         self._reset_portfolio_ui()                        # clear the Portfolio panel too
 
     def _apply_cfg_to_widgets(self):
@@ -1351,8 +1630,10 @@ class App:
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
         self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
-        self.v_advcalls.set(c.get('advisor_max_calls', 8))
+        self.v_advcalls.set(c.get('advisor_max_calls', 1))
         self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
+        self.v_huburl.set(c.get('hub_url', ''))
+        self.v_hubname.set(c.get('hub_name', 'my-node'))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -1365,6 +1646,12 @@ class App:
     def _set_running(self, running):
         self.btn_start.configure(state='disabled' if running else 'normal')
         self.btn_stop.configure(state='normal' if running else 'disabled')
+
+    def _state_pill(self, text, color):
+        """The status pill: text + a soft wash of the state colour behind it."""
+        tint = HEAD_BG if color == MUT else _mix(color, CARD, 0.87)
+        self.pill_state.configure(fg_color=tint)
+        self.lbl_state.configure(text=text, fg=color, bg=tint)
 
     # ---------- timeframe-aware paths ----------
     def _on_tf_change(self, _evt=None):
@@ -1472,9 +1759,9 @@ class App:
                            ALPHANODE_ADVISOR_MODEL=c['advisor_model'])
             else:
                 messagebox.showinfo(
-                    'Advisor has no key',
-                    'The LLM advisor is ON but no Anthropic API key is set — the node will run '
-                    'a plain GA search.\nPaste a key in NEURO ADVISOR (and press Check key), '
+                    'Analyst has no key',
+                    'The round analyst is ON but no Anthropic API key is set — the node will '
+                    'search without reports.\nPaste a key in NEURO ANALYST (and press Check key), '
                     'then restart the search.', parent=self.root)
         self.proc = subprocess.Popen(_child_cmd('node'), env=env,
                                      cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
@@ -1852,6 +2139,25 @@ class App:
         self._sig_health[port] = txt
 
     # ---------- status polling ----------
+    def _log_placeholder(self):
+        self.logbox.configure(state='normal')
+        self.logbox.delete('1.0', 'end')
+        self.logbox.insert('end', 'live log — round starts, advisor consults, new champions and '
+                                  'round summaries will appear here once the node runs.', 'i')
+        self.logbox.configure(state='disabled')
+
+    def _render_events(self, evs):
+        """Rebuild the LIVE LOG feed (newest at the bottom, auto-scrolled, colored by kind)."""
+        at_end = self.logbox.yview()[1] > 0.999          # don't yank the view if the user scrolled up
+        self.logbox.configure(state='normal')
+        self.logbox.delete('1.0', 'end')
+        for e in evs[-80:]:
+            self.logbox.insert('end', f"{e.get('ts', '')}  ", 'ts')
+            self.logbox.insert('end', f"{e.get('t', '')}\n", e.get('k', 'i'))
+        if at_end:
+            self.logbox.see('end')
+        self.logbox.configure(state='disabled')
+
     def _poll(self):
         running = bool(self.proc and self.proc.poll() is None)
         self._set_running(running)
@@ -1863,7 +2169,7 @@ class App:
         if st:
             state = st.get('state', '—')
             color = {'running': POS, 'starting': ACC}.get(state, MUT)
-            self.lbl_state.configure(text=f'● {"running" if state=="running" else state}', fg=color)
+            self._state_pill(f'● {"running" if state == "running" else state}', color)
             vol = st.get('target_vol')
             vol_s = f' · vol {vol:g}' if isinstance(vol, (int, float)) else ''
             self.lbl_res.configure(text=f'{st.get("cpu_percent","?")}% · {st.get("n_jobs","?")}/{st.get("cores","?")} cores '
@@ -1872,30 +2178,32 @@ class App:
             self.s_trials.configure(text=f'{st.get("trials_total", 0):,}')
             self.s_found.configure(text=str(st.get('found', len(st.get('best', [])))))
             self.lbl_cur.configure(text=(st.get('current', '') + '   ' + st.get('gen', ''))[:120])
-            adv = st.get('advisor') or {}
-            if adv.get('error'):
+            anst = st.get('analyst') or {}
+            ana = st.get('analysis') or {}
+            if anst.get('error'):
                 self.lbl_adv.configure(
-                    fg=NEG, text=f'🧠 LLM advisor: {adv["error"]} — running plain GA '
-                                 f'(fix the key in Settings → NEURO ADVISOR, press Check key)'[:150])
+                    fg=NEG, text=f'🧠 analyst: {anst["error"]} — search runs without reports '
+                                 f'(fix the key in Settings → NEURO ANALYST, press Check key)'[:150])
                 if not self.lbl_adv.winfo_ismapped():
                     self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
-            elif adv.get('consults') or adv.get('lib_llm'):
-                alog = st.get('advisor_log') or []
-                last = ('   ·   ' + alog[-1]) if alog else ''
+            elif ana:
                 self.lbl_adv.configure(
-                    fg=ACC, text=(f'🧠 LLM advisor: {adv.get("consults", 0)} consults · '
-                                  f'{adv.get("injected", 0)} formulas injected · '
-                                  f'{adv.get("lib_llm", 0)} champions in library{last}')[:150])
+                    fg=ACC, text=(f'🧠 analyst · after round {ana.get("round")}: '
+                                  f'{ana.get("summary", "")}')[:150])
                 if not self.lbl_adv.winfo_ismapped():
                     self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
             elif self.lbl_adv.winfo_ismapped():
                 self.lbl_adv.pack_forget()
+            evs = st.get('events') or []
+            if evs and evs != self._events_last:
+                self._events_last = evs
+                self._render_events(evs)
             self._refresh_leaderboard(st.get('best', []))
             self._history = st.get('history', [])
             self._draw_chart()
         if not running and (not st or st.get('state') != 'running'):
             if not (self.proc and self.proc.poll() is None):
-                self.lbl_state.configure(text='● stopped', fg=MUT)
+                self._state_pill('● stopped', MUT)
         try:
             while True:
                 self.logq.get_nowait()
@@ -1938,7 +2246,7 @@ class App:
             m = (hi + lo) / 2
             lo, hi = m - 0.15, m + 0.15
         S = self.SCALE
-        padL, padR, padT, padB = (int(v * S) for v in (56, 18, 18, 24))
+        padL, padR, padT, padB = (int(v * S) for v in (56, 18, 32, 24))
         n = len(pts)
         plotw, ploth = w - padL - padR, h - padT - padB
         base_y = padT + ploth
@@ -1949,23 +2257,37 @@ class App:
         def Y(v):
             return padT + ploth * (1 - (v - lo) / (hi - lo))
 
-        for frac in (0.0, 0.5, 1.0):                       # grid + Y labels
+        k = max(2, min(4, int(ploth / (26 * S)) + 1))      # each Y label needs ~26px of air
+        for frac in (i / (k - 1) for i in range(k)):       # dashed grid + Y labels
             val = lo + (hi - lo) * frac
             y = Y(val)
-            cv.create_line(padL, y, w - padR, y, fill=GRID)
+            cv.create_line(padL, y, w - padR, y, fill=GRID, dash=(2, 5))
             cv.create_text(padL - 9 * S, y, text=f'{val:+.2f}', anchor='e', fill=FAINT,
                            font=self._font(self.UI, 10))
 
         line = []
         for i, (_, v) in enumerate(pts):
             line += [X(i), Y(v)]
-        cv.create_polygon(padL, base_y, *line, X(n - 1), base_y, fill=ACC_SOFT, outline='')  # fill
-        cv.create_line(*line, fill=ACC, width=2, capstyle='round', joinstyle='round')
+        # fake gradient (canvas has no alpha): a faint full fill, then a stronger ribbon that
+        # hugs the line — reads as a glow fading toward the baseline
+        cv.create_polygon(padL, base_y, *line, X(n - 1), base_y,
+                          fill=_mix(ACC_SOFT, CARD, 0.45), outline='')
+        ribbon = list(line)
+        for i in range(n - 1, -1, -1):
+            ribbon += [X(i), min(Y(pts[i][1]) + 14 * S, base_y)]
+        cv.create_polygon(*ribbon, fill=ACC_SOFT, outline='')
+        cv.create_line(*line, fill=ACC, width=2.5, capstyle='round', joinstyle='round')
         lx, ly = X(n - 1), Y(ys[-1])
-        r_ = 4 * S
-        cv.create_oval(lx - r_, ly - r_, lx + r_, ly + r_, fill=ACC, outline=CARD, width=2)
-        cv.create_text(w - padR, padT - 6 * S, text=f'fitness {ys[-1]:+.2f}', anchor='ne',
-                       fill=ACC, font=self._font(self.UI, 13, 'bold'))
+        cv.create_oval(lx - 7 * S, ly - 7 * S, lx + 7 * S, ly + 7 * S,
+                       fill=_mix(ACC, CARD, 0.72), outline='')
+        cv.create_oval(lx - 4 * S, ly - 4 * S, lx + 4 * S, ly + 4 * S,
+                       fill=ACC, outline=CARD, width=2)
+        txt = f'fitness {ys[-1]:+.2f}'
+        f12 = self._font(self.UI, 12, 'bold')
+        bx1, by0 = w - padR, 3 * S
+        bx0, by1 = bx1 - f12.measure(txt) - int(20 * S), by0 + int(23 * S)
+        _rrect(cv, bx0, by0, bx1, by1, int(11 * S), fill=ACC_SOFT, outline='')
+        cv.create_text((bx0 + bx1) / 2, (by0 + by1) / 2 + 1, text=txt, fill=ACC_HI, font=f12)
         cv.create_text(padL, h - 6 * S, text=f'round {pts[0][0]}', anchor='w', fill=FAINT,
                        font=self._font(self.UI, 10))
         cv.create_text(w - padR, h - 6 * S, text=f'round {pts[-1][0]}', anchor='e', fill=FAINT,
@@ -2022,7 +2344,7 @@ class App:
     def _update_headings(self):
         for c, txt in self._HEAD.items():
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
-            self.tree.heading(c, text=txt + arrow)
+            self.tree.heading(c, text=txt.upper() + arrow)
 
     def _lb_head_text_for(self, select):
         scope = 'every alpha' if self._lb_mode == 'all' else 'best alpha per family'
@@ -2132,6 +2454,7 @@ class App:
         for i in self.tree.get_children():
             self.tree.delete(i)
         self._row_items = {}
+        need = 0
         for i, c in enumerate(best):
             t = c.get('test') if isinstance(c.get('test'), dict) else {}
             ts = t.get('sharpe')                         # honest held-out OOS — colored by it
@@ -2139,9 +2462,10 @@ class App:
             sign = 'pos' if (ts is not None and ts >= 0) else ('neg' if ts is not None else 'even')
             stripe = 'odd' if i % 2 else 'even'
             formula = c.get('formula', '')
-            f = formula if len(formula) <= 78 else formula[:78] + '…'
+            f = formula                                  # full length — the column fits the widest row
             if c.get('origin') == 'llm':                 # proposed by the advisor, survived selection
                 f = '🧠 ' + f
+            need = max(need, self._tree_font.measure(f))
             m = self._metrics_cache.get(formula)
             ls, act, win = self._fmt_metrics(m)
             item = self.tree.insert('', 'end', values=(
@@ -2149,6 +2473,8 @@ class App:
                 f'{ts:+.2f}' if ts is not None else '—', ls, act, win, f),
                 tags=(sign, stripe))
             self._row_items[formula] = item
+        self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
+        self._fit_formula_col()
         if top:
             self.tree.yview_moveto(top)                  # a background recompute must not yank you to the top
         self.root.after_idle(self._pump_metrics)         # trade stats for what is actually on screen
@@ -2162,6 +2488,19 @@ class App:
         self.lbl_lb_head.configure(text=self._lb_head_text)
         self._treesig = None                             # force a redraw with the other set
         self._render_lb(self._lb_rows())
+
+    def _fit_formula_col(self):
+        """Size the formula column to the widest row (full formulas, no ellipsis). Wider than
+        the visible area -> the horizontal scrollbar takes over; narrower -> the column still
+        stretches to fill the card. Re-run on every render and on tree resize."""
+        try:
+            fixed = sum(int(self.tree.column(c, 'width'))
+                        for c in ('rank', 'fit', 'test', 'ls', 'act', 'win'))
+        except tk.TclError:                              # theme rebuild mid-flight
+            return
+        avail = self.tree.winfo_width() - fixed - int(4 * self.SCALE)
+        w = max(self._lb_need_px, avail, int(260 * self.SCALE))
+        self.tree.column('formula', width=w, stretch=False)
 
     def _on_tree_scroll(self, first, last):
         """Tk's yscrollcommand: keep the scrollbar in sync AND (debounced) load metrics for the rows
@@ -2292,6 +2631,73 @@ class App:
             self._open_plot(self._shown[idx])
 
     # ---------- copy formula ----------
+    def _push_selected_to_hub(self):
+        """Leaderboard 'Push → Hub' — the MANUAL one-shot flow: you pick an alpha, the node
+        computes its CURRENT target weights on live data and pushes them (with the formula
+        disclosed) to the hub ONCE. No background service — push again tomorrow, or push a
+        different alpha (same bar = the hub keeps the last write). Simple to test and debug;
+        the automatic serve+push loop still exists via Settings → ALPHAHUB + Serve."""
+        c = self._selected_champ()
+        if not c or not c.get('formula'):
+            messagebox.showinfo('AlphaHub', 'Select an alpha in the leaderboard first.',
+                                parent=self.root)
+            return
+        hub_url = (self.cfg.get('hub_url') or '').strip()
+        if not hub_url:
+            messagebox.showinfo(
+                'AlphaHub', 'No hub configured.\nSettings → ALPHAHUB: set the Hub URL and '
+                            'press Register, then try again.', parent=self.root)
+            return
+        tf = self._tf()                                   # any timeframe: weights via fastsim
+        formula = c['formula']
+        if not messagebox.askyesno(
+                'AlphaHub', f'Push this alpha to {hub_url}?\n\n{formula}\n\n'
+                            f'The node will fetch fresh {tf} candles (+ funding), compute the '
+                            'current target weights and send ONLY the weights as your forward '
+                            f'signal for the next {tf} close. The formula never leaves this '
+                            'machine.', parent=self.root):
+            return
+        cfg = self.cfg
+        if cfg.get('universe_all', True):
+            try:
+                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
+            except Exception as e:                        # noqa: BLE001
+                messagebox.showerror('AlphaHub', f'Cannot read the loaded data: {e}',
+                                     parent=self.root)
+                return
+        else:
+            tickers = [x.strip().upper() for x in cfg.get('universe_list', '').split(',')
+                       if x.strip()]
+        self._flash_lb(f'⇪ computing current {tf} weights on live data…', ms=120000)
+        holder = {}
+
+        def work():
+            try:
+                import hub_client
+                import hub_push
+                ident = hub_client.ensure_identity(HUB_ID_FILE)
+                weights, meta = hub_push.compute_weights(
+                    formula, tickers, tf, self.cfg['target_vol'], self.cfg['exec_cost'],
+                    log=lambda *a: None)
+                iso = hub_push.bar_close_iso(tf)
+                ok, msg = hub_client.push(hub_url, ident, tf, iso, weights)
+                holder['res'] = (ok, f'{msg} · {len(weights)} positions · bar {iso}'
+                                 if ok else msg)
+            except Exception as e:                        # noqa: BLE001
+                holder['res'] = (False, f'{type(e).__name__}: {str(e)[:120]}')
+
+        threading.Thread(target=work, daemon=True).start()
+
+        def poll():
+            if 'res' not in holder:
+                self.root.after(300, poll)
+                return
+            ok, msg = holder['res']
+            self._flash_lb(('✓ hub: ' if ok else '✗ hub: ') + msg, ms=8000)
+            if not ok:
+                messagebox.showwarning('AlphaHub', f'Push failed:\n{msg}', parent=self.root)
+        self.root.after(300, poll)
+
     def _selected_champ(self):
         item = self.tree.focus() or (self.tree.selection()[0] if self.tree.selection() else '')
         if not item:
@@ -2437,23 +2843,27 @@ class App:
             out.append(r)
         self._save_csv(path, header, out, 'alphas')
 
-    # ---------- PORTFOLIO: combine top-N via the real engine (TEST- or fitness-ranked) ----------
+    # ---------- PORTFOLIO: combine top-N (1d: real engine; intraday: fastsim, same combiner) ----------
     def _build_portfolio(self):
-        if self._tf_gate('The portfolio builder'):
-            return
         if self._pf_proc and self._pf_proc.poll() is None:
             return                                       # already building
         n = self._gi(self.v_pfn, 6)
         sel = 'base' if self.v_pfsel.get() == 'fitness' else 'test'
+        eng = 'real engine, ~1–2 min' if self._tf() == '1d' else f'{self._tf()} fastsim, ~seconds'
         self.btn_pf.configure(state='disabled')
         self.lbl_pf_m.configure(text='', fg=MUT)
         self.lbl_pf.configure(text=f'building portfolio from top-{n} by '
                                    f'{"TEST" if sel == "test" else "fitness min(train,val)"} '
-                                   '(real engine, ~1–2 min)…')
+                                   f'({eng})…')
         env = dict(os.environ)
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
                    ALPHANODE_TF=self._tf(),
-                   ALPHANODE_CONFIG_INI=apppaths.config_ini())
+                   ALPHANODE_CONFIG_INI=apppaths.config_ini(),
+                   # the GUI's date fields, node.py-style — the ini only has daily defaults
+                   ALPHANODE_TRAIN_START=self.cfg.get('train_start', ''),
+                   ALPHANODE_VAL_START=self.cfg.get('val_start', ''),
+                   ALPHANODE_TEST_START=self.cfg.get('test_start', ''),
+                   ALPHANODE_TEST_END=self.cfg.get('test_end', ''))
         try:
             self._pf_proc = subprocess.Popen(
                 _child_cmd('portfolio') + ['--top', str(n), '--select', sel,
@@ -2501,7 +2911,8 @@ class App:
             note = ('⚠ members picked by TEST — its numbers are optimistic (cherry-pick); '
                     'validate with Paper')
             picked = 'by TEST OOS'
-        self.lbl_pf.configure(text=f'top-{doc.get("n")} {picked} combined via the engine  ·  '
+        eng = 'the real engine' if doc.get('tf', '1d') == '1d' else f'fastsim on {doc["tf"]} bars'
+        self.lbl_pf.configure(text=f'top-{doc.get("n")} {picked} combined via {eng}  ·  '
                                 f'TEST {doc.get("test", "")}  ·  built in '
                                 f'{doc.get("built_secs", "?")}s  ·  {note}')
         sh = m.get('sharpe')
@@ -2692,9 +3103,9 @@ class App:
                   width=176).pack(side='left', padx=(8, 0))
         pdf_btn = self._btn(btnrow, 'PDF report', lambda: self._pdf_report_alpha(champ), width=110)
         pdf_btn.pack(side='left', padx=(8, 0))
-        self._tip(pdf_btn, 'Аналитический дашборд в PDF: KPI, equity и просадка,\n'
-                           'экспозиция и обороты, структура весов, помесячные\n'
-                           'доходности, разбивка TRAIN/VAL/TEST и выводы.')
+        self._tip(pdf_btn, 'Analytics dashboard as PDF: KPIs, equity and drawdown,\n'
+                           'exposure and turnover, weight structure, monthly returns,\n'
+                           'TRAIN/VAL/TEST breakdown and conclusions.')
 
         body = self._box(win)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 14))
@@ -2738,13 +3149,14 @@ class App:
             cfg = self._build_plot_cfg()
             _tk, panel, market, _basket = self._get_market(cfg)
             wide = self._alpha_weights_wide(formula, cfg, market, panel)
-            self._signals_from_wide(wide, cfg['splits'], path)
+            self._signals_from_wide(wide, cfg['splits'], path, panel=panel)
         except Exception as e:                                     # noqa: BLE001
             messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
 
-    def _signals_from_wide(self, wide, splits, path):
-        """Wide target-weight table (index=date, cols=tickers) -> tidy CSV (row = one position) +
-        the 'what to hold now' dialog. Shared by a single alpha and the combined portfolio."""
+    def _signals_from_wide(self, wide, splits, path, panel=None):
+        """Wide target-weight table (index=date, cols=tickers) -> tidy CSV (row = one position,
+        with the asset's OHLCV on that bar when `panel` is given) + the 'what to hold now'
+        dialog. Shared by a single alpha and the combined portfolio."""
         import numpy as np
         wide = wide.copy()
         wide.index.name = 'date'
@@ -2758,7 +3170,16 @@ class App:
                                    np.where(d < splits['test'][0], 'VAL', 'TEST'))
         long['_aw'] = long['weight'].abs()
         long = long.sort_values(['date', '_aw'], ascending=[True, False]).drop(columns='_aw')
-        long = long[['date', 'segment', 'ticker', 'side', 'weight', 'weight_pct']]
+        cols = ['date', 'segment', 'ticker', 'side', 'weight', 'weight_pct']
+        if panel is not None:                                      # the asset's bar next to its weight
+            ii = panel['close'].index.get_indexer(long['date'])
+            jj = panel['close'].columns.get_indexer(long['ticker'])
+            ok = (ii >= 0) & (jj >= 0)
+            for c in ('open', 'high', 'low', 'close', 'volume'):
+                arr = panel[c].to_numpy()
+                long[c] = np.where(ok, arr[np.clip(ii, 0, None), np.clip(jj, 0, None)], np.nan)
+            cols += ['open', 'high', 'low', 'close', 'volume']
+        long = long[cols]
         long.to_csv(path, index=False)
         last = wide.iloc[-1]
         pos = sorted([(t, float(v)) for t, v in last.items() if abs(v) > 0.0005],
@@ -2861,7 +3282,7 @@ class App:
         seg = {k: dict(champ[k]) for k in ('train', 'val', 'test')
                if isinstance(champ.get(k), dict)}
         payload = {'kind': 'alpha', 'formula': formula, 'seg_metrics': seg,
-                   'title': 'AlphaNode — отчёт по альфе', 'subtitle': formula,
+                   'title': 'AlphaNode — alpha report', 'subtitle': formula,
                    'stamp': f'AlphaNode · {datetime.now():%d.%m.%Y %H:%M} · {name}',
                    **self._worker_cfg()}
         self._run_pdf_report(payload, path)
@@ -2881,7 +3302,7 @@ class App:
             return
         slim = {k: doc.get(k) for k in ('weights', 'equity', 'test', 'metrics', 'n')}
         payload = {'kind': 'portfolio', 'doc': slim,
-                   'title': f'AlphaNode — портфель top-{doc.get("n", "?")}',
+                   'title': f'AlphaNode — top-{doc.get("n", "?")} portfolio',
                    'subtitle': ' + '.join(doc.get('formulas', []))[:110],
                    'stamp': f'AlphaNode · {datetime.now():%d.%m.%Y %H:%M} · portfolio '
                             f'top-{doc.get("n", "?")} · TEST {doc.get("test", "")}',
@@ -2908,7 +3329,12 @@ class App:
             w = doc['weights']
             idx = pd.to_datetime(w['dates']).tz_localize('UTC')   # match the tz-aware splits
             wide = pd.DataFrame(np.array(w['W'], dtype=float), index=idx, columns=w['tickers'])
-            self._signals_from_wide(wide, self._build_plot_cfg()['splits'], path)
+            cfg = self._build_plot_cfg()
+            try:                                                   # OHLCV columns are best-effort:
+                _tk, panel, _market, _b = self._get_market(cfg)    # no data snapshot -> weights-only CSV
+            except Exception:                                      # noqa: BLE001
+                panel = None
+            self._signals_from_wide(wide, cfg['splits'], path, panel=panel)
         except Exception as e:                                     # noqa: BLE001
             messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
 
@@ -2977,7 +3403,8 @@ class App:
             self._lbl(r, text=t, text_color=TXT, font=(self.MONO, 13), anchor='w').pack(side='left')
             self._lbl(r, text=f'{w * 100:+.1f}%', text_color=col, font=(self.MONO, 13, 'bold'),
                          anchor='e').pack(side='right', padx=(0, 8))
-        self._lbl(frm, text=f'Full history ({n_days} days) — in the CSV: date, ticker, side, weight_pct.',
+        self._lbl(frm, text=f'Full history ({n_days} bars) — in the CSV: date, ticker, side, '
+                            'weight, weight_pct + the asset\'s open/high/low/close/volume.',
                      text_color=MUT, font=(self.UI, 12), wraplength=400, justify='left',
                      anchor='w').pack(anchor='w', pady=(10, 0))
         self._btn(frm, 'Close', win.destroy, width=80).pack(anchor='e', pady=(10, 0))

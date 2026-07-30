@@ -92,8 +92,8 @@ def main():
     uni = cfg.get('instruments')
     print(f'  Universe: {("all from data.pickle" if not uni else f"{len(uni)} pairs: " + ", ".join(uni))}')
     if cfg.get('advisor'):
-        print(f'  Advisor: ON — {cfg["advisor_model"]} (patience {cfg["advisor_patience"]}, '
-              f'max {cfg["advisor_max_calls"]} calls)')
+        print(f'  Analyst: ON — {cfg["advisor_model"]} reviews the library after node rounds '
+              f'(the search itself is pure GA)')
     sp = cfg['splits']
     print(f'  TRAIN {sp["train"][0].date()}..{sp["train"][1].date()}  '
           f'VAL {sp["val"][0].date()}..{sp["val"][1].date()}  '

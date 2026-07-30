@@ -16,8 +16,11 @@ import pandas as pd
 
 EPS = 1e-9
 
-# windows for time-series operators (the numeric "knobs" evolution tunes)
+# windows for time-series operators. The grid is the PRIOR for freshly generated trees
+# (log-spaced, covers intrabar noise to multi-month trends); mutation and champion polish
+# then tune windows CONTINUOUSLY to any integer in [W_MIN, W_MAX] (genome.mutate_window_value).
 WINDOWS = [2, 3, 5, 7, 10, 14, 20, 30, 50, 60, 100, 120, 200]
+W_MIN, W_MAX = 2, 200
 
 # terminal features (tree leaves). Base OHLCV + ret, plus derived same-day transforms
 # (vwap/range/body/dvol/logret) built in evaluator.add_derived_features, plus the perp funding

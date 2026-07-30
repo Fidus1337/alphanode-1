@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neuro Advisor — AlphaNode Docs</title>
+<link rel="stylesheet" href="../style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⛏️</text></svg>">
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a class="logo" href="../index.html">Alpha<b>Node</b></a>
+    <div class="links">
+      <a href="quickstart.html">Quickstart</a>
+      <a href="gui.html">GUI guide</a>
+      <a href="timeframes.html">Timeframes</a>
+      <a href="advisor.html">Neuro Advisor</a>
+      <a href="alphahub.html">AlphaHub</a>
+    </div>
+    <a class="btn small" href="../index.html#pricing">Get AlphaNode</a>
+  </div>
+</nav>
+
+<div class="doc wrap">
+  <div class="crumbs"><a href="../index.html">Home</a> / Docs / Neuro Advisor</div>
+  <h1>Neuro Advisor</h1>
+  <p>An optional LLM co-pilot for the search. The division of labour is strict:
+  <b>the LLM proposes, the simulator judges.</b> Claude reads the current champions and the
+  search state, proposes new formula candidates — and every proposal then passes through
+  exactly the same simulation, fitness, degeneracy and correlation filters as any random
+  mutation. The LLM cannot score, rank or promote anything.</p>
+
+  <h2>Why it helps</h2>
+  <p>Genetic search is great at refining structures it has already found and bad at inventing
+  a structurally new idea mid-run. The advisor fires when the search plateaus and injects
+  candidates from a different distribution — priced volatility patterns, funding carry
+  structures, cross-sectional twists — that evolution then refines. Advisor-born alphas that
+  survive are often the library's most distinctive entries.</p>
+
+  <h2>Setup</h2>
+  <ol>
+    <li>In <b>NEURO ADVISOR</b>, tick <b>enable</b>.</li>
+    <li>Paste your Anthropic API key and press <b>Check key</b> — the GUI probes the selected
+      model live and tells you exactly what works or fails.</li>
+    <li>Pick a model and a per-round consult cap. Start with 1 consult/round.</li>
+  </ol>
+  <table>
+    <tr><th>Model</th><th>Character</th></tr>
+    <tr><td><code>claude-opus-5</code></td><td>Deepest, most original proposals (default).</td></tr>
+    <tr><td><code>claude-sonnet-5</code></td><td>Great balance of quality and cost.</td></tr>
+    <tr><td><code>claude-haiku-4-5</code></td><td>Cheapest — still useful for widening the search.</td></tr>
+  </table>
+
+  <h2>Cost control</h2>
+  <p><b>Max LLM consults</b> is a hard per-round cap. At <code>1</code>, the advisor consults
+  once per search round at most — typically cents per day; at <code>0</code> it never fires.
+  LLM usage is billed by Anthropic to your key; AlphaNode adds no markup and makes no calls
+  beyond the cap.</p>
+
+  <h2>Privacy &amp; key handling</h2>
+  <ul>
+    <li>The key is stored in a separate local file with <code>0600</code> permissions —
+      never in settings files, never in exports, never in logs.</li>
+    <li>Advisor requests go to Anthropic's API only, and contain formulas/metrics of the
+      current search — no personal data, no account info.</li>
+  </ul>
+
+  <h2>Transparency</h2>
+  <p>You always see what the LLM did and whether it earned its keep:</p>
+  <ul>
+    <li>every advisor-born alpha carries a <b>🧠 origin badge</b> through the leaderboard,
+      the library and CSV exports;</li>
+    <li>the status line shows live consult stats — consults / proposed / accepted;</li>
+    <li>failures are loud: an invalid key or API error is shown in red in the GUI and on the
+      status page, never silently swallowed.</li>
+  </ul>
+
+  <div class="note">The advisor is strictly additive: with it off (or its budget at 0), the
+  node is the classic GP search, byte-for-byte. You can A/B it per round and compare 🧠 vs
+  GA-born entries in your own library.</div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div>© 2026 AlphaNode · hypothetical backtests, not investment advice.</div>
+    <div><a href="../index.html">Home</a> · <a href="mailto:yurbusht@gmail.com">Contact</a></div>
+  </div>
+</footer>
+
+<script src="../app.js" defer></script>
+</body>
+</html>
