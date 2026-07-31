@@ -16,8 +16,6 @@
       <a href="quickstart.html">Quickstart</a>
       <a href="gui.html">GUI guide</a>
       <a href="timeframes.html">Timeframes</a>
-      <a href="advisor.html">Neuro Advisor</a>
-      <a href="alphahub.html">AlphaHub</a>
     </div>
     <a class="btn small" href="../index.html#pricing">Get AlphaNode</a>
   </div>
@@ -26,7 +24,7 @@
 <div class="doc wrap">
   <div class="crumbs"><a href="../index.html">Home</a> / Docs / Timeframes</div>
   <h1>Timeframes</h1>
-  <p>The whole pipeline — data, search, metrics, portfolio, hub pushes — follows one bar-size
+  <p>The whole pipeline — data, search, metrics, portfolio — follows one bar-size
   setting. Everything that depends on the bar size (annualization, volatility windows,
   calendar grid, funding aggregation) is adjusted automatically; daily behaviour reproduces
   the classic daily engine exactly.</p>
@@ -54,10 +52,10 @@
   <p>AlphaNode deliberately runs two simulator implementations:</p>
   <table>
     <tr><th>Where</th><th>Engine</th><th>Why</th></tr>
-    <tr><td>Search, leaderboard, intraday portfolio, intraday hub pushes</td>
+    <tr><td>Search, leaderboard, intraday portfolio</td>
       <td>fastsim — a compiled numpy port</td>
       <td>~100× faster; its numbers are exactly what the search optimized, on any bar size.</td></tr>
-    <tr><td>Daily portfolio, paper bundle, signal API, daily hub pushes</td>
+    <tr><td>Daily portfolio, paper bundle, signal API</td>
       <td>the real pandas engine</td>
       <td>Matches the paper/serve products bar-for-bar.</td></tr>
   </table>
@@ -71,9 +69,6 @@
   available to formulas as the <code>funding</code> terminal — so carry harvesting and
   funding-momentum alphas are part of the search space, on every timeframe.</p>
 
-  <div class="note">15m note: pushes to AlphaHub must land before the bar closes. Weight
-  computation takes seconds, so this is comfortable — but don't start a push 3 seconds before
-  the close.</div>
 </div>
 
 <footer>

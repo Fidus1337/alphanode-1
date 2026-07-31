@@ -158,7 +158,7 @@ h3 { font-size: 17.5px; margin-bottom: 8px; }
   font-weight: 700; }
 .split ul.checks li b { color: var(--fg); font-weight: 600; }
 
-/* mini widgets (advisor proposal / hub leaderboard) */
+/* mini widgets (terminal-style feature cards) */
 .widget { background: var(--card); border: 1px solid var(--line); border-radius: 14px;
   padding: 20px 22px; box-shadow: 0 30px 70px -40px rgba(0, 0, 0, .9); }
 .widget .whead { font: 12px var(--mono); color: var(--faint); text-transform: uppercase;
@@ -176,6 +176,7 @@ code, .doc code { font: 13px var(--mono); background: #0a0e14; border: 1px solid
 
 /* ---- pricing ---- */
 .plans { display: grid; gap: 20px; grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  max-width: 780px; margin-inline: auto;
   margin-top: 56px; }
 .price-card { background: var(--card); border: 1px solid var(--line); border-radius: 16px;
   padding: 28px; display: flex; flex-direction: column; position: relative;
