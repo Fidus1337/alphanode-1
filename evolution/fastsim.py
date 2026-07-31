@@ -75,7 +75,7 @@ def precompute_market(panel, tk, raw=None, vol_window=30):
 
 def _sim_kernel_impl(A, C, R, V, E, F, vol_target, exec_rate, inertia, ann, ewma_lambda, out, wl):
     """The sequential day loop -> capital[T]. `out` (N+1 floats) additionally receives the
-    LAST bar's dollar weights [0:N] and leverage [N] — the live target for AlphaHub pushes.
+    LAST bar's dollar weights [0:N] and leverage [N] — the live target for signal serving.
     `wl` ([T,N], or [0,0] = off) receives each bar's weight×leverage — the strategy's position
     as a fraction of capital, exactly what quantpylib's Portfolio sums across strategies.
 
@@ -194,8 +194,8 @@ def fast_sim(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.1
 def fast_sim_weights(alpha_values, market, vol_target=0.30, exec_rate=0.001, inertia=0.10,
                      ann=TARGET_ANN, ewma_lambda=EWMA_LAMBDA):
     """Target DOLLAR weights on the LAST bar (sum(|w|)=1; longs>0, shorts<0) + leverage —
-    the live payload for an AlphaHub push. Same kernel as fast_sim, so any timeframe the
-    search supports is supported here (ann/ewma_lambda come from timeframe.py)."""
+    the live signal payload. Same kernel as fast_sim, so any timeframe the search
+    supports is supported here (ann/ewma_lambda come from timeframe.py)."""
     C, R, V, base_elig = market['C'], market['R'], market['V'], market['base_elig']
     F = market.get('F')
     if F is None:

@@ -103,13 +103,11 @@ def _selfcheck_body(out):
     import pdf_worker                                       # noqa: F401  (--role pdfreport worker)
     out('fetch/signal/pdf imports: ok')
 
-    # the round analyst and the AlphaHub client are lazy imports at runtime — a bundle that
-    # forgot anthropic/cryptography would only break on the user's first click; fail HERE instead
+    # the round analyst is a lazy import at runtime — a bundle that forgot the anthropic SDK
+    # would only break on the user's first click; fail HERE instead
     import advisor                                         # noqa: F401
     import anthropic
-    import hub_client, hub_push                            # noqa: F401
-    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey  # noqa: F401
-    out('analyst/hub imports: ok (anthropic', anthropic.__version__ + ')')
+    out('analyst imports: ok (anthropic', anthropic.__version__ + ')')
 
     # render a REAL 4-page analytics PDF on synthetic data: exercises matplotlib Agg + FreeType
     # (incl. Cyrillic labels) + PdfPages inside the frozen bundle — the same code path the GUI's

@@ -79,7 +79,7 @@ def build_panel(data_path, start, end, instruments=None, freq='D'):
 
 def panel_from_raw(tk, raw, start, end, freq='D'):
     """The feature panel from an in-memory {ticker: OHLCV(+funding) df} dict — same maths as
-    build_panel, no pickle needed (live AlphaHub pushes feed freshly fetched candles here)."""
+    build_panel, no pickle needed (live signal computation feeds freshly fetched candles here)."""
     idx = pd.date_range(start=start, end=end, freq=freq, tz='UTC')
 
     # IMPORTANT (look-ahead guard): SIGNAL features are ffill only, NO bfill.

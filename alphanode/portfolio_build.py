@@ -1,7 +1,7 @@
 """Build a combined PORTFOLIO from the top-N library alphas and write metrics + equity to JSON
 for the GUI panel.
 
-Two engines, chosen by the active timeframe (same split as hub_push.py, same reasons):
+Two engines, chosen by the active timeframe:
   1d       — the project's real `Portfolio` engine (quantpylib): matches paper/Serve bar-for-bar.
   intraday — evolution's fastsim, run TWICE: once per member alpha to record each bar's
              weight×leverage path, then once more over the SUM of those paths. That sum is

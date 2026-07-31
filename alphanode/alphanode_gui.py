@@ -92,7 +92,6 @@ def _tf_clean(tf):
 # gui_settings.json: in dev mode that file is tracked by git and a key stored there
 # would end up on GitHub with the next settings commit.
 KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'anthropic_key')
-HUB_ID_FILE = os.path.join(os.path.dirname(SETTINGS), 'alphahub_identity')
 
 
 def _load_keyfile(path):
@@ -149,8 +148,6 @@ DEFAULTS = {
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
     # neuro advisor (the API key is NOT here — see KEY_FILE)
     'advisor': False, 'advisor_max_calls': 1, 'advisor_model': 'claude-opus-5',
-    # alphahub (the Ed25519 identity is NOT here — see HUB_ID_FILE); pushes are manual-only
-    'hub_url': '', 'hub_name': 'my-node',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -385,86 +382,6 @@ class App:
                 self.root.after(150, poll)
         self.root.after(150, poll)
 
-    @staticmethod
-    def _hub_err_text(e):
-        """Network exception -> what actually went wrong at that URL, in plain words."""
-        s = str(e)
-        low = s.lower()
-        if 'refused' in low:
-            return ('✗ Connection refused — nothing is listening at that URL.\n'
-                    'Is the hub container running? Check the port in the URL.')
-        if 'timed out' in low or 'timeout' in low:
-            return ('✗ Timeout — the URL does not answer from this machine.\n'
-                    'Wrong host, closed firewall port, or the hub is down.')
-        if 'name or service not known' in low or 'getaddrinfo' in low or 'nodename' in low:
-            return '✗ DNS: host not found — check the URL spelling (http(s)://host:port).'
-        if 'http error 404' in low:
-            return '✗ 404 — something answered, but it is not an AlphaHub (/health missing).'
-        if 'certificate' in low or 'ssl' in low:
-            return '✗ TLS/certificate problem — try http:// for a local hub, or fix the cert.'
-        return f'✗ {type(e).__name__}: {s[:120]}'
-
-    def _check_hub(self):
-        """Probe <hub>/health in a worker thread; same main-thread polling pattern as Check key."""
-        url = (self.v_huburl.get() or '').strip()
-        if not url:
-            self.lbl_hub.configure(text='no hub URL entered', fg=NEG)
-            return
-        holder = {}
-
-        def work():
-            try:
-                import urllib.request
-                with urllib.request.urlopen(url.rstrip('/') + '/health', timeout=10) as r:
-                    d = json.loads(r.read())
-                if d.get('ok'):
-                    holder['res'] = (f'✓ hub alive — protocol v{d.get("protocol")}', POS)
-                else:
-                    holder['res'] = ('✗ hub responded but not ok', NEG)
-            except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
-                holder['res'] = (self._hub_err_text(e), NEG)
-
-        threading.Thread(target=work, daemon=True).start()
-        self.lbl_hub.configure(text='checking…', fg=MUT)
-
-        def poll():
-            if 'res' in holder:
-                txt, col = holder['res']
-                self.lbl_hub.configure(text=txt, fg=col)
-            else:
-                self.root.after(150, poll)
-        self.root.after(150, poll)
-
-    def _register_hub(self):
-        """One-click node registration: sends node_id + PUBLIC key, signed. The private
-        key never leaves this machine. Worker thread + main-thread polling, as usual."""
-        url = (self.v_huburl.get() or '').strip()
-        if not url:
-            self.lbl_hub.configure(text='no hub URL entered', fg=NEG)
-            return
-        name = (self.v_hubname.get() or 'my-node').strip()
-        holder = {}
-
-        def work():
-            try:
-                import hub_client
-                ident = hub_client.ensure_identity(HUB_ID_FILE)
-                ok, msg = hub_client.register(url, ident, name)
-                holder['res'] = (('✓ ' if ok else '✗ ') + msg, POS if ok else NEG)
-            except Exception as e:                     # noqa: BLE001
-                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
-
-        threading.Thread(target=work, daemon=True).start()
-        self.lbl_hub.configure(text='registering…', fg=MUT)
-
-        def poll():
-            if 'res' in holder:
-                txt, col = holder['res']
-                self.lbl_hub.configure(text=txt, fg=col)
-            else:
-                self.root.after(150, poll)
-        self.root.after(150, poll)
-
     def _collect(self):
         d = DEFAULTS
         return dict(
@@ -481,8 +398,6 @@ class App:
             advisor=bool(self.v_advisor.get()),
             advisor_max_calls=self._gi(self.v_advcalls, d['advisor_max_calls']),
             advisor_model=(self.v_advmodel.get() or d['advisor_model']).strip(),
-            hub_url=self.v_huburl.get().strip(),
-            hub_name=self.v_hubname.get().strip() or 'my-node',
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -947,40 +862,6 @@ class App:
         self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
             .grid(row=4, column=1, sticky='e', pady=(4, 0))
 
-        # --- alphahub (forward-track notary; pushes are MANUAL — the ⇪ Hub button) ---
-        g = self._section(inner, 'ALPHAHUB (forward-track, experimental)')
-        self._lbl(g, text='Pushes are manual: select an alpha in the leaderboard → ⇪ Hub.',
-                  text_color=MUT, font=(self.UI, 12)).grid(row=0, column=0, columnspan=2,
-                                                           sticky='w', pady=(0, 4))
-        self.v_huburl = tk.StringVar(value=self.cfg.get('hub_url', ''))
-        self._row(g, 'Hub URL', 1, self._entry(g, self.v_huburl, width=230),
-                  tip='e.g. http://my-vps:8899 — where your AlphaHub runs.')
-        self.v_hubname = tk.StringVar(value=self.cfg.get('hub_name', 'my-node'))
-        self._row(g, 'Node name', 2, self._entry(g, self.v_hubname, width=230),
-                  tip='How this node appears on the hub leaderboard.')
-        # identity is born HERE, on this machine — the hub only ever sees the public key
-        node_id = ''
-        try:
-            import hub_client
-            node_id = hub_client.ensure_identity(HUB_ID_FILE)['node_id']
-        except Exception:                                # noqa: BLE001 — no cryptography pkg etc.
-            pass
-        self.lbl_hubid = self._lbl(g, text=(f'identity: {node_id}' if node_id
-                                            else 'identity: unavailable (cryptography pkg missing)'),
-                                   text_color=(MUT if node_id else NEG), font=(self.MONO, 11))
-        self.lbl_hubid.grid(row=3, column=0, sticky='w', pady=(4, 0))
-        self._tip(self.lbl_hubid,
-                  'Auto-generated Ed25519 keypair; the PRIVATE key stays in\n'
-                  f'{HUB_ID_FILE}\n(owner-only, gitignored). Delete that file for a fresh identity.')
-        self.lbl_hub = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12),
-                                 justify='left', anchor='w')
-        self.lbl_hub.grid(row=4, column=0, sticky='w', pady=(4, 0))
-        row_btns = self._box(g)
-        row_btns.grid(row=4, column=1, sticky='e', pady=(4, 0))
-        self._btn(row_btns, 'Check hub', self._check_hub, height=26, width=92).pack(side='left')
-        self._btn(row_btns, 'Register', self._register_hub, height=26, width=92)\
-            .pack(side='left', padx=(8, 0))
-
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
         self.v_vol = self._numf(g, 'Target-vol (ann.)', self.cfg['target_vol'], 0, 0.01, 3.0, 0.01,
@@ -1307,14 +1188,6 @@ class App:
         # width/height are raw: CTk scales them itself (set_widget_scaling), unlike a tk pixel.
         self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_library, height=24, width=52)
         self.btn_lb_csv.pack(side='right', padx=(10, 0))
-        self.btn_lb_hub = self._btn(hrow, '⇪ Hub', self._push_selected_to_hub, height=24, width=64)
-        self.btn_lb_hub.pack(side='right', padx=(10, 0))
-        self._tip(self.btn_lb_hub,
-                  'One-shot push of the SELECTED alpha to AlphaHub: compute its current\n'
-                  'target weights on live data (at the active timeframe) and send ONLY\n'
-                  'the weights as your forward signal for the next bar close. The formula\n'
-                  'never leaves this machine. Push again any time — the hub keeps the\n'
-                  'last version sent before the bar closes.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -1387,8 +1260,6 @@ class App:
         self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
-        self._menu.add_command(label='Push to AlphaHub (one-shot, weights only)',
-                               command=self._push_selected_to_hub)
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
         self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
@@ -1662,8 +1533,6 @@ class App:
         self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
         self.v_advcalls.set(c.get('advisor_max_calls', 1))
         self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
-        self.v_huburl.set(c.get('hub_url', ''))
-        self.v_hubname.set(c.get('hub_name', 'my-node'))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -2661,73 +2530,6 @@ class App:
             self._open_plot(self._shown[idx])
 
     # ---------- copy formula ----------
-    def _push_selected_to_hub(self):
-        """Leaderboard 'Push → Hub' — the MANUAL one-shot flow: you pick an alpha, the node
-        computes its CURRENT target weights on live data and pushes them (with the formula
-        disclosed) to the hub ONCE. No background service — push again tomorrow, or push a
-        different alpha (same bar = the hub keeps the last write). Simple to test and debug;
-        the automatic serve+push loop still exists via Settings → ALPHAHUB + Serve."""
-        c = self._selected_champ()
-        if not c or not c.get('formula'):
-            messagebox.showinfo('AlphaHub', 'Select an alpha in the leaderboard first.',
-                                parent=self.root)
-            return
-        hub_url = (self.cfg.get('hub_url') or '').strip()
-        if not hub_url:
-            messagebox.showinfo(
-                'AlphaHub', 'No hub configured.\nSettings → ALPHAHUB: set the Hub URL and '
-                            'press Register, then try again.', parent=self.root)
-            return
-        tf = self._tf()                                   # any timeframe: weights via fastsim
-        formula = c['formula']
-        if not messagebox.askyesno(
-                'AlphaHub', f'Push this alpha to {hub_url}?\n\n{formula}\n\n'
-                            f'The node will fetch fresh {tf} candles (+ funding), compute the '
-                            'current target weights and send ONLY the weights as your forward '
-                            f'signal for the next {tf} close. The formula never leaves this '
-                            'machine.', parent=self.root):
-            return
-        cfg = self.cfg
-        if cfg.get('universe_all', True):
-            try:
-                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
-            except Exception as e:                        # noqa: BLE001
-                messagebox.showerror('AlphaHub', f'Cannot read the loaded data: {e}',
-                                     parent=self.root)
-                return
-        else:
-            tickers = [x.strip().upper() for x in cfg.get('universe_list', '').split(',')
-                       if x.strip()]
-        self._flash_lb(f'⇪ computing current {tf} weights on live data…', ms=120000)
-        holder = {}
-
-        def work():
-            try:
-                import hub_client
-                import hub_push
-                ident = hub_client.ensure_identity(HUB_ID_FILE)
-                weights, meta = hub_push.compute_weights(
-                    formula, tickers, tf, self.cfg['target_vol'], self.cfg['exec_cost'],
-                    log=lambda *a: None)
-                iso = hub_push.bar_close_iso(tf)
-                ok, msg = hub_client.push(hub_url, ident, tf, iso, weights)
-                holder['res'] = (ok, f'{msg} · {len(weights)} positions · bar {iso}'
-                                 if ok else msg)
-            except Exception as e:                        # noqa: BLE001
-                holder['res'] = (False, f'{type(e).__name__}: {str(e)[:120]}')
-
-        threading.Thread(target=work, daemon=True).start()
-
-        def poll():
-            if 'res' not in holder:
-                self.root.after(300, poll)
-                return
-            ok, msg = holder['res']
-            self._flash_lb(('✓ hub: ' if ok else '✗ hub: ') + msg, ms=8000)
-            if not ok:
-                messagebox.showwarning('AlphaHub', f'Push failed:\n{msg}', parent=self.root)
-        self.root.after(300, poll)
-
     def _selected_champ(self):
         item = self.tree.focus() or (self.tree.selection()[0] if self.tree.selection() else '')
         if not item:
