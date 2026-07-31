@@ -195,8 +195,8 @@ def _tournament(scored, rng, k):
 
 
 def _next_pop(scored, rng, cfg, extra=None):
-    """`extra`: pre-built nodes injected into the new generation (the LLM advisor's proposals).
-    They take the random-injection slots first — informed guesses instead of blind ones."""
+    """`extra`: pre-built nodes injected into the new generation; they take the
+    random-injection slots first — informed guesses instead of blind ones."""
     valid = [s for s in scored if s[1] is not None]
     sel = valid if valid else scored
     new = [e[0].copy() for e in sorted(sel, key=lambda s: -s[2])[:cfg['elitism']]]  # elite
@@ -258,8 +258,6 @@ def evolve(cfg, log=print):
     hof, history = [], []
     n_eval = 0
     best_fit_ever = -1e18
-    # NOTE: the LLM lives OUTSIDE this loop now — it is a round ANALYST (see advisor.Analyst,
-    # driven by node.py after each round), not a formula proposer. The search itself is pure GA.
 
     try:
         pop = _init_pop(rng, cfg)

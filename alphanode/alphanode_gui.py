@@ -71,11 +71,6 @@ CORES = os.cpu_count() or 4
 
 TF_CHOICES = ('1d', '4h', '1h', '15m')
 
-# advisor model tiers (all support the structured-output JSON the advisor relies on);
-# the box is editable, so any other model id can be typed in as well
-ADVISOR_MODELS = ('claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5')
-
-
 def _tf_suffix(tf):
     """File suffix for per-timeframe state: '' for the historical daily files, '_1h' etc. else."""
     return '' if (tf or '1d') == '1d' else f'_{tf}'
@@ -86,43 +81,6 @@ def _tf_clean(tf):
     dropped from the product ('5m') must fall back to daily instead of crashing the pipeline."""
     t = (tf or '1d').strip().lower()
     return t if t in TF_CHOICES else '1d'
-
-
-# The Anthropic API key lives in its OWN file with 0600 permissions — NEVER in
-# gui_settings.json: in dev mode that file is tracked by git and a key stored there
-# would end up on GitHub with the next settings commit.
-KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'anthropic_key')
-
-
-def _load_keyfile(path):
-    try:
-        with open(path, encoding='utf-8') as f:
-            return f.read().strip()
-    except OSError:
-        return ''
-
-
-def _save_keyfile(path, key):
-    """Secrets live in their own 0600 files, never in the (git-tracked) settings JSON."""
-    key = (key or '').strip()
-    try:
-        if not key:
-            if os.path.exists(path):
-                os.remove(path)                         # cleared in the GUI -> gone from disk
-            return
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(key + '\n')
-        os.chmod(path, 0o600)                           # owner-only (no-op on Windows)
-    except OSError:
-        pass
-
-
-def _load_api_key():
-    return _load_keyfile(KEY_FILE)
-
-
-def _save_api_key(key):
-    _save_keyfile(KEY_FILE, key)
 
 
 def _child_cmd(role):
@@ -146,8 +104,6 @@ DEFAULTS = {
     'timeframe': '1d',      # bar size for the whole pipeline: 1d | 4h | 1h | 15m
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
-    # neuro advisor (the API key is NOT here — see KEY_FILE)
-    'advisor': False, 'advisor_max_calls': 1, 'advisor_model': 'claude-opus-5',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -320,68 +276,6 @@ class App:
         except Exception:
             return d
 
-    @staticmethod
-    def _api_err_text(e, model):
-        """SDK exception -> a short human diagnosis + what to do (instead of a raw repr)."""
-        name = type(e).__name__
-        code = getattr(e, 'status_code', None)
-        body = getattr(e, 'body', None)
-        msg = ''
-        if isinstance(body, dict):
-            msg = str((body.get('error') or {}).get('message') or '')[:160]
-        if not msg:
-            msg = str(e)[:160]
-        if code == 401:
-            return ('✗ Key rejected (401 — authentication failed).\n'
-                    'The key is invalid, revoked, or pasted with a typo. Get a fresh one at\n'
-                    'console.anthropic.com → API Keys (it starts with sk-ant-…) and paste it whole.')
-        if code == 403:
-            return (f'✗ Access denied (403).\nThe key itself works, but it has no access to '
-                    f'{model} —\ncheck the workspace/plan in the Anthropic console or pick another model.')
-        if code == 404:
-            return (f'✗ Model not found (404).\n{model} is not available to this key — '
-                    'pick another model from the list.')
-        if code == 429:
-            return ('✗ Rate limited (429).\nGood news: the key works. Too many requests '
-                    'right now — try again in a minute.')
-        if name == 'APIConnectionError':
-            return ('✗ Could not reach api.anthropic.com.\nCheck the internet connection / '
-                    'VPN / proxy and try again.')
-        if code and code >= 500:
-            return (f'✗ Anthropic server error ({code}).\nThe key is probably fine — '
-                    'their side is having trouble; retry in a minute.')
-        return f'✗ {name}{f" ({code})" if code else ""}: {msg}'
-
-    def _check_api_key(self):
-        """Cheap live probe of the pasted key (models.retrieve — free, auth-validating).
-        Runs in a thread; the label is updated by MAIN-THREAD polling of a holder dict —
-        cross-thread root.after is unreliable here (same pattern as the PDF worker)."""
-        key = (self.v_apikey.get() or '').strip()
-        if not key:
-            self.lbl_advkey.configure(text='no key entered — paste an Anthropic API key first', fg=NEG)
-            return
-        model = (self.v_advmodel.get() or 'claude-opus-5').strip()
-        holder = {}
-
-        def work():
-            try:
-                import anthropic
-                anthropic.Anthropic(api_key=key).models.retrieve(model)
-                holder['res'] = (f'✓ key works — {model} reachable', POS)
-            except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
-                holder['res'] = (self._api_err_text(e, model), NEG)
-
-        threading.Thread(target=work, daemon=True).start()
-        self.lbl_advkey.configure(text='checking…', fg=MUT)
-
-        def poll():
-            if 'res' in holder:
-                txt, col = holder['res']
-                self.lbl_advkey.configure(text=txt, fg=col)
-            else:
-                self.root.after(150, poll)
-        self.root.after(150, poll)
-
     def _collect(self):
         d = DEFAULTS
         return dict(
@@ -395,9 +289,6 @@ class App:
             timeframe=_tf_clean(self.v_tf.get()),
             explore_every=max(1, self._gi(self.v_explore, d['explore_every'])),
             seed_from_lib=bool(self.v_seedlib.get()),
-            advisor=bool(self.v_advisor.get()),
-            advisor_max_calls=self._gi(self.v_advcalls, d['advisor_max_calls']),
-            advisor_model=(self.v_advmodel.get() or d['advisor_model']).strip(),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -422,7 +313,6 @@ class App:
             json.dump(self.cfg, open(SETTINGS, 'w'), indent=2)
         except Exception:
             pass
-        _save_api_key(self.v_apikey.get())     # its own 0600 file, NOT the (git-tracked) settings
 
     # ---------- style ----------
     def _px(self, n):
@@ -827,41 +717,6 @@ class App:
         self.v_seedlib = self._chk(g, 'Warm-start from library', self.cfg['seed_from_lib'], 3,
                                    tip='Seed the new generation with the best found alphas (fine-tuning). Off — always from scratch.')
 
-        # --- neuro analyst (LLM reads the library after rounds; it never touches the search) ---
-        g = self._section(inner, 'NEURO ANALYST (LLM, experimental)')
-        self.v_advisor = self._chk(g, 'Round analyst: LLM reviews the library', self.cfg.get('advisor', False), 0,
-                                   tip='After a round, Claude reads the accumulated evidence — the library\n'
-                                       'with its metrics, round history, base↔TEST gaps, operator usage —\n'
-                                       'and writes a research report into the LIVE LOG: overfitting\n'
-                                       'suspicions, diversity audit, what is under-explored. It has ZERO\n'
-                                       'authority over the search — the GA runs pure, the report is for you.\n'
-                                       'Cost: one report is roughly $0.05-0.15.')
-        self.v_advmodel = tk.StringVar(value=self.cfg.get('advisor_model', 'claude-opus-5'))
-        model_box = ttk.Combobox(g, textvariable=self.v_advmodel, values=ADVISOR_MODELS, width=19)
-        self._row(g, 'Model', 1, model_box,
-                  tip='Which Claude model writes the report (per report, roughly):\n'
-                      '  claude-opus-5    — deepest analysis, ~$0.05-0.15\n'
-                      '  claude-sonnet-5  — solid mid-tier, ~$0.02-0.06\n'
-                      '  claude-haiku-4-5 — cheapest, ~$0.01-0.03\n'
-                      'The box is editable — any other model id can be typed in.')
-        self.v_advcalls = self._num(g, 'Analyze every N rounds', self.cfg.get('advisor_max_calls', 1),
-                                    2, 0, 99, 1,
-                                    tip='How often the analyst reads the library.\n'
-                                        '1 = a report after every round; 3 = after every third;\n'
-                                        '0 = never (same as unticking the box above).')
-        self.v_apikey = tk.StringVar(value=_load_api_key())
-        e_key = self._entry(g, self.v_apikey, width=230)
-        e_key.configure(show='•')
-        self._row(g, 'Anthropic API key', 3, e_key,
-                  tip='Key from console.anthropic.com (sk-ant-…). Stored in its own file with\n'
-                      'owner-only permissions — never in gui_settings.json, never in git:\n'
-                      f'{KEY_FILE}')
-        self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12),
-                                    justify='left', anchor='w')
-        self.lbl_advkey.grid(row=4, column=0, sticky='w', pady=(4, 0))
-        self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
-            .grid(row=4, column=1, sticky='e', pady=(4, 0))
-
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
         self.v_vol = self._numf(g, 'Target-vol (ann.)', self.cfg['target_vol'], 0, 0.01, 3.0, 0.01,
@@ -1144,9 +999,6 @@ class App:
         self.lbl_cur = self._lbl(pad, text='', text_color=MUT, font=(self.MONO, 12),
                                     anchor='w', justify='left')
         self.lbl_cur.pack(anchor='w', fill='x', pady=(12, 0))
-        # LLM advisor footprint — appears only once the advisor has actually done something
-        self.lbl_adv = self._lbl(pad, text='', text_color=ACC, font=(self.MONO, 12),
-                                 anchor='w', justify='left')
         # LIVE LOG — the node's human-readable activity feed (status.json 'events')
         logwrap = ctk.CTkFrame(pad, fg_color=STRIPE, corner_radius=10, border_width=0)
         logwrap.pack(fill='x', pady=(10, 0))
@@ -1514,9 +1366,6 @@ class App:
         self.s_trials.configure(text='0')
         self.s_found.configure(text='0')
         self.lbl_cur.configure(text='')
-        self.lbl_adv.configure(text='')
-        if self.lbl_adv.winfo_ismapped():
-            self.lbl_adv.pack_forget()
         self._state_pill('● stopped', MUT)
         self._reset_portfolio_ui()                        # clear the Portfolio panel too
 
@@ -1530,9 +1379,6 @@ class App:
         self.v_tf.set(_tf_clean(c.get('timeframe', '1d'))); self._tf_note()
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
-        self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
-        self.v_advcalls.set(c.get('advisor_max_calls', 1))
-        self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -1650,18 +1496,6 @@ class App:
             ALPHANODE_TRAIN_START=c['train_start'], ALPHANODE_VAL_START=c['val_start'],
             ALPHANODE_TEST_START=c['test_start'], ALPHANODE_TEST_END=c['test_end'],
         )
-        adv_key = (self.v_apikey.get() or '').strip()
-        if c.get('advisor'):
-            if adv_key:
-                env.update(ALPHANODE_ADVISOR='1', ANTHROPIC_API_KEY=adv_key,
-                           ALPHANODE_ADVISOR_MAX_CALLS=str(c['advisor_max_calls']),
-                           ALPHANODE_ADVISOR_MODEL=c['advisor_model'])
-            else:
-                messagebox.showinfo(
-                    'Analyst has no key',
-                    'The round analyst is ON but no Anthropic API key is set — the node will '
-                    'search without reports.\nPaste a key in NEURO ANALYST (and press Check key), '
-                    'then restart the search.', parent=self.root)
         self.proc = subprocess.Popen(_child_cmd('node'), env=env,
                                      cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -2041,7 +1875,7 @@ class App:
     def _log_placeholder(self):
         self.logbox.configure(state='normal')
         self.logbox.delete('1.0', 'end')
-        self.logbox.insert('end', 'live log — round starts, advisor consults, new champions and '
+        self.logbox.insert('end', 'live log — round starts, new champions and '
                                   'round summaries will appear here once the node runs.', 'i')
         self.logbox.configure(state='disabled')
 
@@ -2077,22 +1911,6 @@ class App:
             self.s_trials.configure(text=f'{st.get("trials_total", 0):,}')
             self.s_found.configure(text=str(st.get('found', len(st.get('best', [])))))
             self.lbl_cur.configure(text=(st.get('current', '') + '   ' + st.get('gen', ''))[:120])
-            anst = st.get('analyst') or {}
-            ana = st.get('analysis') or {}
-            if anst.get('error'):
-                self.lbl_adv.configure(
-                    fg=NEG, text=f'🧠 analyst: {anst["error"]} — search runs without reports '
-                                 f'(fix the key in Settings → NEURO ANALYST, press Check key)'[:150])
-                if not self.lbl_adv.winfo_ismapped():
-                    self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
-            elif ana:
-                self.lbl_adv.configure(
-                    fg=ACC, text=(f'🧠 analyst · after round {ana.get("round")}: '
-                                  f'{ana.get("summary", "")}')[:150])
-                if not self.lbl_adv.winfo_ismapped():
-                    self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
-            elif self.lbl_adv.winfo_ismapped():
-                self.lbl_adv.pack_forget()
             evs = st.get('events') or []
             if evs and evs != self._events_last:
                 self._events_last = evs
@@ -2362,8 +2180,6 @@ class App:
             stripe = 'odd' if i % 2 else 'even'
             formula = c.get('formula', '')
             f = formula                                  # full length — the column fits the widest row
-            if c.get('origin') == 'llm':                 # proposed by the advisor, survived selection
-                f = '🧠 ' + f
             need = max(need, self._tree_font.measure(f))
             m = self._metrics_cache.get(formula)
             ls, act, win = self._fmt_metrics(m)

@@ -63,7 +63,6 @@ os.makedirs(STATE_DIR, exist_ok=True)
 _SUF = '' if TF == '1d' else f'_{TF}'
 LIB = os.path.join(STATE_DIR, f'library{_SUF}.jsonl')
 HIST = os.path.join(STATE_DIR, f'history{_SUF}.jsonl')  # one line per round (for the progress chart)
-ANALYSIS = os.path.join(STATE_DIR, f'analysis{_SUF}.jsonl')  # the round analyst's report journal
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 CORES = os.cpu_count() or 4
 N_JOBS = max(1, round(CPU_PERCENT / 100 * CORES))      # resources -> number of parallel workers
@@ -102,7 +101,7 @@ def save_status():
 
 def log_event(kind, text):
     """Append to the human-readable activity feed (GUI 'LIVE LOG' + status page).
-    kinds: round | llm | best | polish | warn | err — the GUI colors by them."""
+    kinds: round | best | polish | warn | err — the GUI colors by them."""
     ev = status.setdefault('events', [])
     ev.append({'ts': time.strftime('%H:%M:%S'), 'k': kind, 't': str(text)})
     del ev[:-80]
@@ -132,7 +131,6 @@ def _rm(m):
 
 
 def load_existing():
-    llm_lib = 0
     if os.path.exists(LIB):
         for line in open(LIB, encoding='utf-8'):
             line = line.strip()
@@ -141,12 +139,9 @@ def load_existing():
             try:
                 c = json.loads(line)
                 seen.add(c['formula'])
-                llm_lib += (c.get('origin') == 'llm')
                 leaderboard.append(c)
             except json.JSONDecodeError:
                 pass
-    # analyst footprint (runs this session) + how many old LLM-born champions the library holds
-    status['analyst'] = {'runs': 0, 'lib_llm': llm_lib}
     leaderboard.sort(key=_basesh, reverse=True)        # selection by fitness min(train,val), NOT by TEST
     del leaderboard[KEEP:]
     if os.path.exists(HIST):
@@ -180,7 +175,7 @@ def load_existing():
 def champions_from_hof(hof):
     return [{'rank': i, 'formula': h['canon'], 'size': h['size'], 'base': round(h['base'], 3),
              'train': _rm(h.get('train')), 'val': _rm(h.get('val')), 'test': _rm(h.get('test')),
-             'origin': h.get('origin', 'ga')}             # 'llm' = proposed by the advisor
+             'origin': h.get('origin', 'ga')}
             for i, h in enumerate(hof)]
 
 
@@ -240,80 +235,6 @@ def build_cfg(seed, seeds=None):
     return cfg
 
 
-# ---- round analyst: an LLM reads the library after a round (see evolution/advisor.py) ----
-_analyst = {'busy': False}
-ANALYST_ON, ANALYST_EVERY, ANALYST_MODEL = False, 0, 'claude-opus-5'   # set in main() from cfg
-
-
-def _analyst_payload():
-    """Compact, number-rich snapshot of the node's evidence for the analyst."""
-    import re
-    champs = []
-    for c in leaderboard[:20]:
-        t = c.get('test') or {}
-        champs.append({'formula': c['formula'], 'base': c.get('base'),
-                       'test_sharpe': t.get('sharpe'), 'test_dd': t.get('dd'),
-                       'round': c.get('round')})
-    pairs = [(c.get('base'), (c.get('test') or {}).get('sharpe')) for c in leaderboard]
-    pairs = [(a, b) for a, b in pairs if a is not None and b is not None]
-    corr = None
-    if len(pairs) >= 5:
-        a = pd.Series([p[0] for p in pairs])
-        b = pd.Series([p[1] for p in pairs])
-        if a.std() > 0 and b.std() > 0:
-            corr = round(float(a.corr(b)), 3)
-    usage = {}
-    for c in leaderboard:
-        for tok in set(re.findall(r'[a-z_]+', c['formula'])):
-            usage[tok] = usage.get(tok, 0) + 1
-    rounds = [{'round': h.get('round'), 'best_base': h.get('best_base'),
-               'best_test': h.get('best_test'), 'mode': h.get('mode'),
-               'library': h.get('found')} for h in history[-30:]]
-    return {'timeframe': TF, 'universe': UNIVERSE, 'pop': POP, 'gens': GENS,
-            'library_size': len(seen), 'champions': champs, 'base_test_corr': corr,
-            'rounds': rounds,
-            'usage': dict(sorted(usage.items(), key=lambda kv: -kv[1]))}
-
-
-def _run_analyst(rnd, payload, model):
-    try:
-        from advisor import Analyst
-        a = Analyst(model=model, log=print)
-        rep = a.analyze(payload)
-        _analyst['result'] = (rnd, rep, None if rep is not None else (a.last_error or 'no report'))
-    except Exception as e:                             # noqa: BLE001
-        _analyst['result'] = (rnd, None, f'{type(e).__name__}: {e}')
-    finally:
-        _analyst['busy'] = False
-
-
-def _integrate_analyst():
-    """Fold a finished report into events/status. MAIN thread only — no dict races."""
-    res = _analyst.pop('result', None)
-    if not res:
-        return
-    rnd, rep, err = res
-    an = status.setdefault('analyst', {'runs': 0})
-    if err:
-        an['error'] = err
-        log_event('err', f'🧠 analyst (round {rnd}) failed: {err}')
-    else:
-        an.pop('error', None)
-        an['runs'] = an.get('runs', 0) + 1
-        an['last_round'] = rnd
-        status['analysis'] = {'round': rnd, 'ts': iso(), **rep}
-        log_event('llm', f'🧠 analyst · round {rnd}: {rep.get("summary", "")}')
-        for fnd in rep.get('findings', []):
-            kind = 'warn' if fnd.get('severity') in ('warn', 'critical') else 'llm'
-            log_event(kind, f'   [{fnd.get("severity")}] {fnd.get("title")} — {fnd.get("detail")}')
-        for sug in rep.get('suggestions', []):
-            log_event('llm', f'   → {sug.get("title")}: {sug.get("detail")}')
-        try:
-            with open(ANALYSIS, 'a', encoding='utf-8') as f:
-                f.write(json.dumps(status['analysis'], ensure_ascii=False) + '\n')
-        except OSError:
-            pass
-    save_status()
 
 
 # ---- minimal status server (stdlib) ----
@@ -322,18 +243,8 @@ def render_html():
         f"<tr><td>{i + 1}</td>"
         f"<td class=t>{('%+.2f' % _basesh(c)) if _basesh(c) > -1e8 else '—'}</td>"
         f"<td>{('%+.2f' % _testsh(c)) if _testsh(c) > -1e8 else '—'}</td>"
-        f"<td class=f>{'🧠 ' if c.get('origin') == 'llm' else ''}{c['formula']}</td></tr>"
+        f"<td class=f>{c['formula']}</td></tr>"
         for i, c in enumerate(leaderboard[:KEEP]))
-    ana = status.get('analysis') or {}
-    anst = status.get('analyst') or {}
-    adv_card = ''
-    if anst.get('error'):
-        adv_card = (f"<div class=card><div class=k>🧠 round analyst</div>"
-                    f"<b style='color:#f87171'>{anst['error']}</b></div>")
-    elif ana:
-        adv_card = (f"<div class=card style='max-width:560px'><div class=k>🧠 round analyst · "
-                    f"after round {ana.get('round')}</div>"
-                    f"<div style='font-size:12.5px'>{ana.get('summary', '')}</div></div>")
     evs = status.get('events') or []
     ev_lines = ''.join(
         f"<div class='e {e.get('k', '')}'><span>{e.get('ts', '')}</span>{e.get('t', '')}</div>"
@@ -351,7 +262,7 @@ th{{color:#8a93a2}} td.f,th.f{{text-align:left;font-family:ui-monospace,monospac
 .dot{{width:9px;height:9px;border-radius:50%;background:#4ade80;display:inline-block;margin-right:7px;animation:p 1.1s infinite}}
 @keyframes p{{50%{{opacity:.35}}}} .gen{{font-family:ui-monospace,monospace;font-size:11px;color:#8a93a2;margin:0 0 14px}}
 .e{{font-family:ui-monospace,monospace;font-size:11.5px;padding:2px 0;white-space:pre-wrap;word-break:break-word;color:#8a93a2}}
-.e span{{color:#5b6470;margin-right:9px}} .e.llm{{color:#a78bfa}} .e.best{{color:#4ade80}}
+.e span{{color:#5b6470;margin-right:9px}} .e.best{{color:#4ade80}}
 .e.round{{color:#d7dce3}} .e.polish{{color:#7fb3ff}} .e.err,.e.warn{{color:#f87171}}</style>
 <h1><span class=dot></span>AlphaNode <span style="color:#8a93a2;font-weight:400;font-size:13px">— {status['state']}</span></h1>
 <p class=sub>background alpha-search node · page refreshes itself</p>
@@ -361,7 +272,6 @@ th{{color:#8a93a2}} td.f,th.f{{text-align:left;font-family:ui-monospace,monospac
   <div class=card><div class=k>alphas found</div><b style="font-size:18px">{len(seen)}</b></div>
   <div class=card><div class=k>resources</div><b>{status['cpu_percent']}%</b> · {status['n_jobs']}/{status['cores']} cores</div>
   <div class=card><div class=k>universe</div><b>{status['universe']}</b> · pop {status['pop']} gens {status['gens']}</div>
-  {adv_card}
 </div>
 <div class=gen>{status.get('current','')} &nbsp; {status.get('gen','')}</div>
 {adv_log}
@@ -402,14 +312,7 @@ _last_save = [0.0]
 def _cb(msg):
     m = str(msg).rstrip()
     ms = m.strip()
-    if ms.startswith('advisor ->'):                    # a concrete proposal -> rolling trace + feed
-        alog = status.setdefault('advisor_log', [])    # the GUI status strip shows the last one
-        alog.append(ms)
-        del alog[:-8]
-        log_event('llm', ms)
-    elif ms.startswith('🧠') or ms.startswith('advisor:'):
-        log_event('llm', ms)
-    elif ms.startswith('★'):
+    if ms.startswith('★'):
         log_event('best', ms)
     elif 'window polish' in ms:
         log_event('polish', ms)
@@ -426,13 +329,9 @@ def _cb(msg):
 
 
 def main():
-    global ANALYST_ON, ANALYST_EVERY, ANALYST_MODEL
     load_existing()
     c0 = build_cfg(BASE_SEED)
     status['target_vol'] = c0.get('vol')                     # effective target vol (env or config.ini)
-    ANALYST_ON = bool(c0.get('advisor'))
-    ANALYST_MODEL = c0.get('advisor_model') or 'claude-opus-5'
-    ANALYST_EVERY = max(0, int(c0.get('advisor_max_calls') or 0))   # 'analyze every N rounds'; 0 = off
     threading.Thread(target=serve, daemon=True).start()
     print(f'AlphaNode: {CPU_PERCENT}% -> {N_JOBS}/{CORES} cores | universe={UNIVERSE} tf={TF} '
           f'pop={POP} gens={GENS} | status: http://localhost:{STATUS_PORT}')
@@ -474,7 +373,7 @@ def main():
             time.sleep(PAUSE)
             continue
 
-        new, new_llm = 0, 0
+        new = 0
         with open(LIB, 'a', encoding='utf-8') as f:
             for c in champions_from_hof(hof):
                 if c['formula'] in seen:
@@ -484,7 +383,6 @@ def main():
                 f.write(json.dumps(c, ensure_ascii=False) + '\n')
                 leaderboard.append(c)
                 new += 1
-                new_llm += (c.get('origin') == 'llm')
         leaderboard.sort(key=_basesh, reverse=True)    # champion = best by min(train,val); TEST closed
         del leaderboard[KEEP:]
         champ = leaderboard[0] if leaderboard else None
@@ -496,7 +394,6 @@ def main():
         bt_s = f'{bt_val:+.2f}' if bt_val is not None else '—'
         entry = {'round': rnd, 'best_base': bb_val, 'best_test': bt_val,
                  'found': len(seen), 'mode': mode, 'ts': iso()}
-        llm_s = ''
         history.append(entry)
         try:
             with open(HIST, 'a', encoding='utf-8') as f:
@@ -507,30 +404,20 @@ def main():
                       found=len(seen), best=leaderboard[:KEEP], best_base=bb_val, best_test=bt_val,
                       history=history[-300:],
                       current=f'round {rnd} done [{mode}]: +{new} new · fitness {bb_s} · '
-                              f'TEST(OOS) {bt_s}{llm_s} · {time.time()-t0:.0f}s')
+                              f'TEST(OOS) {bt_s} · {time.time()-t0:.0f}s')
         champs_s = (f'{new} new champion{"s" if new != 1 else ""} entered the library'
                     if new else 'no new champions — the library kept its bar')
         log_event('round', f'✓ round {rnd} done in {time.time() - t0:.0f}s — {len(cache):,} '
                            f'formulas simulated; {champs_s}. Best fitness {bb_s}, '
                            f'its held-out TEST {bt_s}')
-        _integrate_analyst()                           # a report finished during this round?
-        if (ANALYST_ON and ANALYST_EVERY > 0 and rnd % ANALYST_EVERY == 0
-                and not _analyst['busy'] and leaderboard):
-            _analyst['busy'] = True
-            log_event('llm', f'🧠 analyst: reading the library after round {rnd} '
-                             f'({len(seen)} alphas, {len(history)} rounds of history)…')
-            threading.Thread(target=_run_analyst,
-                             args=(rnd, _analyst_payload(), ANALYST_MODEL), daemon=True).start()
         save_status()
         print(status['current'])
 
         for _ in range(int(PAUSE * 2)):                # interruptible pause
             if STOP:
                 break
-            _integrate_analyst()                       # reports land whenever the API answers
             time.sleep(0.5)
 
-    _integrate_analyst()
     status['state'] = 'stopped'
     save_status()
     print('AlphaNode stopped.')
