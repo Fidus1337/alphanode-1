@@ -60,6 +60,8 @@ METRICS_PY = os.path.join(HERE, 'metrics_worker.py')    # leaderboard trade stat
 PDF_PY = os.path.join(HERE, 'pdf_worker.py')            # analytics PDF dashboard (own process)
 SIGNAL_PORT = 8799                                      # BASE port: each service takes the next free one
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
+# First-run starter universe (no data snapshot yet): 10 liquid majors, matches fetch_data.DEFAULT_SYMBOLS.
+BOOTSTRAP_SYMBOLS = 'BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,AVAXUSDT,LTCUSDT'
 STATE_DIR = apppaths.state_dir()
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 SIGNALS_JSON = os.path.join(STATE_DIR, 'signals.json')  # registry of served APIs (survives a restart)
@@ -244,6 +246,7 @@ class App:
         self._fonts = {}                                  # (family,size,weight) -> named Tk font
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
+        self._fetching = False                           # a fetch_data child is running (one at a time)
         self.cfg = dict(DEFAULTS)
         self._load()
         self._lb_mode = self.cfg.get('lb_mode') or 'all'   # remembered across restarts
@@ -254,6 +257,7 @@ class App:
         self._poll()
         self._sig_tick()                                  # live status of the served signal APIs
         threading.Thread(target=self._sig_restore, daemon=True).start()   # re-adopt ones left running
+        self.root.after(900, self._maybe_bootstrap)       # first run: no data -> fetch 10 majors
         root.protocol('WM_DELETE_WINDOW', self._on_close)
 
     # ---------- settings (persist) ----------
@@ -1310,7 +1314,19 @@ class App:
                 icon='warning', default='no', parent=self.root):
             return
         self._save()
-        win = self._dialog(f'Data update — top-{n} from Binance', '760x440')
+        self._run_fetch(['--top', str(n), '--min-years', str(yrs), '--interval', self._tf(),
+                         '--out', self._data_file()],
+                        f'Data update — top-{n} from Binance',
+                        f'Downloading the {n} highest-turnover Binance pairs (history ≥ {yrs} years)…\n\n',
+                        '✓ Done — data updated. Clear history and restart the search.')
+
+    def _run_fetch(self, args, title, intro, done_msg, on_success=None):
+        """Console dialog + fetch_data subprocess; shared by the manual data update and the
+        first-run bootstrap. on_success fires (on the Tk thread) only on exit code 0."""
+        if self._fetching:
+            return
+        self._fetching = True
+        win = self._dialog(title, '760x440')
         txt = self._console(win)
 
         def add(s):
@@ -1321,15 +1337,14 @@ class App:
             txt.see('end')
             txt.configure(state='disabled')
 
-        add(f'Downloading the {n} highest-turnover Binance pairs (history ≥ {yrs} years)…\n\n')
+        add(intro)
         try:
-            proc = subprocess.Popen(_child_cmd('fetch') + ['--top', str(n),
-                                     '--min-years', str(yrs), '--interval', self._tf(),
-                                     '--out', self._data_file()],
+            proc = subprocess.Popen(_child_cmd('fetch') + args,
                                     cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         except Exception as e:                       # noqa: BLE001
             add(f'Failed to launch fetch_data.py: {e}\n')
+            self._fetching = False
             return
         q = queue.Queue()
 
@@ -1343,22 +1358,48 @@ class App:
         def pump():
             if not win.winfo_exists():
                 self.btn_fetch.configure(state='normal')   # the process will finish on its own, re-enable the button
+                self._fetching = False
                 return
             try:
                 while True:
                     line = q.get_nowait()
                     if line is None:
                         code = proc.poll()
-                        add('\n' + ('✓ Done — data updated. Clear history and restart the search.'
-                                    if code == 0 else f'✗ Error (code {code}). Data left untouched.') + '\n')
+                        add('\n' + (done_msg if code == 0
+                                    else f'✗ Error (code {code}). Data left untouched.') + '\n')
                         self.btn_fetch.configure(state='normal')
+                        self._fetching = False
                         self._lib_cache['mtime'] = None
+                        if code == 0 and on_success is not None:
+                            win.after(700, on_success)
                         return
                     add(line)
             except queue.Empty:
                 pass
             win.after(150, pump)
         win.after(150, pump)
+
+    def _maybe_bootstrap(self):
+        """First run: no market data next to the node -> download a starter universe on our own."""
+        if os.path.exists(self._data_file()) or (self.proc and self.proc.poll() is None):
+            return
+        self._bootstrap_data()
+
+    def _bootstrap_data(self, on_success=None):
+        tf = self._tf()
+        intro = ('No market data found next to the node.\n'
+                 'Downloading a starter universe of 10 majors — BTC, ETH, SOL, XRP, BNB, DOGE, '
+                 f'ADA, LINK, AVAX, LTC — as {tf} candles from Binance…\n\n'
+                 'You can widen the universe any time: Settings → MARKET DATA → '
+                 '"Download fresh data from Binance".\n\n')
+        if tf != '1d':
+            intro += ('Note: intraday history is shorter — if the search has nothing to evaluate, '
+                      'set later TRAIN/VAL dates in Settings.\n\n')
+        self._run_fetch(['--symbols', BOOTSTRAP_SYMBOLS, '--interval', tf, '--out', self._data_file()],
+                        f'First run — market data bootstrap ({tf})', intro,
+                        '✓ Starter data ready.' + ('' if on_success
+                                                   else ' Press START to begin the search.'),
+                        on_success=on_success)
 
     def _reset_ui_after_wipe(self):
         for i in self.tree.get_children():
@@ -1471,14 +1512,9 @@ class App:
         self._save()
         c = self.cfg
         os.makedirs(STATE_DIR, exist_ok=True)
-        if self._tf() != '1d' and not os.path.exists(self._data_file()):
-            messagebox.showinfo(
-                'No data for ' + self._tf(),
-                f'There is no {self._tf()} snapshot yet ({os.path.basename(self._data_file())}).\n'
-                'Download it first: MARKET DATA → "Download fresh data from Binance" '
-                '(it fetches at the selected timeframe).\n\n'
-                'Also set LATER date segments — intraday history is shorter, and TRAIN/VAL '
-                'dates outside the data leave the search nothing to evaluate.', parent=self.root)
+        if not os.path.exists(self._data_file()):
+            # first run without a snapshot: fetch the starter universe, then continue START
+            self._bootstrap_data(on_success=self.start)
             return
         env = dict(os.environ)
         env.update(

@@ -330,7 +330,27 @@ def _cb(msg):
         raise KeyboardInterrupt('stop requested')
 
 
+def ensure_data():
+    """First start with no market data next to the node: download a starter universe of
+    10 liquid majors (BTC, ETH, SOL, XRP, …) at the active timeframe so the search can run."""
+    path = load_config()['data']
+    if os.path.exists(path):
+        return
+    if PROJ not in sys.path:                           # fetch_data.py lives at the repo root
+        sys.path.insert(0, PROJ)
+    import fetch_data
+    names = ', '.join(s.replace('USDT', '') for s in fetch_data.DEFAULT_SYMBOLS)
+    print(f'no market data at {path} — downloading a starter universe of 10 majors '
+          f'({names}) as {TF} candles…', flush=True)
+    rc = fetch_data.run(path, interval=TF, symbols=list(fetch_data.DEFAULT_SYMBOLS))
+    if rc != 0 or not os.path.exists(path):
+        raise SystemExit(f'✗ data bootstrap failed (code {rc}) — check the internet connection '
+                         'or run fetch_data.py manually')
+    print('✓ starter data ready', flush=True)
+
+
 def main():
+    ensure_data()
     load_existing()
     c0 = build_cfg(BASE_SEED)
     status['target_vol'] = c0.get('vol')                     # effective target vol (env or config.ini)
