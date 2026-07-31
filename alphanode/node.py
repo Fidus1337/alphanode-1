@@ -175,6 +175,7 @@ def load_existing():
 def champions_from_hof(hof):
     return [{'rank': i, 'formula': h['canon'], 'size': h['size'], 'base': round(h['base'], 3),
              'train': _rm(h.get('train')), 'val': _rm(h.get('val')), 'test': _rm(h.get('test')),
+             'blocks': h.get('blocks'), 'eff_n': h.get('eff_n'),   # robust-fitness evidence
              'origin': h.get('origin', 'ga')}
             for i, h in enumerate(hof)]
 
@@ -221,6 +222,7 @@ def _apply_overrides(cfg):
     _override(cfg, 'corr_thresh', 'CORR_THRESHOLD', float)
     _override(cfg, 'corr_penalty', 'CORR_PENALTY', float)
     _override(cfg, 'hof_cap', 'HOF_CAPACITY', int)
+    _override(cfg, 'fit_blocks', 'FIT_BLOCKS', int)    # robust fitness; 0 = legacy min(train,val)
     _apply_segments(cfg)
 
 

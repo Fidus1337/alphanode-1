@@ -21,15 +21,25 @@ from evaluator import build_panel, make_market, evaluate
 _G = {}
 
 
-def _winit(data, start, end, splits, vol, exec_rate, instruments, freq, vol_window, ann, ewma_lambda):
+def fit_cfg(cfg):
+    """The robust-fitness knobs evaluate() needs, gathered from the flat config."""
+    return {'blocks': cfg.get('fit_blocks', 0), 'quantile': cfg.get('fit_quantile', 0.25),
+            'se_penalty': cfg.get('fit_se_penalty', 1.0),
+            'conc_penalty': cfg.get('fit_conc_penalty', 0.0),
+            'min_eff_n': cfg.get('fit_min_eff_n', 3.0)}
+
+
+def _winit(data, start, end, splits, vol, exec_rate, instruments, freq, vol_window, ann,
+           ewma_lambda, fit):
     tk, raw, panel = build_panel(data, start, end, instruments, freq=freq)
     _G.update(tk=tk, panel=panel, market=make_market(panel, tk, raw, vol_window=vol_window),
-              splits=splits, vol=vol, exec=exec_rate, ann=ann, ewma_lambda=ewma_lambda)
+              splits=splits, vol=vol, exec=exec_rate, ann=ann, ewma_lambda=ewma_lambda,
+              fit=fit)
 
 
 def _weval(node):
     return evaluate(node, _G['tk'], _G['panel'], _G['market'], _G['splits'], _G['vol'], _G['exec'],
-                    ann=_G['ann'], ewma_lambda=_G['ewma_lambda'])
+                    ann=_G['ann'], ewma_lambda=_G['ewma_lambda'], fit=_G['fit'])
 
 
 class Runner:
@@ -39,6 +49,7 @@ class Runner:
         self.cfg = cfg
         self.ann = cfg.get('ann', 365.0)                 # timeframe params (daily defaults)
         self.ewma_lambda = cfg.get('ewma_lambda', 0.06)
+        self.fit = fit_cfg(cfg)
         freq = cfg.get('freq', 'D')
         vol_window = cfg.get('vol_window', 30)
         if cfg['n_jobs'] == 1:
@@ -51,7 +62,7 @@ class Runner:
                 cfg['n_jobs'], initializer=_winit,
                 initargs=(cfg['data'], cfg['start'], cfg['end'],
                           cfg['splits'], cfg['vol'], cfg['exec'], cfg.get('instruments'),
-                          freq, vol_window, self.ann, self.ewma_lambda))
+                          freq, vol_window, self.ann, self.ewma_lambda, self.fit))
 
     def map(self, nodes):
         if not nodes:
@@ -59,7 +70,8 @@ class Runner:
         if self.pool is None:
             return [evaluate(n, self.tk, self.panel, self.market, self.cfg['splits'],
                              self.cfg['vol'], self.cfg['exec'],
-                             ann=self.ann, ewma_lambda=self.ewma_lambda) for n in nodes]
+                             ann=self.ann, ewma_lambda=self.ewma_lambda, fit=self.fit)
+                    for n in nodes]
         return self.pool.map(_weval, nodes, chunksize=1)
 
     def close(self):
@@ -85,7 +97,7 @@ def corr(a, b):
 def fitness(res, hof, cfg):
     if res is None:
         return -1e9
-    base = min(res['train_sharpe'], res['val_sharpe'])
+    base = res['base_fit']                  # legacy min(train,val) or robust blocks — evaluate() decides
     if not np.isfinite(base):
         return -1e9
     fit = base - cfg['parsimony'] * res['size']
@@ -98,7 +110,7 @@ def fitness(res, hof, cfg):
 
 # ---------------- Hall of Fame (diverse) ----------------
 def hof_update(hof, res, cfg):
-    base = min(res['train_sharpe'], res['val_sharpe'])
+    base = res['base_fit']
     if not np.isfinite(base):
         return hof
     if any(h['canon'] == res['canon'] for h in hof):
@@ -123,9 +135,9 @@ def hof_update(hof, res, cfg):
 def _polish_windows(hof, runner, cache, cfg, origins, log, top_k=5, max_passes=3):
     """Windows are continuous now — after evolution, fine-tune the horizons of the top
     champions: for every windowed node try ×0.8 / ×1.25 (rounded, clamped) and keep any
-    change that raises base = min(train, val). Size is unchanged, so parsimony cancels;
-    the polished twin is ~perfectly correlated with its parent, so hof_update simply
-    replaces the parent when the tuned variant is better."""
+    change that raises the selection fitness (base_fit). Size is unchanged, so parsimony
+    cancels; the polished twin is ~perfectly correlated with its parent, so hof_update
+    simply replaces the parent when the tuned variant is better."""
     import primitives as P
 
     def _clamp(w):
@@ -157,7 +169,7 @@ def _polish_windows(hof, runner, cache, cfg, origins, log, top_k=5, max_passes=3
                 r = cache.get(c)
                 if r is None:
                     continue
-                b = min(r['train_sharpe'], r['val_sharpe'])
+                b = r['base_fit']
                 if np.isfinite(b) and b > best_b + 1e-6:
                     best_c, best_b = c, b
             if best_c is None:

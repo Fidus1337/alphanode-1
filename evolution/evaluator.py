@@ -179,6 +179,42 @@ def _metrics(r, ann=ANN):
     }
 
 
+# ---------------- robust multi-block fitness ----------------
+# The selection span (TRAIN start .. TEST start) is cut into `blocks` contiguous slices;
+# each slice's Sharpe is shrunk by `se_penalty` standard errors (Lo 2002 — short or merely
+# lucky slices lose the most), and the fitness is the `quantile` of the shrunk values
+# (0 = strict worst block). One golden regime can no longer carry a formula: it has to
+# work, at least modestly, almost everywhere. blocks = 0 restores min(TRAIN, VAL).
+def _block_fitness(sel, ann, blocks, quantile, se_penalty):
+    n = len(sel)
+    if n < blocks * 30:                                # too short to measure per block
+        return None
+    edges = np.linspace(0, n, blocks + 1).astype(int)
+    adj = []
+    for a, b in zip(edges[:-1], edges[1:]):
+        r = sel.iloc[a:b]
+        sh = _sharpe(r, ann)
+        if not np.isfinite(sh):
+            sh = 0.0                                   # no evidence in this slice ≠ disaster
+        se = np.sqrt((1.0 + 0.5 * sh * sh) * ann / max(b - a, 1))
+        adj.append(sh - se_penalty * se)
+    return float(np.quantile(adj, quantile)), [round(float(x), 3) for x in adj]
+
+
+def _mean_eff_n(A, elig, rows):
+    """Average effective number of positions — 1/HHI of the |alpha| shares per bar. This is
+    the book concentration the simulator actually trades to first order: vol targeting
+    scales every weight by the same factor (HHI-invariant), inertia only smooths it."""
+    X = np.where(elig[rows], np.abs(A[rows]), 0.0)
+    X = np.where(np.isfinite(X), X, 0.0)
+    g = X.sum(axis=1)
+    live = g > 0
+    if not live.any():
+        return 0.0
+    F = X[live] / g[live, None]
+    return float((1.0 / np.maximum((F * F).sum(axis=1), 1e-12)).mean())
+
+
 def make_market(panel, tk, raw=None, vol_window=30):
     return precompute_market(panel, tk, raw, vol_window=vol_window)
 
@@ -201,9 +237,13 @@ def basket_returns(panel):
     return panel['ret'].where(eligible).mean(axis=1).fillna(0.0)
 
 
-def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lambda=0.06):
-    """Run the genome through the fast engine. Return a dict with per-segment metrics and the
-    train+val returns vector (for correlation/novelty). None -> an invalid genome."""
+def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lambda=0.06,
+             fit=None):
+    """Run the genome through the fast engine. Return a dict with per-segment metrics, the
+    selection fitness `base_fit` and the train+val returns vector (for correlation/novelty).
+    None -> an invalid genome. `fit` (optional dict: blocks / quantile / se_penalty /
+    conc_penalty / min_eff_n) switches base_fit from the legacy min(TRAIN, VAL) Sharpe to
+    the robust multi-block fitness — see _block_fitness."""
     try:
         alpha_panel = eval_alpha_panel(node, panel)
     except Exception:
@@ -211,9 +251,9 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lamb
     if alpha_panel is None or not np.isfinite(alpha_panel.to_numpy()).any():
         return None
 
+    A = alpha_panel[tk].to_numpy(dtype=np.float64)
     try:
-        ret = fast_sim(alpha_panel[tk].to_numpy(dtype=np.float64), market, vol, exec_rate,
-                       ann=ann, ewma_lambda=ewma_lambda)
+        ret = fast_sim(A, market, vol, exec_rate, ann=ann, ewma_lambda=ewma_lambda)
     except Exception:
         return None
 
@@ -229,11 +269,30 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lamb
     if m_tr is None or m_va is None:
         return None
 
+    base_fit = min(m_tr['sharpe'], m_va['sharpe'])     # legacy fitness (blocks = 0)
+    blocks_adj = eff_n = None
+    if fit and int(fit.get('blocks', 0)) >= 2:
+        sel = ret[(ret.index >= splits['train'][0]) & (ret.index < splits['test'][0])]
+        bf = _block_fitness(sel, ann, int(fit['blocks']),
+                            float(fit.get('quantile', 0.25)),
+                            float(fit.get('se_penalty', 1.0)))
+        if bf is None:
+            return None
+        base_fit, blocks_adj = bf
+    if fit and float(fit.get('conc_penalty', 0.0)) > 0:   # independent of the blocks switch
+        rows = ((alpha_panel.index >= splits['train'][0])
+                & (alpha_panel.index < splits['test'][0]))
+        eff_n = round(_mean_eff_n(A, market['base_elig'], rows), 2)
+        need = float(fit.get('min_eff_n', 3.0))
+        if eff_n < need:                               # one-coin books bleed fitness
+            base_fit -= float(fit['conc_penalty']) * (need - eff_n) / need
+
     rv = pd.concat([tr, va])                    # vector for correlation/novelty
     return {
         'canon': node.canon(),
         'size': node.size(),
         'train': m_tr, 'val': m_va, 'test': m_te,
         'train_sharpe': m_tr['sharpe'], 'val_sharpe': m_va['sharpe'],
+        'base_fit': float(base_fit), 'blocks': blocks_adj, 'eff_n': eff_n,
         'rv': rv.to_numpy(dtype=np.float32),
     }

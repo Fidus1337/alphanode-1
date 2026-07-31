@@ -112,6 +112,7 @@ DEFAULTS = {
     'tournament': 5, 'elitism': 6, 'random_inject': 10, 'crossover_prob': 0.6,
     # fitness
     'parsimony': 0.010, 'corr_threshold': 0.70, 'corr_penalty': 0.5, 'hof_capacity': 15,
+    'fit_blocks': 0,        # robust multi-block fitness (experimental); 0 = legacy min(TRAIN,VAL)
     # date segments (TRAIN < VAL < TEST)
     'train_start': '2019-09-05', 'val_start': '2021-11-01',
     'test_start': '2023-01-01', 'test_end': '2026-07-05',
@@ -303,6 +304,7 @@ class App:
             corr_threshold=self._gf(self.v_corrt, d['corr_threshold']),
             corr_penalty=self._gf(self.v_corrp, d['corr_penalty']),
             hof_capacity=self._gi(self.v_hof, d['hof_capacity']),
+            fit_blocks=self._gi(self.v_fitblocks, d['fit_blocks']),
             train_start=self.v_train.get().strip(), val_start=self.v_val.get().strip(),
             test_start=self.v_test.get().strip(), test_end=self.v_end.get().strip(),
         )
@@ -752,6 +754,13 @@ class App:
                                   tip='Penalty for similarity to an already found alpha — for diversity.')
         self.v_hof = self._num(g, 'Hall of Fame size', self.cfg['hof_capacity'], 3, 1, 100, 1,
                                tip='How many champions to keep as output per round.')
+        self.v_fitblocks = self._num(g, 'Robust blocks (0 = legacy)', self.cfg.get('fit_blocks', 5),
+                                     4, 0, 12, 1,
+                                     tip='Robust fitness: the selection span is cut into K regime\n'
+                                         'blocks; each block\'s Sharpe is shrunk by its standard\n'
+                                         'error and the fitness is the near-worst block — a formula\n'
+                                         'must work everywhere, not shine once. 0 = the legacy\n'
+                                         'min(TRAIN, VAL) fitness.')
 
         # --- segments ---
         g = self._section(inner, 'DATE SEGMENTS  (TRAIN < VAL < TEST)')
@@ -1385,6 +1394,7 @@ class App:
         self.v_inject.set(c['random_inject']); self.v_cx.set(c['crossover_prob'])
         self.v_pars.set(c['parsimony']); self.v_corrt.set(c['corr_threshold'])
         self.v_corrp.set(c['corr_penalty']); self.v_hof.set(c['hof_capacity'])
+        self.v_fitblocks.set(c.get('fit_blocks', 5))
         self.v_train.set(c['train_start']); self.v_val.set(c['val_start'])
         self.v_test.set(c['test_start']); self.v_end.set(c['test_end'])
 
@@ -1493,6 +1503,7 @@ class App:
             ALPHANODE_CORR_THRESHOLD=str(c['corr_threshold']),
             ALPHANODE_CORR_PENALTY=str(c['corr_penalty']),
             ALPHANODE_HOF_CAPACITY=str(c['hof_capacity']),
+            ALPHANODE_FIT_BLOCKS=str(c['fit_blocks']),
             ALPHANODE_TRAIN_START=c['train_start'], ALPHANODE_VAL_START=c['val_start'],
             ALPHANODE_TEST_START=c['test_start'], ALPHANODE_TEST_END=c['test_end'],
         )

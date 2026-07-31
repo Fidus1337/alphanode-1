@@ -90,6 +90,12 @@ def load_config(path=None):
         'corr_thresh': cp.getfloat('fitness', 'corr_threshold'),
         'corr_penalty': cp.getfloat('fitness', 'corr_penalty'),
         'hof_cap': cp.getint('fitness', 'hof_capacity'),
+        # robust multi-block fitness (0 blocks = legacy min(TRAIN,VAL); see config.ini)
+        'fit_blocks': cp.getint('fitness', 'blocks', fallback=0),
+        'fit_quantile': cp.getfloat('fitness', 'block_quantile', fallback=0.25),
+        'fit_se_penalty': cp.getfloat('fitness', 'se_penalty', fallback=1.0),
+        'fit_conc_penalty': cp.getfloat('fitness', 'conc_penalty', fallback=0.3),
+        'fit_min_eff_n': cp.getfloat('fitness', 'min_eff_n', fallback=3.0),
         # final coordinate-descent tuning of champions' windows (continuous, off-grid)
         'window_polish': cp.getboolean('search', 'window_polish', fallback=True),
     }
