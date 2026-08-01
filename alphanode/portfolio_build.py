@@ -187,7 +187,7 @@ def build(top_n, sim_start, jobs, out_path, select='test'):
 
 def _build_daily(cfg, top, sim_start, jobs, out_path, select):
     """1d: the real quantpylib Portfolio — the numbers paper/Serve will reproduce."""
-    from evaluator import build_panel, basket_returns
+    from evaluator import build_panel, basket_returns, open_pnl_series
     from quantpylib.simulator.alpha import Portfolio
 
     t0 = time.time()
@@ -232,8 +232,10 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
     # combined target weights over the WHOLE simulated span — the signals CSV labels every row
     # with its TRAIN/VAL/TEST segment, same as the single-alpha export
     present = [t for t in tk if f'{t} w' in comb.columns]
-    cw = comb[[f'{t} w' for t in present]]
-    cw = cw[cw.abs().sum(axis=1) > 0]                     # drop empty days
+    cw_all = comb[[f'{t} w' for t in present]].rename(
+        columns={f'{t} w': t for t in present})
+    op = open_pnl_series(cw_all, panel['ret']).reindex(ce.index).fillna(0.0)
+    cw = cw_all[cw_all.abs().sum(axis=1) > 0]             # drop empty days
     weights = {'dates': [d.strftime('%Y-%m-%d') for d in cw.index], 'tickers': present,
                'W': [[round(float(x), 5) for x in row] for row in cw.to_numpy()]}
 
@@ -246,6 +248,7 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
            'segments': segs, 'basket_segments': bh_segs, 'bounds': _bounds(cfg['splits']),
            'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
            'weights': weights, 'weights_span': 'full',   # the CSV export checks this stamp
+           'open_pnl': [round(float(x), 5) for x in op.values],
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values],
                       'basket': [round(float(x), 5) for x in be.values]},
            'built_secs': round(time.time() - t0, 1)}
@@ -261,7 +264,7 @@ def _build_fast(cfg, top, out_path, select):
     inertia layer is applied with identical semantics — just in the search's engine, with the
     timeframe's annualization/EWMA. No multiprocessing: fastsim does a member in ~a second."""
     from genome import parse
-    from evaluator import build_panel, basket_returns, make_market, eval_alpha_panel
+    from evaluator import build_panel, basket_returns, make_market, eval_alpha_panel, open_pnl_series
     from fastsim import fast_sim_paths
 
     t0 = time.time()
@@ -304,6 +307,8 @@ def _build_fast(cfg, top, out_path, select):
     be = (1 + br).cumprod()
     step = max(1, len(ce) // 3000)            # chart payload cap (a 15m full span is ~200k bars)
     dates = [d.strftime(fmt) for d in ce.index[::step]]
+    op = open_pnl_series(pd.DataFrame(comb_wl, index=market['index'], columns=list(tk)),
+                         panel['ret']).reindex(ce.index).fillna(0.0)
 
     # per-bar dollar weights: w = wl / Σ|wl| (row gross); NaN cells (pre-listing) -> 0.
     # Intraday stays TEST-only ON PURPOSE: a full 15m span is ~100k bars and would blow the
@@ -323,6 +328,7 @@ def _build_fast(cfg, top, out_path, select):
            'segments': segs, 'basket_segments': bh_segs, 'bounds': _bounds(cfg['splits']),
            'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
            'weights': weights, 'weights_span': 'test',   # intraday: TEST-only (payload size)
+           'open_pnl': [round(float(x), 5) for x in op.values[::step]],
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values[::step]],
                       'basket': [round(float(x), 5) for x in be.values[::step]]},
            'built_secs': round(time.time() - t0, 1)}

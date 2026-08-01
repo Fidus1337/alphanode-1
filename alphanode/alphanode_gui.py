@@ -2695,9 +2695,20 @@ class App:
                 dpi = 100
                 ph = self.cfg.get('pf_h') or 0            # user-dragged height (px), 0 = automatic
                 fig_h = (ph / dpi) if ph else min(3.8, max(2.4, w / dpi / 4.5))
+                op = doc.get('open_pnl') or None
+                if op is not None and len(op) != len(eq['dates']):
+                    op = None                             # malformed doc — draw without the panel
+                if op is not None and not ph:
+                    fig_h = min(4.8, fig_h * 1.3)         # room for the lower panel
                 with matplotlib.rc_context(self._mpl_rc()):
-                    fig = plt.figure(figsize=(w / dpi, fig_h), dpi=dpi)
-                    ax = fig.gca()
+                    if op is not None:
+                        fig, (ax, ax2) = plt.subplots(
+                            2, 1, sharex=True, figsize=(w / dpi, fig_h), dpi=dpi,
+                            gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.08})
+                    else:
+                        fig = plt.figure(figsize=(w / dpi, fig_h), dpi=dpi)
+                        ax = fig.gca()
+                        ax2 = None
                     ax.plot(x, eq['combined'], lw=2.0, color=ACC, label=f'Portfolio (top-{doc.get("n")})')
                     ax.plot(x, eq['basket'], lw=1.2, color='#f9a825', ls=':', label='buy & hold (EW)')
                     ax.set_yscale('log'); ax.grid(True, which='both', alpha=0.3)
@@ -2714,6 +2725,8 @@ class App:
                         for e in edges[1:-1]:
                             if lo0 < e < hi0:             # a late --sim-start can clip a segment
                                 ax.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
+                                if ax2 is not None:
+                                    ax2.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
                         for name, lo, hi in zip(('TRAIN', 'VAL', 'TEST'), edges[:-1], edges[1:]):
                             if hi > lo:
                                 ax.text(lo + (hi - lo) / 2, 0.985, name, transform=trans,
@@ -2723,7 +2736,24 @@ class App:
                         title = f'combined equity — TEST ({doc.get("test", "")})'
                     ax.set_title(title, fontsize=9)
                     ax.tick_params(labelsize=8)
-                    fig.tight_layout(); fig.savefig(PORTFOLIO_PNG, dpi=dpi, facecolor=CARD)
+                    if ax2 is not None:
+                        import numpy as np
+                        opv = np.asarray(op, dtype=float)
+                        ax2.fill_between(x, opv, 0, where=opv >= 0, color=POS, alpha=0.30, lw=0)
+                        ax2.fill_between(x, opv, 0, where=opv < 0, color=NEG, alpha=0.30, lw=0)
+                        ax2.plot(x, opv, lw=0.9, color=MUT)
+                        ax2.axhline(0, color=MUT, lw=0.8)
+                        ax2.grid(True, alpha=0.3)
+                        ax2.tick_params(labelsize=8)
+                        ax2.set_ylabel('open PnL', fontsize=8)
+                        ax2.text(0.005, 0.93, 'open PnL — unrealized gain/loss of the held '
+                                              'positions (share of book; a close/flip realizes it away)',
+                                 transform=ax2.transAxes, fontsize=7, color=MUT, va='top')
+                    import warnings as _w
+                    with _w.catch_warnings():             # tight_layout grumbles about sharex axes
+                        _w.simplefilter('ignore')
+                        fig.tight_layout()
+                    fig.savefig(PORTFOLIO_PNG, dpi=dpi, facecolor=CARD)
                     plt.close(fig)
             self.root.after(0, self._show_pf_img)
         except Exception:                                # noqa: BLE001
@@ -3289,12 +3319,18 @@ class App:
                 else:
                     ts = (champ.get('test') or {}).get('sharpe')
                     label = 'strategy' + (f' · TEST Sharpe {ts:+.2f}' if ts is not None else '')
+                    try:                                 # open-PnL panel: best-effort, chart survives without
+                        from evaluator import open_pnl_series
+                        wide = self._alpha_weights_wide(champ['formula'], cfg, market, panel)
+                        op = open_pnl_series(wide, panel['ret'])
+                    except Exception:                    # noqa: BLE001
+                        op = None
                     with matplotlib.rc_context(self._mpl_rc()):
                         report.plot_equity(
                             {label: r}, basket, cfg['splits'], holder['out'],
                             'Growth of $1 (NET, log):  TRAIN | VAL | TEST   vs   EW basket (buy & hold)',
                             figsize=holder['figsize'], dpi=holder['dpi'],
-                            facecolor=CARD, fg=MUT, axline=TXT)
+                            facecolor=CARD, fg=MUT, axline=TXT, open_pnl=op)
                     holder['path'] = holder['out']
             except Exception as e:                       # noqa: BLE001
                 holder['err'] = f'{type(e).__name__}: {e}'

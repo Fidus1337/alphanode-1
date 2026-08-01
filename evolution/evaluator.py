@@ -237,6 +237,30 @@ def basket_returns(panel):
     return panel['ret'].where(eligible).mean(axis=1).fillna(0.0)
 
 
+def open_pnl_series(weights, rets):
+    """Unrealized ("open") PnL of the currently held positions, as a share of the book.
+
+    weights: DataFrame T×N of position weights (sign = side; an episode lasts while the sign
+    holds). rets: DataFrame of per-asset simple returns on the same or a wider grid. Each bar
+    accrues yesterday's weight × today's return into that asset's running episode; a sign flip
+    (or going flat) "realizes" the episode, so its PnL leaves the line. The cross-asset sum is
+    what the open book is currently up or down — the number a trader calls open PnL."""
+    W = np.nan_to_num(weights.to_numpy(dtype=np.float64))
+    R = np.nan_to_num(rets.reindex(index=weights.index, columns=weights.columns)
+                      .to_numpy(dtype=np.float64))
+    c = np.zeros_like(W)
+    c[1:] = W[:-1] * R[1:]                     # what the position held INTO the bar earned on it
+    s = np.zeros_like(W)
+    s[1:] = np.sign(W[:-1])                    # the episode each accrual belongs to
+    chg = np.ones_like(W, dtype=bool)
+    chg[1:] = s[1:] != s[:-1]                  # episode starts (incl. re-entry after flat)
+    cum = np.cumsum(c, axis=0)
+    base = np.where(chg, cum - c, np.nan)      # cum level just before the episode's first accrual
+    base = pd.DataFrame(base).ffill().to_numpy()
+    per_asset = np.where(s != 0, cum - np.nan_to_num(base), 0.0)
+    return pd.Series(per_asset.sum(axis=1), index=weights.index)
+
+
 def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lambda=0.06,
              fit=None):
     """Run the genome through the fast engine. Return a dict with per-segment metrics, the
