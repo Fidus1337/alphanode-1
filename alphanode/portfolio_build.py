@@ -245,7 +245,7 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
            'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
            'segments': segs, 'basket_segments': bh_segs, 'bounds': _bounds(cfg['splits']),
            'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
-           'weights': weights,
+           'weights': weights, 'weights_span': 'full',   # the CSV export checks this stamp
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values],
                       'basket': [round(float(x), 5) for x in be.values]},
            'built_secs': round(time.time() - t0, 1)}
@@ -322,7 +322,7 @@ def _build_fast(cfg, top, out_path, select):
            'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
            'segments': segs, 'basket_segments': bh_segs, 'bounds': _bounds(cfg['splits']),
            'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
-           'weights': weights,
+           'weights': weights, 'weights_span': 'test',   # intraday: TEST-only (payload size)
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values[::step]],
                       'basket': [round(float(x), 5) for x in be.values[::step]]},
            'built_secs': round(time.time() - t0, 1)}

@@ -2912,7 +2912,8 @@ class App:
         last = wide.iloc[-1]
         pos = sorted([(t, float(v)) for t, v in last.items() if abs(v) > 0.0005],
                      key=lambda kv: -abs(kv[1]))
-        self._signals_dialog(path, wide.index[-1].date(), pos, len(wide))
+        rng = f'{wide.index[0].date()}..{wide.index[-1].date()}'
+        self._signals_dialog(path, wide.index[-1].date(), pos, len(wide), rng=rng)
 
     # ---------- PDF analytics report (single alpha and the portfolio) ----------
     def _worker_cfg(self):
@@ -3045,6 +3046,14 @@ class App:
                                 'Build the portfolio first (rebuild it if it was built by an older version).',
                                 parent=self.root)
             return
+        if doc.get('tf', '1d') == '1d' and doc.get('weights_span') != 'full':
+            if not messagebox.askyesno(
+                    'Portfolio signals',
+                    'This portfolio was built by an OLDER version — its stored weights cover '
+                    'TEST only.\nPress "▶ Build portfolio" again and the CSV will span the whole '
+                    'TRAIN/VAL/TEST history.\n\nExport the TEST-only CSV anyway?',
+                    icon='warning', default='no', parent=self.root):
+                return
         path = filedialog.asksaveasfilename(
             parent=self.root, title='Save portfolio signals', defaultextension='.csv',
             initialfile=f'signals_portfolio_top{doc.get("n", "")}.csv',
@@ -3107,7 +3116,7 @@ class App:
             return
         self._paper_dialog(path, len(tickers))
 
-    def _signals_dialog(self, path, latest_date, positions, n_days):
+    def _signals_dialog(self, path, latest_date, positions, n_days, rng=None):
         win = self._dialog('Portfolio signals', '460x580')
         frm = self._box(win)
         frm.pack(fill='both', expand=True, padx=18, pady=16)
@@ -3131,8 +3140,10 @@ class App:
             self._lbl(r, text=t, text_color=TXT, font=(self.MONO, 13), anchor='w').pack(side='left')
             self._lbl(r, text=f'{w * 100:+.1f}%', text_color=col, font=(self.MONO, 13, 'bold'),
                          anchor='e').pack(side='right', padx=(0, 8))
-        self._lbl(frm, text=f'Full history ({n_days} bars) — in the CSV: date, ticker, side, '
-                            'weight, weight_pct + the asset\'s open/high/low/close/volume.',
+        covered = f'{n_days} bars' + (f', {rng}' if rng else '')
+        self._lbl(frm, text=f'Full history ({covered}) — in the CSV: date, segment '
+                            '(TRAIN/VAL/TEST), ticker, side, weight, weight_pct + the asset\'s '
+                            'open/high/low/close/volume.',
                      text_color=MUT, font=(self.UI, 12), wraplength=400, justify='left',
                      anchor='w').pack(anchor='w', pady=(10, 0))
         self._btn(frm, 'Close', win.destroy, width=80).pack(anchor='e', pady=(10, 0))
