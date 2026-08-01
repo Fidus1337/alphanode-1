@@ -38,7 +38,10 @@ def load_config(path=None):
     jobs_raw = cp.get('search', 'jobs', fallback='auto').strip()
     jobs = max(1, (os.cpu_count() or 4) - 2) if jobs_raw.lower() == 'auto' else int(jobs_raw)
 
-    uni_raw = cp.get('universe', 'instruments', fallback='all').strip()
+    # ALPHANODE_UNIVERSE (the GUI/node setting) wins over the ini — every consumer of load_config
+    # (portfolio build, workers, validation) must simulate the SAME basket the search optimizes.
+    uni_raw = (os.environ.get('ALPHANODE_UNIVERSE') or
+               cp.get('universe', 'instruments', fallback='all')).strip()
     if uni_raw.lower() in ('', 'all', '*'):
         instruments = None                                  # None -> all from data.pickle
     else:

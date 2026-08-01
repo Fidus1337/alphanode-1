@@ -2554,6 +2554,9 @@ class App:
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
                    ALPHANODE_TF=self._tf(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini(),
+                   # combine on the SAME universe the search optimizes — not all of data.pickle
+                   ALPHANODE_UNIVERSE=('all' if self.cfg.get('universe_all', True)
+                                       else self.cfg.get('universe_list', '')),
                    # the GUI's date fields, node.py-style — the ini only has daily defaults
                    ALPHANODE_TRAIN_START=self.cfg.get('train_start', ''),
                    ALPHANODE_VAL_START=self.cfg.get('val_start', ''),
