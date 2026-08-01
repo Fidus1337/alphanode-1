@@ -28,7 +28,7 @@ import csv
 import json
 import time
 import queue
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import signal
 import pickle
 import difflib
@@ -92,7 +92,8 @@ def _child_cmd(role):
         return [sys.executable, '--role', role]
     script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY,
               'signal': SIGNAL_PY, 'metrics': METRICS_PY, 'pdfreport': PDF_PY,
-              'rescore': os.path.join(HERE, 'rescore_library.py')}[role]
+              'rescore': os.path.join(HERE, 'rescore_library.py'),
+              'forward': os.path.join(HERE, 'forward_track.py')}[role]
     return [sys.executable, '-u', script]
 
 DEFAULTS = {
@@ -225,6 +226,8 @@ class App:
         self._metrics_seq = 0                             # to discard stale background computations
         self._row_items = {}                              # formula -> table row id (to update cells)
         self._pf_proc = None                              # portfolio-build subprocess
+        self._fwd_proc = None                             # forward-track step subprocess
+        self._fwd_entries = []                            # rows currently shown in the FORWARD table
         self._sigs = []                                   # running signal-API services (one per port)
         self._sig_health = {}                             # port -> status text (written by poll workers)
         self._sig_status_lbl = {}                         # port -> status Label (main thread only)
@@ -1171,6 +1174,12 @@ class App:
         self.btn_pf_pdf = self._btn(ctl, 'PDF', self._pf_pdf_report, width=64)
         self.btn_pf_pdf.configure(state='disabled')
         self.btn_pf_pdf.pack(side='left', padx=(6, 0))
+        self.btn_pf_track = self._btn(ctl, 'Track', self._pf_fwd_enroll, width=76)
+        self.btn_pf_track.configure(state='disabled')
+        self.btn_pf_track.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_pf_track, 'Enroll this exact portfolio into the FORWARD TRACK below:\n'
+                                     'the strategy is frozen (formulas + universe + vol/fee) and\n'
+                                     'paper-stepped once per closed daily bar, append-only.')
         self._tip(self.btn_pf_pdf, 'Portfolio analytics dashboard as PDF: KPIs, equity,\n'
                                    'exposure and turnover, weight structure, monthly\n'
                                    'returns and conclusions (TEST period).')
@@ -1198,6 +1207,49 @@ class App:
         card3.bind('<Configure>', self._on_pf_resize)         # re-render equity to the panel width
         self.root.after(500, self._load_portfolio_on_start)   # show last build, if any
 
+        # ---- FORWARD TRACK (append-only paper stepping of enrolled strategies) ----
+        card4 = self._card(right)
+        card4.grid(row=7, column=0, sticky='ew', pady=(14, 0))
+        p4 = self._pad(card4)
+        hf = self._box(p4)
+        hf.pack(fill='x')
+        self._head(hf, 'FORWARD TRACK — daily paper steps, append-only').pack(side='left')
+        fctl = self._box(hf)
+        fctl.pack(side='right')
+        self.btn_fwd_step = self._btn(fctl, '▶ Step now', self._fwd_step, width=110)
+        self.btn_fwd_step.pack(side='left')
+        self._tip(self.btn_fwd_step, 'Run one paper step for every enrolled strategy: download the\n'
+                                     'latest CLOSED daily bars from Binance, recompute the target\n'
+                                     'positions with the real engine, mark-to-market, rebalance, fees.\n'
+                                     'Runs automatically once per closed bar while the app is open.')
+        self.btn_fwd_chart = self._btn(fctl, 'Chart', self._fwd_chart, width=76)
+        self.btn_fwd_chart.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_fwd_chart, 'Forward equity of the selected row — only live steps,\n'
+                                      'nothing recomputed backwards.')
+        self.btn_fwd_arch = self._btn(fctl, 'Archive', self._fwd_archive, width=90)
+        self.btn_fwd_arch.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_fwd_arch, 'Stop stepping the selected strategy. Its history stays in\n'
+                                     'state/forward.json (append-only) — the row just leaves the table.')
+        self.lbl_fwd = self._lbl(p4, text='', text_color=FAINT, font=(self.UI, 12),
+                                 wraplength=900, anchor='w', justify='left')
+        self.lbl_fwd.pack(anchor='w', fill='x', pady=(8, 2))
+        fcols = ('id', 'kind', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
+        self.fwd_tree = ttk.Treeview(p4, columns=fcols, show='headings', height=4)
+        for c, txt, w, anch in (('id', 'STRATEGY', 240, 'w'), ('kind', 'KIND', 80, 'w'),
+                                ('enrolled', 'ENROLLED', 100, 'center'), ('days', 'DAYS', 60, 'e'),
+                                ('equity', 'EQUITY', 100, 'e'), ('ret', 'RETURN', 90, 'e'),
+                                ('sharpe', 'SHARPE', 80, 'e'), ('dd', 'MAXDD', 80, 'e'),
+                                ('last', 'LAST STEP', 110, 'center')):
+            self.fwd_tree.heading(c, text=txt)
+            self.fwd_tree.column(c, width=int(w * self.SCALE), anchor=anch,
+                                 stretch=(c == 'id'))
+        self.fwd_tree.pack(fill='x', pady=(4, 0))
+        self.fwd_tree.bind('<Double-1>', lambda _e: self._fwd_chart())
+        self.root.after(900, self._fwd_refresh)
+        if not getattr(self, '_fwd_tick_on', False):          # _build reruns on theme switch —
+            self._fwd_tick_on = True                          # keep exactly one tick loop
+            self.root.after(20_000, self._fwd_tick)
+
     def _load_portfolio_on_start(self):
         try:
             doc = json.load(open(PORTFOLIO_JSON, encoding='utf-8'))
@@ -1213,7 +1265,7 @@ class App:
         self.lbl_pf_m.configure(text='')
         self.pf_img.config(image='')
         self._pf_img_ref = None
-        for b in (self.btn_pf_csv, self.btn_pf_paper, self.btn_pf_sig):
+        for b in (self.btn_pf_csv, self.btn_pf_paper, self.btn_pf_sig, self.btn_pf_track):
             b.configure(state='disabled')
 
     def _stat(self, parent, label, col):
@@ -2601,6 +2653,7 @@ class App:
         self.btn_pf_paper.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         self.btn_pf_sig.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         self.btn_pf_pdf.configure(state=('normal' if doc.get('weights') else 'disabled'))
+        self.btn_pf_track.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         m = doc.get('metrics') or {}
         b = doc.get('basket') or {}
         if doc.get('sel') == 'base':                     # selection never saw TEST
@@ -2864,6 +2917,14 @@ class App:
         self._tip(pdf_btn, 'Analytics dashboard as PDF: KPIs, equity and drawdown,\n'
                            'exposure and turnover, weight structure, monthly returns,\n'
                            'TRAIN/VAL/TEST breakdown and conclusions.')
+        fwd_btn = self._btn(btnrow, 'Forward track ➕',
+                            lambda: self._fwd_enroll(
+                                [_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6], 'alpha'),
+                            width=150)
+        fwd_btn.pack(side='left', padx=(8, 0))
+        self._tip(fwd_btn, 'Enroll this alpha into the FORWARD TRACK: freeze it (formula +\n'
+                           'universe + vol/fee) and paper-step it once per closed daily bar\n'
+                           'on live Binance data. Append-only — the honest forward test.')
 
         body = self._box(win)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 14))
@@ -2944,6 +3005,230 @@ class App:
                      key=lambda kv: -abs(kv[1]))
         rng = f'{wide.index[0].date()}..{wide.index[-1].date()}'
         self._signals_dialog(path, wide.index[-1].date(), pos, len(wide), rng=rng)
+
+    # ---------- forward track (append-only paper stepping inside the node) ----------
+    def _fwd_lib(self):
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import forward_track
+        return forward_track
+
+    def _fwd_universe(self):
+        """The universe to FREEZE into an enrollment — same resolution as the paper buttons."""
+        c = self.cfg
+        if c.get('universe_all', True):
+            try:
+                return list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
+            except Exception as e:                             # noqa: BLE001
+                messagebox.showerror('Forward track', f'Cannot read the loaded data: {e}',
+                                     parent=self.root)
+                return None
+        return [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()] or None
+
+    def _fwd_enroll(self, formulas, name, kind):
+        if self._tf_gate('The forward track'):
+            return
+        formulas = [f for f in (formulas or []) if f and f.strip()]
+        if not formulas:
+            return
+        tickers = self._fwd_universe()
+        if not tickers:
+            messagebox.showwarning('Forward track', 'The pairs universe is empty.', parent=self.root)
+            return
+        ft = self._fwd_lib()
+        track = ft.load_track()
+        dup = ft.find_duplicate(track, formulas, tickers)
+        if dup:
+            messagebox.showinfo('Forward track',
+                                f'Already enrolled: {dup["id"]} (since {dup["enrolled"]}).',
+                                parent=self.root)
+            return
+        c = self.cfg
+        entry = ft.new_entry(name, kind, formulas, tickers, c.get('target_vol', 0.25),
+                             c.get('exec_cost', 0.001), c.get('train_start', '2019-09-05'))
+        track['entries'].append(entry)
+        ft.save_track(track)
+        self._fwd_refresh()
+        if messagebox.askyesno(
+                'Forward track',
+                f'{entry["id"]} enrolled. The strategy is FROZEN as of today '
+                f'({len(formulas)} formula{"s" if len(formulas) > 1 else ""}, {len(tickers)} assets, '
+                f'vol {c.get("target_vol", 0.25)}, fee {c.get("exec_cost", 0.001)}) and will be '
+                'paper-stepped once per closed daily bar while the app is open.\n'
+                'History is append-only — forward numbers are never recomputed backwards.\n\n'
+                'Run the first step now (downloads live Binance data)?', parent=self.root):
+            self._fwd_step()
+
+    def _pf_fwd_enroll(self):
+        doc = self._pf_doc
+        formulas = (doc or {}).get('formulas_full')
+        if not formulas:
+            messagebox.showinfo('Forward track', 'Build the portfolio first.', parent=self.root)
+            return
+        self._fwd_enroll(list(formulas), f'portfolio_top{doc.get("n", len(formulas))}', 'portfolio')
+
+    def _fwd_step(self, force=False):
+        if self._fwd_proc and self._fwd_proc.poll() is None:
+            return
+        env = dict(os.environ)
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR)
+        try:
+            self._fwd_proc = subprocess.Popen(
+                _child_cmd('forward') + ['step'] + (['--force'] if force else []), env=env,
+                cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except Exception as e:                                 # noqa: BLE001
+            self.lbl_fwd.configure(text=f'step failed to start: {e}')
+            return
+        self.btn_fwd_step.configure(state='disabled')
+        self.lbl_fwd.configure(text='stepping — downloading live closed bars and running the engine…')
+        threading.Thread(target=self._fwd_wait, args=(self._fwd_proc,), daemon=True).start()
+
+    def _fwd_wait(self, proc):
+        out = proc.stdout.read() if proc.stdout else ''
+        proc.wait()
+        lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+        tail = lines[-1] if lines else ''
+        self.root.after(0, lambda: self._fwd_step_done(tail))
+
+    def _fwd_step_done(self, tail):
+        try:
+            self.btn_fwd_step.configure(state='normal')
+            self._fwd_refresh(status=tail)
+        except tk.TclError:                                    # window closed while stepping
+            pass
+
+    def _fwd_refresh(self, status=None):
+        ft = self._fwd_lib()
+        entries = [e for e in ft.load_track()['entries'] if not e.get('archived')]
+        self._fwd_entries = entries
+        for i in self.fwd_tree.get_children():
+            self.fwd_tree.delete(i)
+        for e in entries:
+            m = ft.metrics(e)
+            self.fwd_tree.insert('', 'end', iid=e['id'], values=(
+                e['id'], e['kind'], e['enrolled'], m['days'],
+                f'${m["equity"]:,.0f}', f'{m["ret"] * 100:+.1f}%',
+                (f'{m["sharpe"]:+.2f}' if m['sharpe'] is not None else '—'),
+                (f'{m["dd"] * 100:.0f}%' if m['dd'] is not None else '—'),
+                m['last'] or '—'))
+        if entries:
+            base = (f'{len(entries)} enrolled · steps run automatically once per closed daily bar '
+                    '(UTC) while the app is open · history is append-only — forward numbers are '
+                    'written by live steps only, never recomputed.')
+        else:
+            base = ('empty — enroll a champion (double-click it in the leaderboard → "Forward '
+                    'track") or the built portfolio ("Track"). Enrollment freezes the strategy; '
+                    'the node then paper-steps it daily on live data, append-only.')
+        self.lbl_fwd.configure(text=(f'{status}   ·   {base}' if status else base))
+
+    def _fwd_tick(self):
+        """Once per closed UTC bar: if any enrolled strategy has not seen yesterday's bar, step.
+        Re-checks every 30 minutes — cheap (reads one small JSON) and missing a day is harmless
+        (mark-to-market covers the gap on the next step)."""
+        try:
+            ft = self._fwd_lib()
+            expected = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+            due = [e for e in ft.load_track()['entries'] if not e.get('archived')
+                   and (e['state'].get('last_run') or '') < expected]
+            if due and not (self._fwd_proc and self._fwd_proc.poll() is None):
+                self._fwd_step()
+        except Exception:                                      # noqa: BLE001 — never kill the loop
+            pass
+        self.root.after(30 * 60 * 1000, self._fwd_tick)
+
+    def _fwd_selected(self):
+        sel = self.fwd_tree.selection()
+        if not sel:
+            messagebox.showinfo('Forward track', 'Select a strategy in the table first.',
+                                parent=self.root)
+            return None
+        return next((e for e in self._fwd_entries if e['id'] == sel[0]), None)
+
+    def _fwd_archive(self):
+        e = self._fwd_selected()
+        if not e:
+            return
+        if not messagebox.askyesno('Forward track',
+                                   f'Archive {e["id"]}? It stops stepping; the history stays in '
+                                   'state/forward.json (append-only), the row leaves the table.',
+                                   parent=self.root):
+            return
+        ft = self._fwd_lib()
+        track = ft.load_track()
+        for x in track['entries']:
+            if x['id'] == e['id']:
+                x['archived'] = True
+        ft.save_track(track)
+        self._fwd_refresh()
+
+    def _fwd_chart(self):
+        e = self._fwd_selected()
+        if not e:
+            return
+        hist = e.get('history') or []
+        if not hist:
+            messagebox.showinfo('Forward track', 'No steps yet — the curve appears after the '
+                                                 'first daily step.', parent=self.root)
+            return
+        out = os.path.join(STATE_DIR, f'forward_view_{e["id"]}.png')
+        holder = {'done': False, 'err': None}
+
+        def work():
+            try:
+                with self._plot_lock:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as plt
+                    import pandas as pd
+                    x = pd.to_datetime([h['date'] for h in hist])
+                    y = [h['equity'] for h in hist]
+                    with matplotlib.rc_context(self._mpl_rc()):
+                        fig = plt.figure(figsize=(9.8, 4.4), dpi=100)
+                        ax = fig.gca()
+                        ax.plot(x, y, lw=2.0, color=ACC,
+                                label=f'{e["id"]} · {len(hist)} live steps')
+                        ax.axhline(e['start_capital'], color=MUT, lw=0.9, ls='--')
+                        ax.set_title(f'forward equity — enrolled {e["enrolled"]} · append-only '
+                                     '(live steps, nothing recomputed)', fontsize=9)
+                        ax.legend(loc='upper left', fontsize=8)
+                        ax.grid(True, alpha=0.3)
+                        ax.tick_params(labelsize=8)
+                        fig.tight_layout()
+                        fig.savefig(out, dpi=100, facecolor=CARD)
+                        plt.close(fig)
+            except Exception as ex:                            # noqa: BLE001
+                holder['err'] = f'{type(ex).__name__}: {ex}'
+            holder['done'] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        win = self._dialog(f'Forward — {e["id"]}', '1020x520')
+        body = self._box(win)
+        body.pack(fill='both', expand=True, padx=14, pady=12)
+        status = self._lbl(body, text='rendering…', text_color=MUT, font=(self.UI, 14))
+        status.pack(pady=30)
+
+        def show():
+            if not win.winfo_exists():
+                return
+            if not holder['done']:
+                win.after(150, show)
+                return
+            if holder['err']:
+                status.configure(text='Error: ' + holder['err'], fg=NEG)
+                return
+            try:
+                photo = tk.PhotoImage(file=out)
+                status.destroy()
+                lbl = tk.Label(body, image=photo, bg=CARD, borderwidth=0)
+                lbl.image = photo
+                lbl.pack(fill='both', expand=True)
+            finally:
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+        win.after(150, show)
 
     # ---------- PDF analytics report (single alpha and the portfolio) ----------
     def _worker_cfg(self):

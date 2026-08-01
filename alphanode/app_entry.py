@@ -199,6 +199,9 @@ def main():
     elif role == 'rescore':
         import rescore_library
         rescore_library.main()                           # re-score library.jsonl with current metrics
+    elif role == 'forward':
+        import forward_track
+        sys.exit(forward_track.main())                   # append-only paper steps of enrolled strategies
     elif role == 'cli':
         import cli
         cli.main(argv[1:])                               # remaining argv -> CLI subcommands
