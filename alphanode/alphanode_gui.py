@@ -1074,7 +1074,7 @@ class App:
                                  'the old compact view. Sorting by any column works in both.')
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
-        cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')
+        cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
         self._HEAD = {}
         # Widths fit the WIDEST real value plus the sort arrow the heading grows by (' ▼'), and are
@@ -1083,9 +1083,10 @@ class App:
         for c, txt, w, anc in (('rank', '#', 40, 'center'), ('fit', 'fitness', 86, 'e'),
                                ('test', 'TEST OOS', 86, 'e'), ('ls', 'trades L/S', 100, 'center'),
                                ('act', 'tr/yr·a', 72, 'e'),
-                               ('win', 'win%', 62, 'e'), ('formula', 'formula', 260, 'w')):
+                               ('win', 'win%', 62, 'e'), ('id', 'ID', 116, 'w'),
+                               ('formula', 'formula', 260, 'w')):
             self._HEAD[c] = txt
-            kw = {} if c == 'rank' else {'command': (lambda c=c: self._sort_by(c))}
+            kw = {} if c in ('rank', 'id') else {'command': (lambda c=c: self._sort_by(c))}
             w = int(w * self.SCALE)
             self.tree.heading(c, text=txt, **kw)
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
@@ -2283,9 +2284,10 @@ class App:
             need = max(need, self._tree_font.measure(f))
             m = self._metrics_cache.get(formula)
             ls, act, win = self._fmt_metrics(m)
+            aid = 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
             item = self.tree.insert('', 'end', values=(
                 i + 1, f'{base:+.2f}' if base is not None else '—',
-                f'{ts:+.2f}' if ts is not None else '—', ls, act, win, f),
+                f'{ts:+.2f}' if ts is not None else '—', ls, act, win, aid, f),
                 tags=(sign, stripe))
             self._row_items[formula] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
@@ -2310,7 +2312,7 @@ class App:
         stretches to fill the card. Re-run on every render and on tree resize."""
         try:
             fixed = sum(int(self.tree.column(c, 'width'))
-                        for c in ('rank', 'fit', 'test', 'ls', 'act', 'win'))
+                        for c in ('rank', 'fit', 'test', 'ls', 'act', 'win', 'id'))
         except tk.TclError:                              # theme rebuild mid-flight
             return
         avail = self.tree.winfo_width() - fixed - int(4 * self.SCALE)
@@ -2544,10 +2546,10 @@ class App:
                         m.get('long', ''), m.get('short', ''),
                         round(m['act'], 2) if 'act' in m else '',
                         round(m['win'] * 100, 1) if 'win' in m else '',
-                        formula])
+                        'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6], formula])
         self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
                               'test_dd', 'test_cagr', 'long', 'short', 'tr_yr_a', 'win_pct',
-                              'formula'), out, 'rows')
+                              'id', 'formula'), out, 'rows')
 
     def _export_library(self):
         """Everything the node has ever mined — no dedup, no TEST filter. The table on screen is a
