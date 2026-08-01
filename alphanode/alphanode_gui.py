@@ -2610,14 +2610,24 @@ class App:
                     'validate with Paper')
             picked = 'by TEST OOS'
         eng = 'the real engine' if doc.get('tf', '1d') == '1d' else f'fastsim on {doc["tf"]} bars'
+        span = (f'TRAIN+VAL+TEST {doc["span"]}' if doc.get('span')
+                else f'TEST {doc.get("test", "")}')     # docs built before the full-span change
         self.lbl_pf.configure(text=f'top-{doc.get("n")} {picked} combined via {eng}  ·  '
-                                f'TEST {doc.get("test", "")}  ·  built in '
+                                f'{span}  ·  built in '
                                 f'{doc.get("built_secs", "?")}s  ·  {note}')
         sh = m.get('sharpe')
-        self.lbl_pf_m.configure(
-            text=f'Sharpe {sh:+.2f}   ·   CAGR {m.get("cagr", 0) * 100:+.0f}%   ·   '
-                 f'MaxDD {m.get("dd", 0) * 100:.0f}%      (vs buy&hold Sharpe {b.get("sharpe", 0):+.2f})',
-            fg=(POS if (sh is not None and sh >= 0) else NEG))
+        segs = doc.get('segments') or {}
+        if segs:
+            def _s(name):
+                s = (segs.get(name) or {}).get('sharpe')
+                return f'{s:+.2f}' if s is not None else '—'
+            text = (f'Sharpe  TRAIN {_s("train")} · VAL {_s("val")} · TEST {_s("test")}   ·   '
+                    f'TEST: CAGR {m.get("cagr", 0) * 100:+.0f}%  MaxDD {m.get("dd", 0) * 100:.0f}%'
+                    f'      (vs buy&hold TEST {b.get("sharpe", 0):+.2f})')
+        else:
+            text = (f'Sharpe {sh:+.2f}   ·   CAGR {m.get("cagr", 0) * 100:+.0f}%   ·   '
+                    f'MaxDD {m.get("dd", 0) * 100:.0f}%      (vs buy&hold Sharpe {b.get("sharpe", 0):+.2f})')
+        self.lbl_pf_m.configure(text=text, fg=(POS if (sh is not None and sh >= 0) else NEG))
         threading.Thread(target=self._render_pf_equity, args=(doc, self._pf_width()),
                          daemon=True).start()
 
@@ -2690,8 +2700,27 @@ class App:
                     ax.plot(x, eq['combined'], lw=2.0, color=ACC, label=f'Portfolio (top-{doc.get("n")})')
                     ax.plot(x, eq['basket'], lw=1.2, color='#f9a825', ls=':', label='buy & hold (EW)')
                     ax.set_yscale('log'); ax.grid(True, which='both', alpha=0.3)
-                    ax.legend(loc='upper left', fontsize=8)
-                    ax.set_title(f'combined equity — TEST ({doc.get("test", "")})', fontsize=9)
+                    bounds = doc.get('bounds') or {}
+                    # full-span: segment names sit along the top edge -> legend goes bottom-right
+                    ax.legend(loc=('lower right' if bounds and doc.get('span') else 'upper left'),
+                              fontsize=8)
+                    if bounds and doc.get('span'):        # full-span doc: mark the segments
+                        import matplotlib.transforms as mtrans
+                        trans = mtrans.blended_transform_factory(ax.transData, ax.transAxes)
+                        lo0, hi0 = x[0], x[-1]
+                        edges = [lo0] + [min(max(pd.Timestamp(bounds[k], tz=lo0.tz), lo0), hi0)
+                                         for k in ('val_start', 'test_start')] + [hi0]
+                        for e in edges[1:-1]:
+                            if lo0 < e < hi0:             # a late --sim-start can clip a segment
+                                ax.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
+                        for name, lo, hi in zip(('TRAIN', 'VAL', 'TEST'), edges[:-1], edges[1:]):
+                            if hi > lo:
+                                ax.text(lo + (hi - lo) / 2, 0.985, name, transform=trans,
+                                        ha='center', va='top', fontsize=7.5, color=MUT, alpha=0.9)
+                        title = f'combined equity — TRAIN / VAL / TEST ({doc["span"]})'
+                    else:                                 # docs built before the full-span change
+                        title = f'combined equity — TEST ({doc.get("test", "")})'
+                    ax.set_title(title, fontsize=9)
                     ax.tick_params(labelsize=8)
                     fig.tight_layout(); fig.savefig(PORTFOLIO_PNG, dpi=dpi, facecolor=CARD)
                     plt.close(fig)

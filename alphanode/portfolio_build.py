@@ -125,6 +125,24 @@ def _metrics(capital_ret, lo, hi, ann=365):
             'dd': float((eq / eq.cummax() - 1).min()), 'n': int(len(r))}
 
 
+def _seg_metrics(ret, splits, ann=365):
+    """Per-segment metrics of a returns series: {'train': {...}, 'val': {...}, 'test': {...}}.
+    A segment the simulation does not cover (late --sim-start) comes back None."""
+    return {name: _metrics(ret, splits[name][0], splits[name][1], ann)
+            for name in ('train', 'val', 'test')}
+
+
+def _bounds(splits):
+    """Segment boundary dates for the GUI chart (vertical markers + labels)."""
+    return {'train_start': str(splits['train'][0].date()), 'val_start': str(splits['val'][0].date()),
+            'test_start': str(splits['test'][0].date()), 'test_end': str(splits['test'][1].date())}
+
+
+def _seg_line(segs):
+    return ' / '.join(f'{n.upper()} ' + (f'{m["sharpe"]:+.2f}' if m else '—')
+                      for n, m in segs.items())
+
+
 def _write_doc(doc, out_path):
     tmp = out_path + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
@@ -175,7 +193,9 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
     t0 = time.time()
     tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'))
     ts, te = cfg['splits']['test']
-    start = pd.Timestamp(sim_start, tz='UTC').tz_localize(None).to_pydatetime()
+    # no --sim-start -> the FULL span (TRAIN start), so the doc carries all three segments
+    start = (pd.Timestamp(sim_start, tz='UTC').tz_localize(None).to_pydatetime() if sim_start
+             else cfg['start'])
     end = te.tz_localize(None).to_pydatetime()
 
     formulas = [c['formula'] for c in top]
@@ -197,14 +217,16 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
     comb = pf.run_simulation()
 
     m = _metrics(comb['capital_ret'], ts, te)
+    segs = _seg_metrics(comb['capital_ret'], cfg['splits'])
     indiv = [(_metrics(sdf['capital_ret'], ts, te) or {}).get('sharpe') for sdf in stratdfs]
     bh = basket_returns(panel)
     bh_m = _metrics(bh, ts, te)
+    bh_segs = _seg_metrics(bh, cfg['splits'])
 
-    # equity on TEST (combined + basket), lightly downsampled for the GUI
-    cr = comb['capital_ret']; cr = cr[(cr.index >= ts) & (cr.index < te)].fillna(0.0)
+    # equity over the WHOLE simulated span (combined + basket on the same grid)
+    cr = comb['capital_ret'].fillna(0.0)
     ce = (1 + cr).cumprod()
-    br = bh[(bh.index >= ts) & (bh.index < te)].fillna(0.0); be = (1 + br).cumprod()
+    br = bh.reindex(ce.index).fillna(0.0); be = (1 + br).cumprod()
     dates = [d.strftime('%Y-%m-%d') for d in ce.index]
 
     # combined target weights over TEST (for the "Download signals" CSV / paper-trade in the GUI)
@@ -218,15 +240,17 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
            'tf': '1d',
            'sim_start': str(pd.Timestamp(start).date()),    # predate the selectable picker (=test)
            'test': f'{ts.date()}..{te.date()}',
+           'span': f'{ce.index[0].date()}..{te.date()}',
            'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
+           'segments': segs, 'basket_segments': bh_segs, 'bounds': _bounds(cfg['splits']),
            'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
            'weights': weights,
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values],
                       'basket': [round(float(x), 5) for x in be.values]},
            'built_secs': round(time.time() - t0, 1)}
     _write_doc(doc, out_path)
-    sh = m['sharpe'] if m else float('nan')
-    print(f'✓ portfolio built: Sharpe {sh:+.2f} · {doc["built_secs"]}s → {out_path}', flush=True)
+    print(f'✓ portfolio built: Sharpe {_seg_line(segs)} · {doc["built_secs"]}s → {out_path}',
+          flush=True)
     return 0
 
 
@@ -266,16 +290,18 @@ def _build_fast(cfg, top, out_path, select):
                                        ann=ann, ewma_lambda=lam)
 
     m = _metrics(comb_ret, ts, te, ann)
+    segs = _seg_metrics(comb_ret, cfg['splits'], ann)
     indiv = [(_metrics(r, ts, te, ann) or {}).get('sharpe') for r in rets]
     bh = basket_returns(panel)
     bh_m = _metrics(bh, ts, te, ann)
+    bh_segs = _seg_metrics(bh, cfg['splits'], ann)
 
     fmt = '%Y-%m-%d %H:%M'
-    cr = comb_ret[(comb_ret.index >= ts) & (comb_ret.index < te)].fillna(0.0)
+    cr = comb_ret.fillna(0.0)                 # the WHOLE simulated span — all three segments
     ce = (1 + cr).cumprod()
-    br = bh[(bh.index >= ts) & (bh.index < te)].fillna(0.0)
+    br = bh.reindex(ce.index).fillna(0.0)
     be = (1 + br).cumprod()
-    step = max(1, len(ce) // 3000)            # chart payload cap (15m TEST is ~20k bars)
+    step = max(1, len(ce) // 3000)            # chart payload cap (a 15m full span is ~200k bars)
     dates = [d.strftime(fmt) for d in ce.index[::step]]
 
     # per-bar dollar weights over TEST: w = wl / Σ|wl| (row gross); NaN cells (pre-listing) -> 0
@@ -289,15 +315,16 @@ def _build_fast(cfg, top, out_path, select):
     doc = {'ok': True, 'n': len(formulas), 'sel': select, 'tf': tf,
            'sim_start': str(pd.Timestamp(cfg['start']).date()),
            'test': f'{ts.date()}..{te.date()}',
+           'span': f'{ce.index[0].date()}..{te.date()}',
            'metrics': m, 'basket': bh_m, 'indiv_sharpe': indiv,
+           'segments': segs, 'basket_segments': bh_segs, 'bounds': _bounds(cfg['splits']),
            'formulas': [f[:90] for f in formulas], 'formulas_full': formulas,
            'weights': weights,
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values[::step]],
                       'basket': [round(float(x), 5) for x in be.values[::step]]},
            'built_secs': round(time.time() - t0, 1)}
     _write_doc(doc, out_path)
-    sh = m['sharpe'] if m else float('nan')
-    print(f'✓ portfolio built ({tf}): Sharpe {sh:+.2f} · {doc["built_secs"]}s → {out_path}',
+    print(f'✓ portfolio built ({tf}): Sharpe {_seg_line(segs)} · {doc["built_secs"]}s → {out_path}',
           flush=True)
     return 0
 
@@ -309,7 +336,10 @@ def main():
     ap.add_argument('--select', choices=('test', 'base'), default='test',
                     help='ranking for the top-N: held-out TEST Sharpe (optimistic cherry-pick) '
                          'or fitness min(train,val) (TEST stays a clean evaluation)')
-    ap.add_argument('--sim-start', default='2022-06-01', help='warm-up start before TEST (speed)')
+    ap.add_argument('--sim-start', default='',
+                    help='simulation start; empty (default) = TRAIN start, so metrics/equity '
+                         'cover all three segments. An explicit date (e.g. 2022-06-01) trades '
+                         'the TRAIN/VAL view for build speed.')
     ap.add_argument('--jobs', type=int, default=0, help='parallel workers (0 = auto)')
     ap.add_argument('--out', default=os.path.join(_state_dir(), 'portfolio.json'))
     args = ap.parse_args()
