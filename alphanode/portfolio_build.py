@@ -229,9 +229,10 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
     br = bh.reindex(ce.index).fillna(0.0); be = (1 + br).cumprod()
     dates = [d.strftime('%Y-%m-%d') for d in ce.index]
 
-    # combined target weights over TEST (for the "Download signals" CSV / paper-trade in the GUI)
+    # combined target weights over the WHOLE simulated span — the signals CSV labels every row
+    # with its TRAIN/VAL/TEST segment, same as the single-alpha export
     present = [t for t in tk if f'{t} w' in comb.columns]
-    cw = comb.loc[(comb.index >= ts) & (comb.index < te), [f'{t} w' for t in present]]
+    cw = comb[[f'{t} w' for t in present]]
     cw = cw[cw.abs().sum(axis=1) > 0]                     # drop empty days
     weights = {'dates': [d.strftime('%Y-%m-%d') for d in cw.index], 'tickers': present,
                'W': [[round(float(x), 5) for x in row] for row in cw.to_numpy()]}
@@ -304,7 +305,9 @@ def _build_fast(cfg, top, out_path, select):
     step = max(1, len(ce) // 3000)            # chart payload cap (a 15m full span is ~200k bars)
     dates = [d.strftime(fmt) for d in ce.index[::step]]
 
-    # per-bar dollar weights over TEST: w = wl / Σ|wl| (row gross); NaN cells (pre-listing) -> 0
+    # per-bar dollar weights: w = wl / Σ|wl| (row gross); NaN cells (pre-listing) -> 0.
+    # Intraday stays TEST-only ON PURPOSE: a full 15m span is ~100k bars and would blow the
+    # status JSON to tens of MB (daily carries the full TRAIN/VAL/TEST span).
     idx = market['index']
     gross = np.nansum(np.abs(comb_wl), axis=1)
     W = np.nan_to_num(comb_wl / np.where(gross == 0, 1.0, gross)[:, None], nan=0.0)

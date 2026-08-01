@@ -1175,8 +1175,9 @@ class App:
                                    'exposure and turnover, weight structure, monthly\n'
                                    'returns and conclusions (TEST period).')
         self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
-                                   'weight per asset per bar on TEST, with the asset\'s OHLCV on\n'
-                                   'that bar (same as for a single alpha).')
+                                   'weight per asset per bar over TRAIN/VAL/TEST (each row labeled\n'
+                                   'with its segment), with the asset\'s OHLCV on that bar —\n'
+                                   'same as for a single alpha. Intraday timeframes: TEST only.')
         self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
                                      'portfolio (all N alphas combined via the real Portfolio engine)\n'
                                      'to run daily on live Binance data — same as for a single alpha.')
