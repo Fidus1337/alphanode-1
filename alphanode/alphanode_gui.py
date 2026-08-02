@@ -1236,8 +1236,8 @@ class App:
         self.lbl_fwd.pack(anchor='w', fill='x', pady=(8, 2))
         fcols = ('id', 'kind', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
         self.fwd_tree = ttk.Treeview(p4, columns=fcols, show='headings', height=4)
-        for c, txt, w, anch in (('id', 'STRATEGY', 240, 'w'), ('kind', 'KIND', 80, 'w'),
-                                ('enrolled', 'ENROLLED', 100, 'center'), ('days', 'DAYS', 60, 'e'),
+        for c, txt, w, anch in (('id', 'STRATEGY', 240, 'w'), ('kind', 'KIND', 96, 'w'),
+                                ('enrolled', 'ENROLLED', 100, 'center'), ('days', 'STEPS', 64, 'e'),
                                 ('equity', 'EQUITY', 100, 'e'), ('ret', 'RETURN', 90, 'e'),
                                 ('sharpe', 'SHARPE', 80, 'e'), ('dd', 'MAXDD', 80, 'e'),
                                 ('last', 'LAST STEP', 110, 'center')):
@@ -3028,8 +3028,6 @@ class App:
         return [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()] or None
 
     def _fwd_enroll(self, formulas, name, kind):
-        if self._tf_gate('The forward track'):
-            return
         formulas = [f for f in (formulas or []) if f and f.strip()]
         if not formulas:
             return
@@ -3037,28 +3035,40 @@ class App:
         if not tickers:
             messagebox.showwarning('Forward track', 'The pairs universe is empty.', parent=self.root)
             return
-        ft = self._fwd_lib()
+        tf = self._tf()                                   # frozen with the strategy: windows are in
+        ft = self._fwd_lib()                              # bars of the tf the formula was mined on
         track = ft.load_track()
-        dup = ft.find_duplicate(track, formulas, tickers)
+        dup = ft.find_duplicate(track, formulas, tickers, tf)
         if dup:
             messagebox.showinfo('Forward track',
                                 f'Already enrolled: {dup["id"]} (since {dup["enrolled"]}).',
                                 parent=self.root)
             return
         c = self.cfg
+        start = str(c.get('train_start', '2019-09-05'))
+        if tf != '1d':
+            try:                                          # don't page YEARS of 1h/15m klines every
+                from timeframe import resolve as _rtf     # step — the tf's recommended history is
+                start = max(start, _rtf(tf).history)      # plenty of warm-up (ISO strings compare)
+            except Exception:                             # noqa: BLE001
+                pass
         entry = ft.new_entry(name, kind, formulas, tickers, c.get('target_vol', 0.25),
-                             c.get('exec_cost', 0.001), c.get('train_start', '2019-09-05'))
+                             c.get('exec_cost', 0.001), start, tf=tf)
         track['entries'].append(entry)
         ft.save_track(track)
         self._fwd_refresh()
+        intr = ('' if tf == '1d' else
+                f'\n⚠ {tf} bars: steps only happen while the app is open — long gaps make the '
+                'track sparse; fees/slippage weigh more intraday, read it conservatively.')
         if messagebox.askyesno(
                 'Forward track',
                 f'{entry["id"]} enrolled. The strategy is FROZEN as of today '
                 f'({len(formulas)} formula{"s" if len(formulas) > 1 else ""}, {len(tickers)} assets, '
-                f'vol {c.get("target_vol", 0.25)}, fee {c.get("exec_cost", 0.001)}) and will be '
-                'paper-stepped once per closed daily bar while the app is open.\n'
-                'History is append-only — forward numbers are never recomputed backwards.\n\n'
-                'Run the first step now (downloads live Binance data)?', parent=self.root):
+                f'{tf} bars, vol {c.get("target_vol", 0.25)}, fee {c.get("exec_cost", 0.001)}) and '
+                f'will be paper-stepped once per closed {tf} bar while the app is open.\n'
+                'History is append-only — forward numbers are never recomputed backwards.'
+                f'{intr}\n\nRun the first step now (downloads live Binance data)?',
+                parent=self.root):
             self._fwd_step()
 
     def _pf_fwd_enroll(self):
@@ -3108,8 +3118,10 @@ class App:
             self.fwd_tree.delete(i)
         for e in entries:
             m = ft.metrics(e)
+            tf = e.get('tf', '1d')
+            kind = e['kind'] if tf == '1d' else f'{e["kind"]}·{tf}'
             self.fwd_tree.insert('', 'end', iid=e['id'], values=(
-                e['id'], e['kind'], e['enrolled'], m['days'],
+                e['id'], kind, e['enrolled'], m['days'],
                 f'${m["equity"]:,.0f}', f'{m["ret"] * 100:+.1f}%',
                 (f'{m["sharpe"]:+.2f}' if m['sharpe'] is not None else '—'),
                 (f'{m["dd"] * 100:.0f}%' if m['dd'] is not None else '—'),
@@ -3125,19 +3137,18 @@ class App:
         self.lbl_fwd.configure(text=(f'{status}   ·   {base}' if status else base))
 
     def _fwd_tick(self):
-        """Once per closed UTC bar: if any enrolled strategy has not seen yesterday's bar, step.
-        Re-checks every 30 minutes — cheap (reads one small JSON) and missing a day is harmless
+        """Step whenever any enrolled strategy has an unseen CLOSED bar of its own timeframe.
+        Re-checks every 5 minutes — cheap (reads one small JSON); missed bars are harmless
         (mark-to-market covers the gap on the next step)."""
         try:
             ft = self._fwd_lib()
-            expected = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
-            due = [e for e in ft.load_track()['entries'] if not e.get('archived')
-                   and (e['state'].get('last_run') or '') < expected]
+            due = [e for e in ft.load_track()['entries']
+                   if not e.get('archived') and ft.is_due(e)]
             if due and not (self._fwd_proc and self._fwd_proc.poll() is None):
                 self._fwd_step()
         except Exception:                                      # noqa: BLE001 — never kill the loop
             pass
-        self.root.after(30 * 60 * 1000, self._fwd_tick)
+        self.root.after(5 * 60 * 1000, self._fwd_tick)
 
     def _fwd_selected(self):
         sel = self.fwd_tree.selection()

@@ -22,7 +22,7 @@ import argparse
 import warnings
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(HERE)
@@ -39,6 +39,12 @@ np.seterr(all='ignore')
 DUST = 1.0                                                # ignore rebalances under $1 notional
 KLINES = 'https://fapi.binance.com/fapi/v1/klines'
 START_CAPITAL = 10000.0
+BAR_SECS = {'15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
+BAR_FMT = {'1d': '%Y-%m-%d'}                              # intraday bars carry the time too
+
+
+def _fmt_bar(ts, tf):
+    return ts.strftime(BAR_FMT.get(tf, '%Y-%m-%d %H:%M'))
 
 
 def _state_dir():
@@ -70,12 +76,14 @@ def save_track(track):
 
 
 def new_entry(name, kind, formulas, tickers, vol, exec_rate, engine_start,
-              capital=START_CAPITAL):
+              capital=START_CAPITAL, tf='1d'):
     """A frozen strategy: everything a step needs, snapshotted at enrollment."""
-    sig = hashlib.md5(('|'.join(formulas) + '#' + ','.join(sorted(tickers))).encode()).hexdigest()[:6]
+    sig = hashlib.md5(('|'.join(formulas) + '#' + ','.join(sorted(tickers)) + '#' + tf)
+                      .encode()).hexdigest()[:6]
     return {
         'id': f'{name}_{sig}',
         'name': name, 'kind': kind,                      # 'alpha' | 'portfolio'
+        'tf': tf,                                        # bar size FROZEN with the strategy
         'formulas': list(formulas), 'tickers': list(tickers),
         'vol': float(vol), 'exec': float(exec_rate),
         'engine_start': str(engine_start)[:10],          # warm-up start for the simulation
@@ -87,13 +95,29 @@ def new_entry(name, kind, formulas, tickers, vol, exec_rate, engine_start,
     }
 
 
-def find_duplicate(track, formulas, tickers):
-    """An ACTIVE entry with the same frozen strategy (formulas+universe)."""
-    key = ('|'.join(formulas), ','.join(sorted(tickers)))
+def find_duplicate(track, formulas, tickers, tf='1d'):
+    """An ACTIVE entry with the same frozen strategy (formulas + universe + bar size)."""
+    key = ('|'.join(formulas), ','.join(sorted(tickers)), tf)
     for e in track['entries']:
-        if not e.get('archived') and (('|'.join(e['formulas']), ','.join(sorted(e['tickers']))) == key):
+        if not e.get('archived') and (('|'.join(e['formulas']), ','.join(sorted(e['tickers'])),
+                                       e.get('tf', '1d')) == key):
             return e
     return None
+
+
+def is_due(entry, now=None):
+    """Has a NEW bar of this entry's timeframe closed since the last processed one?"""
+    now = now or datetime.now(timezone.utc)
+    lr = entry['state'].get('last_run')
+    if not lr:
+        return True
+    tf = entry.get('tf', '1d')
+    if tf == '1d':
+        return lr < (now.date() - timedelta(days=1)).isoformat()
+    last_open = datetime.fromisoformat(lr).replace(tzinfo=timezone.utc)
+    # last_run stores the OPEN time of the last processed bar; the NEXT bar has closed
+    # once two full bar lengths have elapsed since then
+    return (now - last_open).total_seconds() >= 2 * BAR_SECS[tf]
 
 
 def metrics(entry):
@@ -108,7 +132,8 @@ def metrics(entry):
         peak = np.maximum.accumulate(e)
         out['dd'] = float((e / peak - 1.0).min())
         if len(r) >= 10 and r.std() > 0:
-            out['sharpe'] = float(r.mean() / r.std() * np.sqrt(365.0))
+            ann = 365.0 * 86400.0 / BAR_SECS.get(entry.get('tf', '1d'), 86400)
+            out['sharpe'] = float(r.mean() / r.std() * np.sqrt(ann))
     return out
 
 
@@ -128,10 +153,10 @@ def _fetch_json(url, retries=4):
             time.sleep(1.5 * (i + 1))
 
 
-def fetch_klines(symbol, start_ms, end_ms):
+def fetch_klines(symbol, start_ms, end_ms, interval='1d'):
     out, cur = [], start_ms
     while cur < end_ms:
-        url = f'{KLINES}?symbol={symbol}&interval=1d&startTime={cur}&endTime={end_ms}&limit=1500'
+        url = f'{KLINES}?symbol={symbol}&interval={interval}&startTime={cur}&endTime={end_ms}&limit=1500'
         data = _fetch_json(url)
         if not data:
             break
@@ -172,18 +197,48 @@ def _compute_targets(entry, tickers, dfs, end):
     return weights, lev
 
 
+def _compute_targets_fast(entry, tickers, dfs, tf):
+    """Intraday targets via fastsim — the SEARCH engine, parameterized by the bar size (the real
+    quantpylib engine is daily-only). Same combination trick as the intraday portfolio builder:
+    Σ(weight×leverage) paths fed back through the kernel reproduces Portfolio's semantics. The
+    last row of the combined path is already weight×leverage — so the returned lev is 1.0."""
+    from genome import parse
+    from evaluator import panel_from_raw, make_market, eval_alpha_panel
+    from fastsim import fast_sim_paths
+    from timeframe import resolve
+    t = resolve(tf)
+    start = pd.Timestamp(entry['engine_start'], tz='UTC')
+    end = max(df.index[-1] for df in dfs.values())
+    panel = panel_from_raw(tickers, dfs, start, end, t.pandas_freq)
+    market = make_market(panel, tickers, dfs, vol_window=t.vol_window)
+    paths = []
+    for f in entry['formulas']:
+        ap = eval_alpha_panel(parse(f), panel)
+        _r, wl = fast_sim_paths(ap[tickers].to_numpy(dtype=np.float64), market,
+                                entry['vol'], entry['exec'],
+                                ann=t.periods_per_year, ewma_lambda=t.ewma_lambda)
+        paths.append(wl)
+    comb = np.sum(paths, axis=0)
+    _r, comb_wl = fast_sim_paths(comb, market, entry['vol'], entry['exec'],
+                                 ann=t.periods_per_year, ewma_lambda=t.ewma_lambda)
+    last = np.nan_to_num(comb_wl[-1])
+    return {tk: float(last[i]) for i, tk in enumerate(tickers)}, 1.0
+
+
 def step_entry(entry, kline_cache, force=False, log=print):
     """One trading step for one entry. Returns True if the entry advanced (needs saving)."""
+    tf = entry.get('tf', '1d')
     ok, dfs = [], {}
     start_ms = int(pd.Timestamp(entry['engine_start'], tz='UTC').timestamp() * 1000)
     for t in entry['tickers']:
-        if t not in kline_cache:
+        key = (t, tf)
+        if key not in kline_cache:
             try:
-                kline_cache[t] = fetch_klines(t, start_ms, _now_ms())
+                kline_cache[key] = fetch_klines(t, start_ms, _now_ms(), interval=tf)
             except Exception as e:                        # noqa: BLE001
-                kline_cache[t] = pd.DataFrame()
+                kline_cache[key] = pd.DataFrame()
                 log(f'  {t}: download failed ({type(e).__name__})')
-        df = kline_cache[t]
+        df = kline_cache[key]
         if len(df) > 60:
             dfs[t] = df
             ok.append(t)
@@ -191,16 +246,19 @@ def step_entry(entry, kline_cache, force=False, log=print):
         log(f'[{entry["id"]}] no data for any ticker — step skipped')
         return False
     tickers = ok
-    last_date = max(df.index[-1] for df in dfs.values())
-    end = datetime(last_date.year, last_date.month, last_date.day)
-    end_str = f'{end:%Y-%m-%d}'
+    last_bar = max(df.index[-1] for df in dfs.values())
+    end_str = _fmt_bar(last_bar, tf)
     st = entry['state']
     if not force and st.get('last_run') == end_str:
         log(f'[{entry["id"]}] up to date ({end_str})')
         return False
 
-    log(f'[{entry["id"]}] stepping to {end_str} ({len(tickers)} assets)…')
-    weights, lev = _compute_targets(entry, tickers, dfs, end)
+    log(f'[{entry["id"]}] stepping to {end_str} ({len(tickers)} assets, {tf})…')
+    if tf == '1d':
+        end = datetime(last_bar.year, last_bar.month, last_bar.day)
+        weights, lev = _compute_targets(entry, tickers, dfs, end)
+    else:
+        weights, lev = _compute_targets_fast(entry, tickers, dfs, tf)
     prices = {t: float(dfs[t]['close'].iloc[-1]) for t in tickers}
 
     equity = float(st['equity'])
@@ -220,14 +278,16 @@ def step_entry(entry, kline_cache, force=False, log=print):
     st['prices'] = prices
     st['equity'] = equity
     st['last_run'] = end_str
+    # intraday weights are already weight×leverage (lev returned as 1.0) — log the real gross
+    lev_disp = lev if tf == '1d' else sum(abs(w) for w in weights.values())
     row = {'date': end_str, 'equity': round(equity, 2), 'pnl': round(pnl, 2),
-           'fees': round(fees, 2), 'turnover': round(turnover, 2), 'leverage': round(lev, 3)}
+           'fees': round(fees, 2), 'turnover': round(turnover, 2), 'leverage': round(lev_disp, 3)}
     hist = entry['history']
     if hist and hist[-1]['date'] == end_str:              # a force re-step overwrites the same bar
         hist[-1] = row
     else:
         hist.append(row)
-    log(f'  equity ${equity:,.2f} · P&L ${pnl:+,.2f} · fees ${fees:,.2f} · lev {lev:.2f}')
+    log(f'  equity ${equity:,.2f} · P&L ${pnl:+,.2f} · fees ${fees:,.2f} · lev {lev_disp:.2f}')
     return True
 
 
@@ -260,7 +320,7 @@ def main():
         for e in track['entries']:
             m = metrics(e)
             sh = f'{m["sharpe"]:+.2f}' if m['sharpe'] is not None else '—'
-            print(f'{"[arch] " if e.get("archived") else ""}{e["id"]}: {m["days"]}d · '
+            print(f'{"[arch] " if e.get("archived") else ""}{e["id"]}: {m["days"]} steps · '
                   f'${m["equity"]:,.0f} ({m["ret"]*100:+.1f}%) · Sharpe {sh} · since {e["enrolled"]}')
         return 0
     return step_all(force=args.force)
