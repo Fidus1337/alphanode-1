@@ -40,13 +40,6 @@ def parse_args():
                    help='warm-start: seed the population with champions from the registry')
     p.add_argument('--seed-source', default=None,
                    help="where to take the seed from: universe_key ('ALL' or 'BTCUSDT|...'); default: all")
-    p.add_argument('--advisor', action='store_true',
-                   help='enable the neuro-symbolic advisor (LLM proposes formulas on plateaus; '
-                        'needs ANTHROPIC_API_KEY)')
-    p.add_argument('--advisor-max-calls', type=int, metavar='N',
-                   help='cap LLM consults per run, e.g. 1 (default: config.ini [advisor] max_calls)')
-    p.add_argument('--advisor-model', metavar='ID',
-                   help='advisor model id: claude-opus-5 (default) / claude-sonnet-5 / claude-haiku-4-5')
     return p.parse_args()
 
 
@@ -62,12 +55,6 @@ def main():
     for k, a in (('pop', args.pop), ('gens', args.gens), ('n_jobs', args.jobs), ('seed', args.seed)):
         if a is not None:
             cfg[k] = a
-    if args.advisor:
-        cfg['advisor'] = True
-    if args.advisor_max_calls is not None:
-        cfg['advisor_max_calls'] = max(0, args.advisor_max_calls)
-    if args.advisor_model:
-        cfg['advisor_model'] = args.advisor_model.strip()
 
     experiments.bootstrap_from_champions()           # save previous champions into the registry
     kind = 'evolve'
@@ -91,16 +78,17 @@ def main():
           + ('  (+smoke)' if args.smoke else ''))
     uni = cfg.get('instruments')
     print(f'  Universe: {("all from data.pickle" if not uni else f"{len(uni)} pairs: " + ", ".join(uni))}')
-    if cfg.get('advisor'):
-        print(f'  Analyst: ON — {cfg["advisor_model"]} reviews the library after node rounds '
-              f'(the search itself is pure GA)')
     sp = cfg['splits']
     print(f'  TRAIN {sp["train"][0].date()}..{sp["train"][1].date()}  '
           f'VAL {sp["val"][0].date()}..{sp["val"][1].date()}  '
           f'TEST {sp["test"][0].date()}..{sp["test"][1].date()} (closed)')
     print(f'  pop={cfg["pop"]} gens={cfg["gens"]} depth<={cfg["max_depth"]} '
           f'size<={cfg["max_size"]} jobs={cfg["n_jobs"]} seed={cfg["seed"]}')
-    print(f'  fitness = min(train,val) Sharpe - {cfg["parsimony"]}*size - correlation_penalty')
+    if cfg.get('fit_blocks', 0) >= 2:
+        print(f'  fitness = q{cfg["fit_quantile"]:g} of {cfg["fit_blocks"]} SE-shrunk block '
+              f'Sharpes - {cfg["parsimony"]}*size - correlation/concentration penalties')
+    else:
+        print(f'  fitness = min(train,val) Sharpe - {cfg["parsimony"]}*size - correlation_penalty')
     print('-' * 74)
 
     hof, history, cache = evolve(cfg, log=print)

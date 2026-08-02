@@ -28,7 +28,7 @@ import csv
 import json
 import time
 import queue
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import signal
 import pickle
 import difflib
@@ -60,6 +60,8 @@ METRICS_PY = os.path.join(HERE, 'metrics_worker.py')    # leaderboard trade stat
 PDF_PY = os.path.join(HERE, 'pdf_worker.py')            # analytics PDF dashboard (own process)
 SIGNAL_PORT = 8799                                      # BASE port: each service takes the next free one
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
+# First-run starter universe (no data snapshot yet): 10 liquid majors, matches fetch_data.DEFAULT_SYMBOLS.
+BOOTSTRAP_SYMBOLS = 'BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,AVAXUSDT,LTCUSDT'
 STATE_DIR = apppaths.state_dir()
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 SIGNALS_JSON = os.path.join(STATE_DIR, 'signals.json')  # registry of served APIs (survives a restart)
@@ -70,11 +72,6 @@ CORES = os.cpu_count() or 4
 
 
 TF_CHOICES = ('1d', '4h', '1h', '15m')
-
-# advisor model tiers (all support the structured-output JSON the advisor relies on);
-# the box is editable, so any other model id can be typed in as well
-ADVISOR_MODELS = ('claude-opus-5', 'claude-sonnet-5', 'claude-haiku-4-5')
-
 
 def _tf_suffix(tf):
     """File suffix for per-timeframe state: '' for the historical daily files, '_1h' etc. else."""
@@ -88,44 +85,6 @@ def _tf_clean(tf):
     return t if t in TF_CHOICES else '1d'
 
 
-# The Anthropic API key lives in its OWN file with 0600 permissions — NEVER in
-# gui_settings.json: in dev mode that file is tracked by git and a key stored there
-# would end up on GitHub with the next settings commit.
-KEY_FILE = os.path.join(os.path.dirname(SETTINGS), 'anthropic_key')
-HUB_ID_FILE = os.path.join(os.path.dirname(SETTINGS), 'alphahub_identity')
-
-
-def _load_keyfile(path):
-    try:
-        with open(path, encoding='utf-8') as f:
-            return f.read().strip()
-    except OSError:
-        return ''
-
-
-def _save_keyfile(path, key):
-    """Secrets live in their own 0600 files, never in the (git-tracked) settings JSON."""
-    key = (key or '').strip()
-    try:
-        if not key:
-            if os.path.exists(path):
-                os.remove(path)                         # cleared in the GUI -> gone from disk
-            return
-        with open(path, 'w', encoding='utf-8') as f:
-            f.write(key + '\n')
-        os.chmod(path, 0o600)                           # owner-only (no-op on Windows)
-    except OSError:
-        pass
-
-
-def _load_api_key():
-    return _load_keyfile(KEY_FILE)
-
-
-def _save_api_key(key):
-    _save_keyfile(KEY_FILE, key)
-
-
 def _child_cmd(role):
     """Command for the child process of role `role`: in the frozen build — the exe itself with
     --role, in dev — the real python with the script."""
@@ -133,7 +92,8 @@ def _child_cmd(role):
         return [sys.executable, '--role', role]
     script = {'node': NODE_PY, 'fetch': FETCH_PY, 'portfolio': PORTFOLIO_PY,
               'signal': SIGNAL_PY, 'metrics': METRICS_PY, 'pdfreport': PDF_PY,
-              'rescore': os.path.join(HERE, 'rescore_library.py')}[role]
+              'rescore': os.path.join(HERE, 'rescore_library.py'),
+              'forward': os.path.join(HERE, 'forward_track.py')}[role]
     return [sys.executable, '-u', script]
 
 DEFAULTS = {
@@ -147,10 +107,6 @@ DEFAULTS = {
     'timeframe': '1d',      # bar size for the whole pipeline: 1d | 4h | 1h | 15m
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
-    # neuro advisor (the API key is NOT here — see KEY_FILE)
-    'advisor': False, 'advisor_max_calls': 1, 'advisor_model': 'claude-opus-5',
-    # alphahub (the Ed25519 identity is NOT here — see HUB_ID_FILE); pushes are manual-only
-    'hub_url': '', 'hub_name': 'my-node',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -159,6 +115,7 @@ DEFAULTS = {
     'tournament': 5, 'elitism': 6, 'random_inject': 10, 'crossover_prob': 0.6,
     # fitness
     'parsimony': 0.010, 'corr_threshold': 0.70, 'corr_penalty': 0.5, 'hof_capacity': 15,
+    'fit_blocks': 0,        # robust multi-block fitness (experimental); 0 = legacy min(TRAIN,VAL)
     # date segments (TRAIN < VAL < TEST)
     'train_start': '2019-09-05', 'val_start': '2021-11-01',
     'test_start': '2023-01-01', 'test_end': '2026-07-05',
@@ -269,6 +226,8 @@ class App:
         self._metrics_seq = 0                             # to discard stale background computations
         self._row_items = {}                              # formula -> table row id (to update cells)
         self._pf_proc = None                              # portfolio-build subprocess
+        self._fwd_proc = None                             # forward-track step subprocess
+        self._fwd_entries = []                            # rows currently shown in the FORWARD table
         self._sigs = []                                   # running signal-API services (one per port)
         self._sig_health = {}                             # port -> status text (written by poll workers)
         self._sig_status_lbl = {}                         # port -> status Label (main thread only)
@@ -290,6 +249,7 @@ class App:
         self._fonts = {}                                  # (family,size,weight) -> named Tk font
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
+        self._fetching = False                           # a fetch_data child is running (one at a time)
         self.cfg = dict(DEFAULTS)
         self._load()
         self._lb_mode = self.cfg.get('lb_mode') or 'all'   # remembered across restarts
@@ -300,6 +260,7 @@ class App:
         self._poll()
         self._sig_tick()                                  # live status of the served signal APIs
         threading.Thread(target=self._sig_restore, daemon=True).start()   # re-adopt ones left running
+        self.root.after(900, self._maybe_bootstrap)       # first run: no data -> fetch 10 majors
         root.protocol('WM_DELETE_WINDOW', self._on_close)
 
     # ---------- settings (persist) ----------
@@ -323,148 +284,6 @@ class App:
         except Exception:
             return d
 
-    @staticmethod
-    def _api_err_text(e, model):
-        """SDK exception -> a short human diagnosis + what to do (instead of a raw repr)."""
-        name = type(e).__name__
-        code = getattr(e, 'status_code', None)
-        body = getattr(e, 'body', None)
-        msg = ''
-        if isinstance(body, dict):
-            msg = str((body.get('error') or {}).get('message') or '')[:160]
-        if not msg:
-            msg = str(e)[:160]
-        if code == 401:
-            return ('✗ Key rejected (401 — authentication failed).\n'
-                    'The key is invalid, revoked, or pasted with a typo. Get a fresh one at\n'
-                    'console.anthropic.com → API Keys (it starts with sk-ant-…) and paste it whole.')
-        if code == 403:
-            return (f'✗ Access denied (403).\nThe key itself works, but it has no access to '
-                    f'{model} —\ncheck the workspace/plan in the Anthropic console or pick another model.')
-        if code == 404:
-            return (f'✗ Model not found (404).\n{model} is not available to this key — '
-                    'pick another model from the list.')
-        if code == 429:
-            return ('✗ Rate limited (429).\nGood news: the key works. Too many requests '
-                    'right now — try again in a minute.')
-        if name == 'APIConnectionError':
-            return ('✗ Could not reach api.anthropic.com.\nCheck the internet connection / '
-                    'VPN / proxy and try again.')
-        if code and code >= 500:
-            return (f'✗ Anthropic server error ({code}).\nThe key is probably fine — '
-                    'their side is having trouble; retry in a minute.')
-        return f'✗ {name}{f" ({code})" if code else ""}: {msg}'
-
-    def _check_api_key(self):
-        """Cheap live probe of the pasted key (models.retrieve — free, auth-validating).
-        Runs in a thread; the label is updated by MAIN-THREAD polling of a holder dict —
-        cross-thread root.after is unreliable here (same pattern as the PDF worker)."""
-        key = (self.v_apikey.get() or '').strip()
-        if not key:
-            self.lbl_advkey.configure(text='no key entered — paste an Anthropic API key first', fg=NEG)
-            return
-        model = (self.v_advmodel.get() or 'claude-opus-5').strip()
-        holder = {}
-
-        def work():
-            try:
-                import anthropic
-                anthropic.Anthropic(api_key=key).models.retrieve(model)
-                holder['res'] = (f'✓ key works — {model} reachable', POS)
-            except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
-                holder['res'] = (self._api_err_text(e, model), NEG)
-
-        threading.Thread(target=work, daemon=True).start()
-        self.lbl_advkey.configure(text='checking…', fg=MUT)
-
-        def poll():
-            if 'res' in holder:
-                txt, col = holder['res']
-                self.lbl_advkey.configure(text=txt, fg=col)
-            else:
-                self.root.after(150, poll)
-        self.root.after(150, poll)
-
-    @staticmethod
-    def _hub_err_text(e):
-        """Network exception -> what actually went wrong at that URL, in plain words."""
-        s = str(e)
-        low = s.lower()
-        if 'refused' in low:
-            return ('✗ Connection refused — nothing is listening at that URL.\n'
-                    'Is the hub container running? Check the port in the URL.')
-        if 'timed out' in low or 'timeout' in low:
-            return ('✗ Timeout — the URL does not answer from this machine.\n'
-                    'Wrong host, closed firewall port, or the hub is down.')
-        if 'name or service not known' in low or 'getaddrinfo' in low or 'nodename' in low:
-            return '✗ DNS: host not found — check the URL spelling (http(s)://host:port).'
-        if 'http error 404' in low:
-            return '✗ 404 — something answered, but it is not an AlphaHub (/health missing).'
-        if 'certificate' in low or 'ssl' in low:
-            return '✗ TLS/certificate problem — try http:// for a local hub, or fix the cert.'
-        return f'✗ {type(e).__name__}: {s[:120]}'
-
-    def _check_hub(self):
-        """Probe <hub>/health in a worker thread; same main-thread polling pattern as Check key."""
-        url = (self.v_huburl.get() or '').strip()
-        if not url:
-            self.lbl_hub.configure(text='no hub URL entered', fg=NEG)
-            return
-        holder = {}
-
-        def work():
-            try:
-                import urllib.request
-                with urllib.request.urlopen(url.rstrip('/') + '/health', timeout=10) as r:
-                    d = json.loads(r.read())
-                if d.get('ok'):
-                    holder['res'] = (f'✓ hub alive — protocol v{d.get("protocol")}', POS)
-                else:
-                    holder['res'] = ('✗ hub responded but not ok', NEG)
-            except Exception as e:                     # noqa: BLE001 — anything -> show, don't crash
-                holder['res'] = (self._hub_err_text(e), NEG)
-
-        threading.Thread(target=work, daemon=True).start()
-        self.lbl_hub.configure(text='checking…', fg=MUT)
-
-        def poll():
-            if 'res' in holder:
-                txt, col = holder['res']
-                self.lbl_hub.configure(text=txt, fg=col)
-            else:
-                self.root.after(150, poll)
-        self.root.after(150, poll)
-
-    def _register_hub(self):
-        """One-click node registration: sends node_id + PUBLIC key, signed. The private
-        key never leaves this machine. Worker thread + main-thread polling, as usual."""
-        url = (self.v_huburl.get() or '').strip()
-        if not url:
-            self.lbl_hub.configure(text='no hub URL entered', fg=NEG)
-            return
-        name = (self.v_hubname.get() or 'my-node').strip()
-        holder = {}
-
-        def work():
-            try:
-                import hub_client
-                ident = hub_client.ensure_identity(HUB_ID_FILE)
-                ok, msg = hub_client.register(url, ident, name)
-                holder['res'] = (('✓ ' if ok else '✗ ') + msg, POS if ok else NEG)
-            except Exception as e:                     # noqa: BLE001
-                holder['res'] = (f'✗ {type(e).__name__}: {str(e)[:90]}', NEG)
-
-        threading.Thread(target=work, daemon=True).start()
-        self.lbl_hub.configure(text='registering…', fg=MUT)
-
-        def poll():
-            if 'res' in holder:
-                txt, col = holder['res']
-                self.lbl_hub.configure(text=txt, fg=col)
-            else:
-                self.root.after(150, poll)
-        self.root.after(150, poll)
-
     def _collect(self):
         d = DEFAULTS
         return dict(
@@ -478,11 +297,6 @@ class App:
             timeframe=_tf_clean(self.v_tf.get()),
             explore_every=max(1, self._gi(self.v_explore, d['explore_every'])),
             seed_from_lib=bool(self.v_seedlib.get()),
-            advisor=bool(self.v_advisor.get()),
-            advisor_max_calls=self._gi(self.v_advcalls, d['advisor_max_calls']),
-            advisor_model=(self.v_advmodel.get() or d['advisor_model']).strip(),
-            hub_url=self.v_huburl.get().strip(),
-            hub_name=self.v_hubname.get().strip() or 'my-node',
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -497,6 +311,7 @@ class App:
             corr_threshold=self._gf(self.v_corrt, d['corr_threshold']),
             corr_penalty=self._gf(self.v_corrp, d['corr_penalty']),
             hof_capacity=self._gi(self.v_hof, d['hof_capacity']),
+            fit_blocks=self._gi(self.v_fitblocks, d['fit_blocks']),
             train_start=self.v_train.get().strip(), val_start=self.v_val.get().strip(),
             test_start=self.v_test.get().strip(), test_end=self.v_end.get().strip(),
         )
@@ -507,7 +322,6 @@ class App:
             json.dump(self.cfg, open(SETTINGS, 'w'), indent=2)
         except Exception:
             pass
-        _save_api_key(self.v_apikey.get())     # its own 0600 file, NOT the (git-tracked) settings
 
     # ---------- style ----------
     def _px(self, n):
@@ -912,75 +726,6 @@ class App:
         self.v_seedlib = self._chk(g, 'Warm-start from library', self.cfg['seed_from_lib'], 3,
                                    tip='Seed the new generation with the best found alphas (fine-tuning). Off — always from scratch.')
 
-        # --- neuro analyst (LLM reads the library after rounds; it never touches the search) ---
-        g = self._section(inner, 'NEURO ANALYST (LLM, experimental)')
-        self.v_advisor = self._chk(g, 'Round analyst: LLM reviews the library', self.cfg.get('advisor', False), 0,
-                                   tip='After a round, Claude reads the accumulated evidence — the library\n'
-                                       'with its metrics, round history, base↔TEST gaps, operator usage —\n'
-                                       'and writes a research report into the LIVE LOG: overfitting\n'
-                                       'suspicions, diversity audit, what is under-explored. It has ZERO\n'
-                                       'authority over the search — the GA runs pure, the report is for you.\n'
-                                       'Cost: one report is roughly $0.05-0.15.')
-        self.v_advmodel = tk.StringVar(value=self.cfg.get('advisor_model', 'claude-opus-5'))
-        model_box = ttk.Combobox(g, textvariable=self.v_advmodel, values=ADVISOR_MODELS, width=19)
-        self._row(g, 'Model', 1, model_box,
-                  tip='Which Claude model writes the report (per report, roughly):\n'
-                      '  claude-opus-5    — deepest analysis, ~$0.05-0.15\n'
-                      '  claude-sonnet-5  — solid mid-tier, ~$0.02-0.06\n'
-                      '  claude-haiku-4-5 — cheapest, ~$0.01-0.03\n'
-                      'The box is editable — any other model id can be typed in.')
-        self.v_advcalls = self._num(g, 'Analyze every N rounds', self.cfg.get('advisor_max_calls', 1),
-                                    2, 0, 99, 1,
-                                    tip='How often the analyst reads the library.\n'
-                                        '1 = a report after every round; 3 = after every third;\n'
-                                        '0 = never (same as unticking the box above).')
-        self.v_apikey = tk.StringVar(value=_load_api_key())
-        e_key = self._entry(g, self.v_apikey, width=230)
-        e_key.configure(show='•')
-        self._row(g, 'Anthropic API key', 3, e_key,
-                  tip='Key from console.anthropic.com (sk-ant-…). Stored in its own file with\n'
-                      'owner-only permissions — never in gui_settings.json, never in git:\n'
-                      f'{KEY_FILE}')
-        self.lbl_advkey = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12),
-                                    justify='left', anchor='w')
-        self.lbl_advkey.grid(row=4, column=0, sticky='w', pady=(4, 0))
-        self._btn(g, 'Check key', self._check_api_key, height=26, width=100)\
-            .grid(row=4, column=1, sticky='e', pady=(4, 0))
-
-        # --- alphahub (forward-track notary; pushes are MANUAL — the ⇪ Hub button) ---
-        g = self._section(inner, 'ALPHAHUB (forward-track, experimental)')
-        self._lbl(g, text='Pushes are manual: select an alpha in the leaderboard → ⇪ Hub.',
-                  text_color=MUT, font=(self.UI, 12)).grid(row=0, column=0, columnspan=2,
-                                                           sticky='w', pady=(0, 4))
-        self.v_huburl = tk.StringVar(value=self.cfg.get('hub_url', ''))
-        self._row(g, 'Hub URL', 1, self._entry(g, self.v_huburl, width=230),
-                  tip='e.g. http://my-vps:8899 — where your AlphaHub runs.')
-        self.v_hubname = tk.StringVar(value=self.cfg.get('hub_name', 'my-node'))
-        self._row(g, 'Node name', 2, self._entry(g, self.v_hubname, width=230),
-                  tip='How this node appears on the hub leaderboard.')
-        # identity is born HERE, on this machine — the hub only ever sees the public key
-        node_id = ''
-        try:
-            import hub_client
-            node_id = hub_client.ensure_identity(HUB_ID_FILE)['node_id']
-        except Exception:                                # noqa: BLE001 — no cryptography pkg etc.
-            pass
-        self.lbl_hubid = self._lbl(g, text=(f'identity: {node_id}' if node_id
-                                            else 'identity: unavailable (cryptography pkg missing)'),
-                                   text_color=(MUT if node_id else NEG), font=(self.MONO, 11))
-        self.lbl_hubid.grid(row=3, column=0, sticky='w', pady=(4, 0))
-        self._tip(self.lbl_hubid,
-                  'Auto-generated Ed25519 keypair; the PRIVATE key stays in\n'
-                  f'{HUB_ID_FILE}\n(owner-only, gitignored). Delete that file for a fresh identity.')
-        self.lbl_hub = self._lbl(g, text='', text_color=MUT, font=(self.UI, 12),
-                                 justify='left', anchor='w')
-        self.lbl_hub.grid(row=4, column=0, sticky='w', pady=(4, 0))
-        row_btns = self._box(g)
-        row_btns.grid(row=4, column=1, sticky='e', pady=(4, 0))
-        self._btn(row_btns, 'Check hub', self._check_hub, height=26, width=92).pack(side='left')
-        self._btn(row_btns, 'Register', self._register_hub, height=26, width=92)\
-            .pack(side='left', padx=(8, 0))
-
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
         self.v_vol = self._numf(g, 'Target-vol (ann.)', self.cfg['target_vol'], 0, 0.01, 3.0, 0.01,
@@ -1016,6 +761,13 @@ class App:
                                   tip='Penalty for similarity to an already found alpha — for diversity.')
         self.v_hof = self._num(g, 'Hall of Fame size', self.cfg['hof_capacity'], 3, 1, 100, 1,
                                tip='How many champions to keep as output per round.')
+        self.v_fitblocks = self._num(g, 'Robust blocks (0 = legacy)', self.cfg.get('fit_blocks', 5),
+                                     4, 0, 12, 1,
+                                     tip='Robust fitness: the selection span is cut into K regime\n'
+                                         'blocks; each block\'s Sharpe is shrunk by its standard\n'
+                                         'error and the fitness is the near-worst block — a formula\n'
+                                         'must work everywhere, not shine once. 0 = the legacy\n'
+                                         'min(TRAIN, VAL) fitness.')
 
         # --- segments ---
         g = self._section(inner, 'DATE SEGMENTS  (TRAIN < VAL < TEST)')
@@ -1171,8 +923,16 @@ class App:
             self._tip_win.destroy()
             self._tip_win = None
 
-    def _bind_wheel(self, canvas):
+    def _bind_wheel(self, canvas, through=False):
+        """Wheel-scroll `canvas` while the pointer is anywhere inside it. With through=True,
+        events over widgets that scroll themselves (Treeview / Text) are left to them."""
         def _w(e):
+            if through:
+                w = e.widget
+                while w is not None and w is not canvas:
+                    if isinstance(w, (ttk.Treeview, tk.Text)):
+                        return
+                    w = getattr(w, 'master', None)
             d = -1 if (getattr(e, 'num', None) == 4 or getattr(e, 'delta', 0) > 0) else 1
             canvas.yview_scroll(d, 'units')
 
@@ -1207,8 +967,30 @@ class App:
         return outer
 
     def _build_status(self, body):
-        right = self._box(body, bg=BG)
-        body.add(right, minsize=int(420 * self.SCALE), stretch='always')
+        # The dashboard column SCROLLS: on a short window the cards keep their natural heights
+        # and the scrollbar moves between blocks; on a tall one the inner frame is stretched to
+        # the viewport and the leaderboard absorbs the slack exactly as before (grid weight).
+        outer = self._box(body, bg=BG)
+        body.add(outer, minsize=int(420 * self.SCALE), stretch='always')
+        canvas = tk.Canvas(outer, bg=BG, highlightthickness=0)
+        vsb = ctk.CTkScrollbar(outer, orientation='vertical', command=canvas.yview,
+                               fg_color=BG, button_color=BORDER, button_hover_color=FAINT,
+                               width=12)
+        canvas.configure(yscrollcommand=vsb.set)
+        vsb.pack(side='right', fill='y', padx=(6, 0))
+        canvas.pack(side='left', fill='both', expand=True)
+        right = self._box(canvas, bg=BG)
+        item = canvas.create_window((0, 0), window=right, anchor='nw')
+
+        def _fit(_e=None):
+            w, h = canvas.winfo_width(), canvas.winfo_height()
+            H = max(h, right.winfo_reqheight())
+            canvas.itemconfigure(item, width=w, height=H)
+            canvas.configure(scrollregion=(0, 0, w, H))
+        canvas.bind('<Configure>', _fit)
+        right.bind('<Configure>', _fit)      # cards appear/grow -> refresh the scrollregion
+        self._bind_wheel(canvas, through=True)
+        self._dash_canvas = canvas
         right.rowconfigure(4, weight=1)                  # the leaderboard takes the slack
         right.columnconfigure(0, weight=1)
 
@@ -1233,9 +1015,6 @@ class App:
         self.lbl_cur = self._lbl(pad, text='', text_color=MUT, font=(self.MONO, 12),
                                     anchor='w', justify='left')
         self.lbl_cur.pack(anchor='w', fill='x', pady=(12, 0))
-        # LLM advisor footprint — appears only once the advisor has actually done something
-        self.lbl_adv = self._lbl(pad, text='', text_color=ACC, font=(self.MONO, 12),
-                                 anchor='w', justify='left')
         # LIVE LOG — the node's human-readable activity feed (status.json 'events')
         logwrap = ctk.CTkFrame(pad, fg_color=STRIPE, corner_radius=10, border_width=0)
         logwrap.pack(fill='x', pady=(10, 0))
@@ -1277,14 +1056,6 @@ class App:
         # width/height are raw: CTk scales them itself (set_widget_scaling), unlike a tk pixel.
         self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_library, height=24, width=52)
         self.btn_lb_csv.pack(side='right', padx=(10, 0))
-        self.btn_lb_hub = self._btn(hrow, '⇪ Hub', self._push_selected_to_hub, height=24, width=64)
-        self.btn_lb_hub.pack(side='right', padx=(10, 0))
-        self._tip(self.btn_lb_hub,
-                  'One-shot push of the SELECTED alpha to AlphaHub: compute its current\n'
-                  'target weights on live data (at the active timeframe) and send ONLY\n'
-                  'the weights as your forward signal for the next bar close. The formula\n'
-                  'never leaves this machine. Push again any time — the hub keeps the\n'
-                  'last version sent before the bar closes.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -1303,7 +1074,7 @@ class App:
                                  'the old compact view. Sorting by any column works in both.')
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
-        cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'formula')
+        cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
         self._HEAD = {}
         # Widths fit the WIDEST real value plus the sort arrow the heading grows by (' ▼'), and are
@@ -1312,9 +1083,10 @@ class App:
         for c, txt, w, anc in (('rank', '#', 40, 'center'), ('fit', 'fitness', 86, 'e'),
                                ('test', 'TEST OOS', 86, 'e'), ('ls', 'trades L/S', 100, 'center'),
                                ('act', 'tr/yr·a', 72, 'e'),
-                               ('win', 'win%', 62, 'e'), ('formula', 'formula', 260, 'w')):
+                               ('win', 'win%', 62, 'e'), ('id', 'ID', 116, 'w'),
+                               ('formula', 'formula', 260, 'w')):
             self._HEAD[c] = txt
-            kw = {} if c == 'rank' else {'command': (lambda c=c: self._sort_by(c))}
+            kw = {} if c in ('rank', 'id') else {'command': (lambda c=c: self._sort_by(c))}
             w = int(w * self.SCALE)
             self.tree.heading(c, text=txt, **kw)
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
@@ -1357,8 +1129,6 @@ class App:
         self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
-        self._menu.add_command(label='Push to AlphaHub (one-shot, weights only)',
-                               command=self._push_selected_to_hub)
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
         self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
@@ -1405,12 +1175,19 @@ class App:
         self.btn_pf_pdf = self._btn(ctl, 'PDF', self._pf_pdf_report, width=64)
         self.btn_pf_pdf.configure(state='disabled')
         self.btn_pf_pdf.pack(side='left', padx=(6, 0))
+        self.btn_pf_track = self._btn(ctl, 'Track', self._pf_fwd_enroll, width=76)
+        self.btn_pf_track.configure(state='disabled')
+        self.btn_pf_track.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_pf_track, 'Enroll this exact portfolio into the FORWARD TRACK below:\n'
+                                     'the strategy is frozen (formulas + universe + vol/fee) and\n'
+                                     'paper-stepped once per closed daily bar, append-only.')
         self._tip(self.btn_pf_pdf, 'Portfolio analytics dashboard as PDF: KPIs, equity,\n'
                                    'exposure and turnover, weight structure, monthly\n'
                                    'returns and conclusions (TEST period).')
         self._tip(self.btn_pf_csv, 'Download a CSV of the combined portfolio signals — the target\n'
-                                   'weight per asset per bar on TEST, with the asset\'s OHLCV on\n'
-                                   'that bar (same as for a single alpha).')
+                                   'weight per asset per bar over TRAIN/VAL/TEST (each row labeled\n'
+                                   'with its segment), with the asset\'s OHLCV on that bar —\n'
+                                   'same as for a single alpha. Intraday timeframes: TEST only.')
         self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
                                      'portfolio (all N alphas combined via the real Portfolio engine)\n'
                                      'to run daily on live Binance data — same as for a single alpha.')
@@ -1431,6 +1208,49 @@ class App:
         card3.bind('<Configure>', self._on_pf_resize)         # re-render equity to the panel width
         self.root.after(500, self._load_portfolio_on_start)   # show last build, if any
 
+        # ---- FORWARD TRACK (append-only paper stepping of enrolled strategies) ----
+        card4 = self._card(right)
+        card4.grid(row=7, column=0, sticky='ew', pady=(14, 0))
+        p4 = self._pad(card4)
+        hf = self._box(p4)
+        hf.pack(fill='x')
+        self._head(hf, 'FORWARD TRACK — daily paper steps, append-only').pack(side='left')
+        fctl = self._box(hf)
+        fctl.pack(side='right')
+        self.btn_fwd_step = self._btn(fctl, '▶ Step now', self._fwd_step, width=110)
+        self.btn_fwd_step.pack(side='left')
+        self._tip(self.btn_fwd_step, 'Run one paper step for every enrolled strategy: download the\n'
+                                     'latest CLOSED daily bars from Binance, recompute the target\n'
+                                     'positions with the real engine, mark-to-market, rebalance, fees.\n'
+                                     'Runs automatically once per closed bar while the app is open.')
+        self.btn_fwd_chart = self._btn(fctl, 'Chart', self._fwd_chart, width=76)
+        self.btn_fwd_chart.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_fwd_chart, 'Forward equity of the selected row — only live steps,\n'
+                                      'nothing recomputed backwards.')
+        self.btn_fwd_arch = self._btn(fctl, 'Archive', self._fwd_archive, width=90)
+        self.btn_fwd_arch.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_fwd_arch, 'Stop stepping the selected strategy. Its history stays in\n'
+                                     'state/forward.json (append-only) — the row just leaves the table.')
+        self.lbl_fwd = self._lbl(p4, text='', text_color=FAINT, font=(self.UI, 12),
+                                 wraplength=900, anchor='w', justify='left')
+        self.lbl_fwd.pack(anchor='w', fill='x', pady=(8, 2))
+        fcols = ('id', 'kind', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
+        self.fwd_tree = ttk.Treeview(p4, columns=fcols, show='headings', height=4)
+        for c, txt, w, anch in (('id', 'STRATEGY', 240, 'w'), ('kind', 'KIND', 96, 'w'),
+                                ('enrolled', 'ENROLLED', 100, 'center'), ('days', 'STEPS', 64, 'e'),
+                                ('equity', 'EQUITY', 100, 'e'), ('ret', 'RETURN', 90, 'e'),
+                                ('sharpe', 'SHARPE', 80, 'e'), ('dd', 'MAXDD', 80, 'e'),
+                                ('last', 'LAST STEP', 110, 'center')):
+            self.fwd_tree.heading(c, text=txt)
+            self.fwd_tree.column(c, width=int(w * self.SCALE), anchor=anch,
+                                 stretch=(c == 'id'))
+        self.fwd_tree.pack(fill='x', pady=(4, 0))
+        self.fwd_tree.bind('<Double-1>', lambda _e: self._fwd_chart())
+        self.root.after(900, self._fwd_refresh)
+        if not getattr(self, '_fwd_tick_on', False):          # _build reruns on theme switch —
+            self._fwd_tick_on = True                          # keep exactly one tick loop
+            self.root.after(20_000, self._fwd_tick)
+
     def _load_portfolio_on_start(self):
         try:
             doc = json.load(open(PORTFOLIO_JSON, encoding='utf-8'))
@@ -1446,7 +1266,7 @@ class App:
         self.lbl_pf_m.configure(text='')
         self.pf_img.config(image='')
         self._pf_img_ref = None
-        for b in (self.btn_pf_csv, self.btn_pf_paper, self.btn_pf_sig):
+        for b in (self.btn_pf_csv, self.btn_pf_paper, self.btn_pf_sig, self.btn_pf_track):
             b.configure(state='disabled')
 
     def _stat(self, parent, label, col):
@@ -1548,7 +1368,19 @@ class App:
                 icon='warning', default='no', parent=self.root):
             return
         self._save()
-        win = self._dialog(f'Data update — top-{n} from Binance', '760x440')
+        self._run_fetch(['--top', str(n), '--min-years', str(yrs), '--interval', self._tf(),
+                         '--out', self._data_file()],
+                        f'Data update — top-{n} from Binance',
+                        f'Downloading the {n} highest-turnover Binance pairs (history ≥ {yrs} years)…\n\n',
+                        '✓ Done — data updated. Clear history and restart the search.')
+
+    def _run_fetch(self, args, title, intro, done_msg, on_success=None):
+        """Console dialog + fetch_data subprocess; shared by the manual data update and the
+        first-run bootstrap. on_success fires (on the Tk thread) only on exit code 0."""
+        if self._fetching:
+            return
+        self._fetching = True
+        win = self._dialog(title, '760x440')
         txt = self._console(win)
 
         def add(s):
@@ -1559,15 +1391,14 @@ class App:
             txt.see('end')
             txt.configure(state='disabled')
 
-        add(f'Downloading the {n} highest-turnover Binance pairs (history ≥ {yrs} years)…\n\n')
+        add(intro)
         try:
-            proc = subprocess.Popen(_child_cmd('fetch') + ['--top', str(n),
-                                     '--min-years', str(yrs), '--interval', self._tf(),
-                                     '--out', self._data_file()],
+            proc = subprocess.Popen(_child_cmd('fetch') + args,
                                     cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         except Exception as e:                       # noqa: BLE001
             add(f'Failed to launch fetch_data.py: {e}\n')
+            self._fetching = False
             return
         q = queue.Queue()
 
@@ -1581,22 +1412,48 @@ class App:
         def pump():
             if not win.winfo_exists():
                 self.btn_fetch.configure(state='normal')   # the process will finish on its own, re-enable the button
+                self._fetching = False
                 return
             try:
                 while True:
                     line = q.get_nowait()
                     if line is None:
                         code = proc.poll()
-                        add('\n' + ('✓ Done — data updated. Clear history and restart the search.'
-                                    if code == 0 else f'✗ Error (code {code}). Data left untouched.') + '\n')
+                        add('\n' + (done_msg if code == 0
+                                    else f'✗ Error (code {code}). Data left untouched.') + '\n')
                         self.btn_fetch.configure(state='normal')
+                        self._fetching = False
                         self._lib_cache['mtime'] = None
+                        if code == 0 and on_success is not None:
+                            win.after(700, on_success)
                         return
                     add(line)
             except queue.Empty:
                 pass
             win.after(150, pump)
         win.after(150, pump)
+
+    def _maybe_bootstrap(self):
+        """First run: no market data next to the node -> download a starter universe on our own."""
+        if os.path.exists(self._data_file()) or (self.proc and self.proc.poll() is None):
+            return
+        self._bootstrap_data()
+
+    def _bootstrap_data(self, on_success=None):
+        tf = self._tf()
+        intro = ('No market data found next to the node.\n'
+                 'Downloading a starter universe of 10 majors — BTC, ETH, SOL, XRP, BNB, DOGE, '
+                 f'ADA, LINK, AVAX, LTC — as {tf} candles from Binance…\n\n'
+                 'You can widen the universe any time: Settings → MARKET DATA → '
+                 '"Download fresh data from Binance".\n\n')
+        if tf != '1d':
+            intro += ('Note: intraday history is shorter — if the search has nothing to evaluate, '
+                      'set later TRAIN/VAL dates in Settings.\n\n')
+        self._run_fetch(['--symbols', BOOTSTRAP_SYMBOLS, '--interval', tf, '--out', self._data_file()],
+                        f'First run — market data bootstrap ({tf})', intro,
+                        '✓ Starter data ready.' + ('' if on_success
+                                                   else ' Press START to begin the search.'),
+                        on_success=on_success)
 
     def _reset_ui_after_wipe(self):
         for i in self.tree.get_children():
@@ -1613,9 +1470,6 @@ class App:
         self.s_trials.configure(text='0')
         self.s_found.configure(text='0')
         self.lbl_cur.configure(text='')
-        self.lbl_adv.configure(text='')
-        if self.lbl_adv.winfo_ismapped():
-            self.lbl_adv.pack_forget()
         self._state_pill('● stopped', MUT)
         self._reset_portfolio_ui()                        # clear the Portfolio panel too
 
@@ -1629,17 +1483,13 @@ class App:
         self.v_tf.set(_tf_clean(c.get('timeframe', '1d'))); self._tf_note()
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
-        self.v_advisor.set(c.get('advisor', False)); self.v_apikey.set(_load_api_key())
-        self.v_advcalls.set(c.get('advisor_max_calls', 1))
-        self.v_advmodel.set(c.get('advisor_model', 'claude-opus-5'))
-        self.v_huburl.set(c.get('hub_url', ''))
-        self.v_hubname.set(c.get('hub_name', 'my-node'))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
         self.v_inject.set(c['random_inject']); self.v_cx.set(c['crossover_prob'])
         self.v_pars.set(c['parsimony']); self.v_corrt.set(c['corr_threshold'])
         self.v_corrp.set(c['corr_penalty']); self.v_hof.set(c['hof_capacity'])
+        self.v_fitblocks.set(c.get('fit_blocks', 5))
         self.v_train.set(c['train_start']); self.v_val.set(c['val_start'])
         self.v_test.set(c['test_start']); self.v_end.set(c['test_end'])
 
@@ -1716,14 +1566,9 @@ class App:
         self._save()
         c = self.cfg
         os.makedirs(STATE_DIR, exist_ok=True)
-        if self._tf() != '1d' and not os.path.exists(self._data_file()):
-            messagebox.showinfo(
-                'No data for ' + self._tf(),
-                f'There is no {self._tf()} snapshot yet ({os.path.basename(self._data_file())}).\n'
-                'Download it first: MARKET DATA → "Download fresh data from Binance" '
-                '(it fetches at the selected timeframe).\n\n'
-                'Also set LATER date segments — intraday history is shorter, and TRAIN/VAL '
-                'dates outside the data leave the search nothing to evaluate.', parent=self.root)
+        if not os.path.exists(self._data_file()):
+            # first run without a snapshot: fetch the starter universe, then continue START
+            self._bootstrap_data(on_success=self.start)
             return
         env = dict(os.environ)
         env.update(
@@ -1748,21 +1593,10 @@ class App:
             ALPHANODE_CORR_THRESHOLD=str(c['corr_threshold']),
             ALPHANODE_CORR_PENALTY=str(c['corr_penalty']),
             ALPHANODE_HOF_CAPACITY=str(c['hof_capacity']),
+            ALPHANODE_FIT_BLOCKS=str(c['fit_blocks']),
             ALPHANODE_TRAIN_START=c['train_start'], ALPHANODE_VAL_START=c['val_start'],
             ALPHANODE_TEST_START=c['test_start'], ALPHANODE_TEST_END=c['test_end'],
         )
-        adv_key = (self.v_apikey.get() or '').strip()
-        if c.get('advisor'):
-            if adv_key:
-                env.update(ALPHANODE_ADVISOR='1', ANTHROPIC_API_KEY=adv_key,
-                           ALPHANODE_ADVISOR_MAX_CALLS=str(c['advisor_max_calls']),
-                           ALPHANODE_ADVISOR_MODEL=c['advisor_model'])
-            else:
-                messagebox.showinfo(
-                    'Analyst has no key',
-                    'The round analyst is ON but no Anthropic API key is set — the node will '
-                    'search without reports.\nPaste a key in NEURO ANALYST (and press Check key), '
-                    'then restart the search.', parent=self.root)
         self.proc = subprocess.Popen(_child_cmd('node'), env=env,
                                      cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                                      stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -2142,7 +1976,7 @@ class App:
     def _log_placeholder(self):
         self.logbox.configure(state='normal')
         self.logbox.delete('1.0', 'end')
-        self.logbox.insert('end', 'live log — round starts, advisor consults, new champions and '
+        self.logbox.insert('end', 'live log — round starts, new champions and '
                                   'round summaries will appear here once the node runs.', 'i')
         self.logbox.configure(state='disabled')
 
@@ -2178,22 +2012,6 @@ class App:
             self.s_trials.configure(text=f'{st.get("trials_total", 0):,}')
             self.s_found.configure(text=str(st.get('found', len(st.get('best', [])))))
             self.lbl_cur.configure(text=(st.get('current', '') + '   ' + st.get('gen', ''))[:120])
-            anst = st.get('analyst') or {}
-            ana = st.get('analysis') or {}
-            if anst.get('error'):
-                self.lbl_adv.configure(
-                    fg=NEG, text=f'🧠 analyst: {anst["error"]} — search runs without reports '
-                                 f'(fix the key in Settings → NEURO ANALYST, press Check key)'[:150])
-                if not self.lbl_adv.winfo_ismapped():
-                    self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
-            elif ana:
-                self.lbl_adv.configure(
-                    fg=ACC, text=(f'🧠 analyst · after round {ana.get("round")}: '
-                                  f'{ana.get("summary", "")}')[:150])
-                if not self.lbl_adv.winfo_ismapped():
-                    self.lbl_adv.pack(anchor='w', fill='x', pady=(4, 0))
-            elif self.lbl_adv.winfo_ismapped():
-                self.lbl_adv.pack_forget()
             evs = st.get('events') or []
             if evs and evs != self._events_last:
                 self._events_last = evs
@@ -2463,14 +2281,13 @@ class App:
             stripe = 'odd' if i % 2 else 'even'
             formula = c.get('formula', '')
             f = formula                                  # full length — the column fits the widest row
-            if c.get('origin') == 'llm':                 # proposed by the advisor, survived selection
-                f = '🧠 ' + f
             need = max(need, self._tree_font.measure(f))
             m = self._metrics_cache.get(formula)
             ls, act, win = self._fmt_metrics(m)
+            aid = 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
             item = self.tree.insert('', 'end', values=(
                 i + 1, f'{base:+.2f}' if base is not None else '—',
-                f'{ts:+.2f}' if ts is not None else '—', ls, act, win, f),
+                f'{ts:+.2f}' if ts is not None else '—', ls, act, win, aid, f),
                 tags=(sign, stripe))
             self._row_items[formula] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
@@ -2495,7 +2312,7 @@ class App:
         stretches to fill the card. Re-run on every render and on tree resize."""
         try:
             fixed = sum(int(self.tree.column(c, 'width'))
-                        for c in ('rank', 'fit', 'test', 'ls', 'act', 'win'))
+                        for c in ('rank', 'fit', 'test', 'ls', 'act', 'win', 'id'))
         except tk.TclError:                              # theme rebuild mid-flight
             return
         avail = self.tree.winfo_width() - fixed - int(4 * self.SCALE)
@@ -2631,73 +2448,6 @@ class App:
             self._open_plot(self._shown[idx])
 
     # ---------- copy formula ----------
-    def _push_selected_to_hub(self):
-        """Leaderboard 'Push → Hub' — the MANUAL one-shot flow: you pick an alpha, the node
-        computes its CURRENT target weights on live data and pushes them (with the formula
-        disclosed) to the hub ONCE. No background service — push again tomorrow, or push a
-        different alpha (same bar = the hub keeps the last write). Simple to test and debug;
-        the automatic serve+push loop still exists via Settings → ALPHAHUB + Serve."""
-        c = self._selected_champ()
-        if not c or not c.get('formula'):
-            messagebox.showinfo('AlphaHub', 'Select an alpha in the leaderboard first.',
-                                parent=self.root)
-            return
-        hub_url = (self.cfg.get('hub_url') or '').strip()
-        if not hub_url:
-            messagebox.showinfo(
-                'AlphaHub', 'No hub configured.\nSettings → ALPHAHUB: set the Hub URL and '
-                            'press Register, then try again.', parent=self.root)
-            return
-        tf = self._tf()                                   # any timeframe: weights via fastsim
-        formula = c['formula']
-        if not messagebox.askyesno(
-                'AlphaHub', f'Push this alpha to {hub_url}?\n\n{formula}\n\n'
-                            f'The node will fetch fresh {tf} candles (+ funding), compute the '
-                            'current target weights and send ONLY the weights as your forward '
-                            f'signal for the next {tf} close. The formula never leaves this '
-                            'machine.', parent=self.root):
-            return
-        cfg = self.cfg
-        if cfg.get('universe_all', True):
-            try:
-                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
-            except Exception as e:                        # noqa: BLE001
-                messagebox.showerror('AlphaHub', f'Cannot read the loaded data: {e}',
-                                     parent=self.root)
-                return
-        else:
-            tickers = [x.strip().upper() for x in cfg.get('universe_list', '').split(',')
-                       if x.strip()]
-        self._flash_lb(f'⇪ computing current {tf} weights on live data…', ms=120000)
-        holder = {}
-
-        def work():
-            try:
-                import hub_client
-                import hub_push
-                ident = hub_client.ensure_identity(HUB_ID_FILE)
-                weights, meta = hub_push.compute_weights(
-                    formula, tickers, tf, self.cfg['target_vol'], self.cfg['exec_cost'],
-                    log=lambda *a: None)
-                iso = hub_push.bar_close_iso(tf)
-                ok, msg = hub_client.push(hub_url, ident, tf, iso, weights)
-                holder['res'] = (ok, f'{msg} · {len(weights)} positions · bar {iso}'
-                                 if ok else msg)
-            except Exception as e:                        # noqa: BLE001
-                holder['res'] = (False, f'{type(e).__name__}: {str(e)[:120]}')
-
-        threading.Thread(target=work, daemon=True).start()
-
-        def poll():
-            if 'res' not in holder:
-                self.root.after(300, poll)
-                return
-            ok, msg = holder['res']
-            self._flash_lb(('✓ hub: ' if ok else '✗ hub: ') + msg, ms=8000)
-            if not ok:
-                messagebox.showwarning('AlphaHub', f'Push failed:\n{msg}', parent=self.root)
-        self.root.after(300, poll)
-
     def _selected_champ(self):
         item = self.tree.focus() or (self.tree.selection()[0] if self.tree.selection() else '')
         if not item:
@@ -2796,10 +2546,10 @@ class App:
                         m.get('long', ''), m.get('short', ''),
                         round(m['act'], 2) if 'act' in m else '',
                         round(m['win'] * 100, 1) if 'win' in m else '',
-                        formula])
+                        'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6], formula])
         self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
                               'test_dd', 'test_cagr', 'long', 'short', 'tr_yr_a', 'win_pct',
-                              'formula'), out, 'rows')
+                              'id', 'formula'), out, 'rows')
 
     def _export_library(self):
         """Everything the node has ever mined — no dedup, no TEST filter. The table on screen is a
@@ -2859,6 +2609,9 @@ class App:
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
                    ALPHANODE_TF=self._tf(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini(),
+                   # combine on the SAME universe the search optimizes — not all of data.pickle
+                   ALPHANODE_UNIVERSE=('all' if self.cfg.get('universe_all', True)
+                                       else self.cfg.get('universe_list', '')),
                    # the GUI's date fields, node.py-style — the ini only has daily defaults
                    ALPHANODE_TRAIN_START=self.cfg.get('train_start', ''),
                    ALPHANODE_VAL_START=self.cfg.get('val_start', ''),
@@ -2902,6 +2655,7 @@ class App:
         self.btn_pf_paper.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         self.btn_pf_sig.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         self.btn_pf_pdf.configure(state=('normal' if doc.get('weights') else 'disabled'))
+        self.btn_pf_track.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         m = doc.get('metrics') or {}
         b = doc.get('basket') or {}
         if doc.get('sel') == 'base':                     # selection never saw TEST
@@ -2912,14 +2666,24 @@ class App:
                     'validate with Paper')
             picked = 'by TEST OOS'
         eng = 'the real engine' if doc.get('tf', '1d') == '1d' else f'fastsim on {doc["tf"]} bars'
+        span = (f'TRAIN+VAL+TEST {doc["span"]}' if doc.get('span')
+                else f'TEST {doc.get("test", "")}')     # docs built before the full-span change
         self.lbl_pf.configure(text=f'top-{doc.get("n")} {picked} combined via {eng}  ·  '
-                                f'TEST {doc.get("test", "")}  ·  built in '
+                                f'{span}  ·  built in '
                                 f'{doc.get("built_secs", "?")}s  ·  {note}')
         sh = m.get('sharpe')
-        self.lbl_pf_m.configure(
-            text=f'Sharpe {sh:+.2f}   ·   CAGR {m.get("cagr", 0) * 100:+.0f}%   ·   '
-                 f'MaxDD {m.get("dd", 0) * 100:.0f}%      (vs buy&hold Sharpe {b.get("sharpe", 0):+.2f})',
-            fg=(POS if (sh is not None and sh >= 0) else NEG))
+        segs = doc.get('segments') or {}
+        if segs:
+            def _s(name):
+                s = (segs.get(name) or {}).get('sharpe')
+                return f'{s:+.2f}' if s is not None else '—'
+            text = (f'Sharpe  TRAIN {_s("train")} · VAL {_s("val")} · TEST {_s("test")}   ·   '
+                    f'TEST: CAGR {m.get("cagr", 0) * 100:+.0f}%  MaxDD {m.get("dd", 0) * 100:.0f}%'
+                    f'      (vs buy&hold TEST {b.get("sharpe", 0):+.2f})')
+        else:
+            text = (f'Sharpe {sh:+.2f}   ·   CAGR {m.get("cagr", 0) * 100:+.0f}%   ·   '
+                    f'MaxDD {m.get("dd", 0) * 100:.0f}%      (vs buy&hold Sharpe {b.get("sharpe", 0):+.2f})')
+        self.lbl_pf_m.configure(text=text, fg=(POS if (sh is not None and sh >= 0) else NEG))
         threading.Thread(target=self._render_pf_equity, args=(doc, self._pf_width()),
                          daemon=True).start()
 
@@ -2986,16 +2750,65 @@ class App:
                 dpi = 100
                 ph = self.cfg.get('pf_h') or 0            # user-dragged height (px), 0 = automatic
                 fig_h = (ph / dpi) if ph else min(3.8, max(2.4, w / dpi / 4.5))
+                op = doc.get('open_pnl') or None
+                if op is not None and len(op) != len(eq['dates']):
+                    op = None                             # malformed doc — draw without the panel
+                if op is not None and not ph:
+                    fig_h = min(4.8, fig_h * 1.3)         # room for the lower panel
                 with matplotlib.rc_context(self._mpl_rc()):
-                    fig = plt.figure(figsize=(w / dpi, fig_h), dpi=dpi)
-                    ax = fig.gca()
+                    if op is not None:
+                        fig, (ax, ax2) = plt.subplots(
+                            2, 1, sharex=True, figsize=(w / dpi, fig_h), dpi=dpi,
+                            gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.08})
+                    else:
+                        fig = plt.figure(figsize=(w / dpi, fig_h), dpi=dpi)
+                        ax = fig.gca()
+                        ax2 = None
                     ax.plot(x, eq['combined'], lw=2.0, color=ACC, label=f'Portfolio (top-{doc.get("n")})')
                     ax.plot(x, eq['basket'], lw=1.2, color='#f9a825', ls=':', label='buy & hold (EW)')
                     ax.set_yscale('log'); ax.grid(True, which='both', alpha=0.3)
-                    ax.legend(loc='upper left', fontsize=8)
-                    ax.set_title(f'combined equity — TEST ({doc.get("test", "")})', fontsize=9)
+                    bounds = doc.get('bounds') or {}
+                    # full-span: segment names sit along the top edge -> legend goes bottom-right
+                    ax.legend(loc=('lower right' if bounds and doc.get('span') else 'upper left'),
+                              fontsize=8)
+                    if bounds and doc.get('span'):        # full-span doc: mark the segments
+                        import matplotlib.transforms as mtrans
+                        trans = mtrans.blended_transform_factory(ax.transData, ax.transAxes)
+                        lo0, hi0 = x[0], x[-1]
+                        edges = [lo0] + [min(max(pd.Timestamp(bounds[k], tz=lo0.tz), lo0), hi0)
+                                         for k in ('val_start', 'test_start')] + [hi0]
+                        for e in edges[1:-1]:
+                            if lo0 < e < hi0:             # a late --sim-start can clip a segment
+                                ax.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
+                                if ax2 is not None:
+                                    ax2.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
+                        for name, lo, hi in zip(('TRAIN', 'VAL', 'TEST'), edges[:-1], edges[1:]):
+                            if hi > lo:
+                                ax.text(lo + (hi - lo) / 2, 0.985, name, transform=trans,
+                                        ha='center', va='top', fontsize=7.5, color=MUT, alpha=0.9)
+                        title = f'combined equity — TRAIN / VAL / TEST ({doc["span"]})'
+                    else:                                 # docs built before the full-span change
+                        title = f'combined equity — TEST ({doc.get("test", "")})'
+                    ax.set_title(title, fontsize=9)
                     ax.tick_params(labelsize=8)
-                    fig.tight_layout(); fig.savefig(PORTFOLIO_PNG, dpi=dpi, facecolor=CARD)
+                    if ax2 is not None:
+                        import numpy as np
+                        opv = np.asarray(op, dtype=float)
+                        ax2.fill_between(x, opv, 0, where=opv >= 0, color=POS, alpha=0.30, lw=0)
+                        ax2.fill_between(x, opv, 0, where=opv < 0, color=NEG, alpha=0.30, lw=0)
+                        ax2.plot(x, opv, lw=0.9, color=MUT)
+                        ax2.axhline(0, color=MUT, lw=0.8)
+                        ax2.grid(True, alpha=0.3)
+                        ax2.tick_params(labelsize=8)
+                        ax2.set_ylabel('open PnL', fontsize=8)
+                        ax2.text(0.005, 0.93, 'open PnL — unrealized gain/loss of the held '
+                                              'positions (share of book; a close/flip realizes it away)',
+                                 transform=ax2.transAxes, fontsize=7, color=MUT, va='top')
+                    import warnings as _w
+                    with _w.catch_warnings():             # tight_layout grumbles about sharex axes
+                        _w.simplefilter('ignore')
+                        fig.tight_layout()
+                    fig.savefig(PORTFOLIO_PNG, dpi=dpi, facecolor=CARD)
                     plt.close(fig)
             self.root.after(0, self._show_pf_img)
         except Exception:                                # noqa: BLE001
@@ -3106,6 +2919,14 @@ class App:
         self._tip(pdf_btn, 'Analytics dashboard as PDF: KPIs, equity and drawdown,\n'
                            'exposure and turnover, weight structure, monthly returns,\n'
                            'TRAIN/VAL/TEST breakdown and conclusions.')
+        fwd_btn = self._btn(btnrow, 'Forward track ➕',
+                            lambda: self._fwd_enroll(
+                                [_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6], 'alpha'),
+                            width=150)
+        fwd_btn.pack(side='left', padx=(8, 0))
+        self._tip(fwd_btn, 'Enroll this alpha into the FORWARD TRACK: freeze it (formula +\n'
+                           'universe + vol/fee) and paper-step it once per closed daily bar\n'
+                           'on live Binance data. Append-only — the honest forward test.')
 
         body = self._box(win)
         body.pack(fill='both', expand=True, padx=16, pady=(4, 14))
@@ -3184,7 +3005,243 @@ class App:
         last = wide.iloc[-1]
         pos = sorted([(t, float(v)) for t, v in last.items() if abs(v) > 0.0005],
                      key=lambda kv: -abs(kv[1]))
-        self._signals_dialog(path, wide.index[-1].date(), pos, len(wide))
+        rng = f'{wide.index[0].date()}..{wide.index[-1].date()}'
+        self._signals_dialog(path, wide.index[-1].date(), pos, len(wide), rng=rng)
+
+    # ---------- forward track (append-only paper stepping inside the node) ----------
+    def _fwd_lib(self):
+        if HERE not in sys.path:
+            sys.path.insert(0, HERE)
+        import forward_track
+        return forward_track
+
+    def _fwd_universe(self):
+        """The universe to FREEZE into an enrollment — same resolution as the paper buttons."""
+        c = self.cfg
+        if c.get('universe_all', True):
+            try:
+                return list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
+            except Exception as e:                             # noqa: BLE001
+                messagebox.showerror('Forward track', f'Cannot read the loaded data: {e}',
+                                     parent=self.root)
+                return None
+        return [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()] or None
+
+    def _fwd_enroll(self, formulas, name, kind):
+        formulas = [f for f in (formulas or []) if f and f.strip()]
+        if not formulas:
+            return
+        tickers = self._fwd_universe()
+        if not tickers:
+            messagebox.showwarning('Forward track', 'The pairs universe is empty.', parent=self.root)
+            return
+        tf = self._tf()                                   # frozen with the strategy: windows are in
+        ft = self._fwd_lib()                              # bars of the tf the formula was mined on
+        track = ft.load_track()
+        dup = ft.find_duplicate(track, formulas, tickers, tf)
+        if dup:
+            messagebox.showinfo('Forward track',
+                                f'Already enrolled: {dup["id"]} (since {dup["enrolled"]}).',
+                                parent=self.root)
+            return
+        c = self.cfg
+        start = str(c.get('train_start', '2019-09-05'))
+        if tf != '1d':
+            try:                                          # don't page YEARS of 1h/15m klines every
+                from timeframe import resolve as _rtf     # step — the tf's recommended history is
+                start = max(start, _rtf(tf).history)      # plenty of warm-up (ISO strings compare)
+            except Exception:                             # noqa: BLE001
+                pass
+        entry = ft.new_entry(name, kind, formulas, tickers, c.get('target_vol', 0.25),
+                             c.get('exec_cost', 0.001), start, tf=tf)
+        track['entries'].append(entry)
+        ft.save_track(track)
+        self._fwd_refresh()
+        intr = ('' if tf == '1d' else
+                f'\n⚠ {tf} bars: steps only happen while the app is open — long gaps make the '
+                'track sparse; fees/slippage weigh more intraday, read it conservatively.')
+        if messagebox.askyesno(
+                'Forward track',
+                f'{entry["id"]} enrolled. The strategy is FROZEN as of today '
+                f'({len(formulas)} formula{"s" if len(formulas) > 1 else ""}, {len(tickers)} assets, '
+                f'{tf} bars, vol {c.get("target_vol", 0.25)}, fee {c.get("exec_cost", 0.001)}) and '
+                f'will be paper-stepped once per closed {tf} bar while the app is open.\n'
+                'History is append-only — forward numbers are never recomputed backwards.'
+                f'{intr}\n\nRun the first step now (downloads live Binance data)?',
+                parent=self.root):
+            self._fwd_step()
+
+    def _pf_fwd_enroll(self):
+        doc = self._pf_doc
+        formulas = (doc or {}).get('formulas_full')
+        if not formulas:
+            messagebox.showinfo('Forward track', 'Build the portfolio first.', parent=self.root)
+            return
+        self._fwd_enroll(list(formulas), f'portfolio_top{doc.get("n", len(formulas))}', 'portfolio')
+
+    def _fwd_step(self, force=False):
+        if self._fwd_proc and self._fwd_proc.poll() is None:
+            return
+        env = dict(os.environ)
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR)
+        try:
+            self._fwd_proc = subprocess.Popen(
+                _child_cmd('forward') + ['step'] + (['--force'] if force else []), env=env,
+                cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        except Exception as e:                                 # noqa: BLE001
+            self.lbl_fwd.configure(text=f'step failed to start: {e}')
+            return
+        self.btn_fwd_step.configure(state='disabled')
+        self.lbl_fwd.configure(text='stepping — downloading live closed bars and running the engine…')
+        threading.Thread(target=self._fwd_wait, args=(self._fwd_proc,), daemon=True).start()
+
+    def _fwd_wait(self, proc):
+        out = proc.stdout.read() if proc.stdout else ''
+        proc.wait()
+        lines = [ln for ln in out.strip().splitlines() if ln.strip()]
+        tail = lines[-1] if lines else ''
+        self.root.after(0, lambda: self._fwd_step_done(tail))
+
+    def _fwd_step_done(self, tail):
+        try:
+            self.btn_fwd_step.configure(state='normal')
+            self._fwd_refresh(status=tail)
+        except tk.TclError:                                    # window closed while stepping
+            pass
+
+    def _fwd_refresh(self, status=None):
+        ft = self._fwd_lib()
+        entries = [e for e in ft.load_track()['entries'] if not e.get('archived')]
+        self._fwd_entries = entries
+        for i in self.fwd_tree.get_children():
+            self.fwd_tree.delete(i)
+        for e in entries:
+            m = ft.metrics(e)
+            tf = e.get('tf', '1d')
+            kind = e['kind'] if tf == '1d' else f'{e["kind"]}·{tf}'
+            self.fwd_tree.insert('', 'end', iid=e['id'], values=(
+                e['id'], kind, e['enrolled'], m['days'],
+                f'${m["equity"]:,.0f}', f'{m["ret"] * 100:+.1f}%',
+                (f'{m["sharpe"]:+.2f}' if m['sharpe'] is not None else '—'),
+                (f'{m["dd"] * 100:.0f}%' if m['dd'] is not None else '—'),
+                m['last'] or '—'))
+        if entries:
+            base = (f'{len(entries)} enrolled · steps run automatically once per closed daily bar '
+                    '(UTC) while the app is open · history is append-only — forward numbers are '
+                    'written by live steps only, never recomputed.')
+        else:
+            base = ('empty — enroll a champion (double-click it in the leaderboard → "Forward '
+                    'track") or the built portfolio ("Track"). Enrollment freezes the strategy; '
+                    'the node then paper-steps it daily on live data, append-only.')
+        self.lbl_fwd.configure(text=(f'{status}   ·   {base}' if status else base))
+
+    def _fwd_tick(self):
+        """Step whenever any enrolled strategy has an unseen CLOSED bar of its own timeframe.
+        Re-checks every 5 minutes — cheap (reads one small JSON); missed bars are harmless
+        (mark-to-market covers the gap on the next step)."""
+        try:
+            ft = self._fwd_lib()
+            due = [e for e in ft.load_track()['entries']
+                   if not e.get('archived') and ft.is_due(e)]
+            if due and not (self._fwd_proc and self._fwd_proc.poll() is None):
+                self._fwd_step()
+        except Exception:                                      # noqa: BLE001 — never kill the loop
+            pass
+        self.root.after(5 * 60 * 1000, self._fwd_tick)
+
+    def _fwd_selected(self):
+        sel = self.fwd_tree.selection()
+        if not sel:
+            messagebox.showinfo('Forward track', 'Select a strategy in the table first.',
+                                parent=self.root)
+            return None
+        return next((e for e in self._fwd_entries if e['id'] == sel[0]), None)
+
+    def _fwd_archive(self):
+        e = self._fwd_selected()
+        if not e:
+            return
+        if not messagebox.askyesno('Forward track',
+                                   f'Archive {e["id"]}? It stops stepping; the history stays in '
+                                   'state/forward.json (append-only), the row leaves the table.',
+                                   parent=self.root):
+            return
+        ft = self._fwd_lib()
+        track = ft.load_track()
+        for x in track['entries']:
+            if x['id'] == e['id']:
+                x['archived'] = True
+        ft.save_track(track)
+        self._fwd_refresh()
+
+    def _fwd_chart(self):
+        e = self._fwd_selected()
+        if not e:
+            return
+        hist = e.get('history') or []
+        if not hist:
+            messagebox.showinfo('Forward track', 'No steps yet — the curve appears after the '
+                                                 'first daily step.', parent=self.root)
+            return
+        out = os.path.join(STATE_DIR, f'forward_view_{e["id"]}.png')
+        holder = {'done': False, 'err': None}
+
+        def work():
+            try:
+                with self._plot_lock:
+                    import matplotlib
+                    matplotlib.use('Agg')
+                    import matplotlib.pyplot as plt
+                    import pandas as pd
+                    x = pd.to_datetime([h['date'] for h in hist])
+                    y = [h['equity'] for h in hist]
+                    with matplotlib.rc_context(self._mpl_rc()):
+                        fig = plt.figure(figsize=(9.8, 4.4), dpi=100)
+                        ax = fig.gca()
+                        ax.plot(x, y, lw=2.0, color=ACC,
+                                label=f'{e["id"]} · {len(hist)} live steps')
+                        ax.axhline(e['start_capital'], color=MUT, lw=0.9, ls='--')
+                        ax.set_title(f'forward equity — enrolled {e["enrolled"]} · append-only '
+                                     '(live steps, nothing recomputed)', fontsize=9)
+                        ax.legend(loc='upper left', fontsize=8)
+                        ax.grid(True, alpha=0.3)
+                        ax.tick_params(labelsize=8)
+                        fig.tight_layout()
+                        fig.savefig(out, dpi=100, facecolor=CARD)
+                        plt.close(fig)
+            except Exception as ex:                            # noqa: BLE001
+                holder['err'] = f'{type(ex).__name__}: {ex}'
+            holder['done'] = True
+
+        threading.Thread(target=work, daemon=True).start()
+        win = self._dialog(f'Forward — {e["id"]}', '1020x520')
+        body = self._box(win)
+        body.pack(fill='both', expand=True, padx=14, pady=12)
+        status = self._lbl(body, text='rendering…', text_color=MUT, font=(self.UI, 14))
+        status.pack(pady=30)
+
+        def show():
+            if not win.winfo_exists():
+                return
+            if not holder['done']:
+                win.after(150, show)
+                return
+            if holder['err']:
+                status.configure(text='Error: ' + holder['err'], fg=NEG)
+                return
+            try:
+                photo = tk.PhotoImage(file=out)
+                status.destroy()
+                lbl = tk.Label(body, image=photo, bg=CARD, borderwidth=0)
+                lbl.image = photo
+                lbl.pack(fill='both', expand=True)
+            finally:
+                try:
+                    os.remove(out)
+                except OSError:
+                    pass
+        win.after(150, show)
 
     # ---------- PDF analytics report (single alpha and the portfolio) ----------
     def _worker_cfg(self):
@@ -3317,6 +3374,14 @@ class App:
                                 'Build the portfolio first (rebuild it if it was built by an older version).',
                                 parent=self.root)
             return
+        if doc.get('tf', '1d') == '1d' and doc.get('weights_span') != 'full':
+            if not messagebox.askyesno(
+                    'Portfolio signals',
+                    'This portfolio was built by an OLDER version — its stored weights cover '
+                    'TEST only.\nPress "▶ Build portfolio" again and the CSV will span the whole '
+                    'TRAIN/VAL/TEST history.\n\nExport the TEST-only CSV anyway?',
+                    icon='warning', default='no', parent=self.root):
+                return
         path = filedialog.asksaveasfilename(
             parent=self.root, title='Save portfolio signals', defaultextension='.csv',
             initialfile=f'signals_portfolio_top{doc.get("n", "")}.csv',
@@ -3379,7 +3444,7 @@ class App:
             return
         self._paper_dialog(path, len(tickers))
 
-    def _signals_dialog(self, path, latest_date, positions, n_days):
+    def _signals_dialog(self, path, latest_date, positions, n_days, rng=None):
         win = self._dialog('Portfolio signals', '460x580')
         frm = self._box(win)
         frm.pack(fill='both', expand=True, padx=18, pady=16)
@@ -3403,8 +3468,10 @@ class App:
             self._lbl(r, text=t, text_color=TXT, font=(self.MONO, 13), anchor='w').pack(side='left')
             self._lbl(r, text=f'{w * 100:+.1f}%', text_color=col, font=(self.MONO, 13, 'bold'),
                          anchor='e').pack(side='right', padx=(0, 8))
-        self._lbl(frm, text=f'Full history ({n_days} bars) — in the CSV: date, ticker, side, '
-                            'weight, weight_pct + the asset\'s open/high/low/close/volume.',
+        covered = f'{n_days} bars' + (f', {rng}' if rng else '')
+        self._lbl(frm, text=f'Full history ({covered}) — in the CSV: date, segment '
+                            '(TRAIN/VAL/TEST), ticker, side, weight, weight_pct + the asset\'s '
+                            'open/high/low/close/volume.',
                      text_color=MUT, font=(self.UI, 12), wraplength=400, justify='left',
                      anchor='w').pack(anchor='w', pady=(10, 0))
         self._btn(frm, 'Close', win.destroy, width=80).pack(anchor='e', pady=(10, 0))
@@ -3550,12 +3617,18 @@ class App:
                 else:
                     ts = (champ.get('test') or {}).get('sharpe')
                     label = 'strategy' + (f' · TEST Sharpe {ts:+.2f}' if ts is not None else '')
+                    try:                                 # open-PnL panel: best-effort, chart survives without
+                        from evaluator import open_pnl_series
+                        wide = self._alpha_weights_wide(champ['formula'], cfg, market, panel)
+                        op = open_pnl_series(wide, panel['ret'])
+                    except Exception:                    # noqa: BLE001
+                        op = None
                     with matplotlib.rc_context(self._mpl_rc()):
                         report.plot_equity(
                             {label: r}, basket, cfg['splits'], holder['out'],
                             'Growth of $1 (NET, log):  TRAIN | VAL | TEST   vs   EW basket (buy & hold)',
                             figsize=holder['figsize'], dpi=holder['dpi'],
-                            facecolor=CARD, fg=MUT, axline=TXT)
+                            facecolor=CARD, fg=MUT, axline=TXT, open_pnl=op)
                     holder['path'] = holder['out']
             except Exception as e:                       # noqa: BLE001
                 holder['err'] = f'{type(e).__name__}: {e}'

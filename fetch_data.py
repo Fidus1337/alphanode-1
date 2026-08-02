@@ -53,6 +53,11 @@ TIMEOUTS = {'1d': 120, '4h': 360, '1h': 900, '15m': 2400}
 # parallel the weight limit kicks in after ~15 min and ALL downloads stall in a rate-limit pause.
 # Fewer workers finish sooner in wall-clock because they never trip the cooldown.
 CONCURRENCY = {'1d': 6, '4h': 4, '1h': 3, '15m': 2}
+# Starter universe for a first run with no data snapshot: an explicit list of liquid majors,
+# NOT top-10 by 24h turnover — today's turnover leaders can be freshly-listed memecoins with
+# months of history, while these ten give years of bars and stable coverage.
+DEFAULT_SYMBOLS = ('BTCUSDT', 'ETHUSDT', 'SOLUSDT', 'XRPUSDT', 'BNBUSDT',
+                   'DOGEUSDT', 'ADAUSDT', 'LINKUSDT', 'AVAXUSDT', 'LTCUSDT')
 FUNDING_TIMEOUT = 180        # per pair: funding history is ~8 LIGHT pages even for 2019 majors
 
 
@@ -157,7 +162,8 @@ def _attach_funding(df, fser, freq):
     return df
 
 
-async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, timeout, interval='1d'):
+async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, timeout, interval='1d',
+                symbols=None):
     gran, mult = INTERVALS[interval]
     bar_freq = _bar_freq(interval)
     bn = _make_binance()
@@ -172,17 +178,29 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
             perps.append(s['symbol'])
             onboard[s['symbol']] = _onboard_ts(s)
 
-    cutoff = end.timestamp() - min_years * YEAR_SECS          # listed no later than min_years before the end
-    aged = [sym for sym in perps if onboard.get(sym) is not None and onboard[sym] <= cutoff]
-    print(f'  {quote} perps TRADING: {len(perps)}; with history >= {min_years:g} years: {len(aged)} '
-          f'(young filtered out: {len(perps) - len(aged)})', flush=True)
+    if symbols:                                               # explicit universe: no ranking, no age filter
+        want = [s.strip().upper() for s in symbols if s.strip()]
+        missing = [s for s in want if s not in onboard]
+        if missing:
+            print(f'  not a TRADING {quote} perp on Binance (skipped): {", ".join(missing)}', flush=True)
+        chosen = [s for s in want if s in onboard]
+        print(f'  explicit universe ({len(chosen)}): {", ".join(chosen)}', flush=True)
+        if not chosen:
+            print('✗ none of the requested symbols trade on Binance perps', flush=True)
+            await _aclose(bn)
+            return 1
+    else:
+        cutoff = end.timestamp() - min_years * YEAR_SECS      # listed no later than min_years before the end
+        aged = [sym for sym in perps if onboard.get(sym) is not None and onboard[sym] <= cutoff]
+        print(f'  {quote} perps TRADING: {len(perps)}; with history >= {min_years:g} years: {len(aged)} '
+              f'(young filtered out: {len(perps) - len(aged)})', flush=True)
 
-    print('· ranking by 24h turnover (ticker/24hr)…', flush=True)
-    tick = await bn.http_client.request(endpoint='/fapi/v1/ticker/24hr', method='GET')
-    vol = {t['symbol']: float(t.get('quoteVolume', 0) or 0) for t in tick}
-    aged.sort(key=lambda s: vol.get(s, 0.0), reverse=True)
-    chosen = aged[:top_n]
-    print(f'  taking top-{len(chosen)}: {", ".join(chosen[:12])}{" …" if len(chosen) > 12 else ""}', flush=True)
+        print('· ranking by 24h turnover (ticker/24hr)…', flush=True)
+        tick = await bn.http_client.request(endpoint='/fapi/v1/ticker/24hr', method='GET')
+        vol = {t['symbol']: float(t.get('quoteVolume', 0) or 0) for t in tick}
+        aged.sort(key=lambda s: vol.get(s, 0.0), reverse=True)
+        chosen = aged[:top_n]
+        print(f'  taking top-{len(chosen)}: {", ".join(chosen[:12])}{" …" if len(chosen) > 12 else ""}', flush=True)
 
     print(f'· downloading {interval} bars up to {end.date()} '
           f'(each pair starts from its listing; {concurrency} in parallel)…', flush=True)
@@ -312,6 +330,24 @@ async def add_funding(out_path, interval, concurrency=6):
     return 0
 
 
+def run(out_path, interval='1d', symbols=None, top=150, min_years=3.0, start=None, end=None):
+    """Programmatic entry for the node/GUI bootstrap — unlike main(), returns an exit code
+    instead of os._exit(), so the caller keeps running after the download."""
+    if start is None:
+        start = (_resolve_tf(interval).history if _resolve_tf is not None else '2019-09-05')
+    start_dt = datetime.fromisoformat(start).replace(tzinfo=timezone.utc)
+    end_dt = (datetime.fromisoformat(end) if end else datetime.now(timezone.utc)).replace(tzinfo=timezone.utc)
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.set_exception_handler(lambda _l, _c: None)
+    try:
+        return loop.run_until_complete(fetch(top, start_dt, end_dt, out_path, 'USDT', min_years,
+                                             CONCURRENCY[interval], TIMEOUTS[interval],
+                                             interval=interval, symbols=symbols))
+    except KeyboardInterrupt:
+        return 130
+
+
 def main():
     ap = argparse.ArgumentParser(description='Download top-N USDT perps (with history >= N years) from Binance')
     ap.add_argument('--top', type=int, default=150, help='how many pairs (top by 24h turnover)')
@@ -329,6 +365,10 @@ def main():
     ap.add_argument('--timeout', type=float, default=None,
                     help='timeout per pair, sec (default scales with --interval: 120 for 1d, '
                          '900 for 1h, … — intraday needs many paginated requests per pair)')
+    ap.add_argument('--symbols', default=None,
+                    help='comma-separated explicit pair list (e.g. BTCUSDT,ETHUSDT) — skips the '
+                         'top-N turnover ranking and the min-years filter; "default" = the built-in '
+                         'starter universe of 10 majors')
     ap.add_argument('--interval', default='1d', choices=sorted(INTERVALS),
                     help='bar size (15m|1h|4h|1d); intraday is written to its own data_<tf>.pickle')
     ap.add_argument('--add-funding', action='store_true',
@@ -358,7 +398,11 @@ def main():
                       else '2019-09-05')
         print(f'· --start not given → {args.start} (recommended for {args.interval}); '
               'override with --start', flush=True)
-    if args.interval == '15m' and args.top > 60:
+    symbols = None
+    if args.symbols:
+        symbols = (list(DEFAULT_SYMBOLS) if args.symbols.strip().lower() == 'default'
+                   else [x.strip().upper() for x in args.symbols.replace(',', ' ').split() if x.strip()])
+    if args.interval == '15m' and symbols is None and args.top > 60:
         print('note: 15m bars are heavy (~96/day/pair) — consider --top <= 60', flush=True)
 
     start = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
@@ -370,7 +414,7 @@ def main():
     try:
         rc = loop.run_until_complete(fetch(args.top, start, end, args.out, args.quote,
                                            args.min_years, args.concurrency, args.timeout,
-                                           interval=args.interval))
+                                           interval=args.interval, symbols=symbols))
     except KeyboardInterrupt:
         rc = 130
     sys.stdout.flush()

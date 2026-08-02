@@ -38,7 +38,10 @@ def load_config(path=None):
     jobs_raw = cp.get('search', 'jobs', fallback='auto').strip()
     jobs = max(1, (os.cpu_count() or 4) - 2) if jobs_raw.lower() == 'auto' else int(jobs_raw)
 
-    uni_raw = cp.get('universe', 'instruments', fallback='all').strip()
+    # ALPHANODE_UNIVERSE (the GUI/node setting) wins over the ini — every consumer of load_config
+    # (portfolio build, workers, validation) must simulate the SAME basket the search optimizes.
+    uni_raw = (os.environ.get('ALPHANODE_UNIVERSE') or
+               cp.get('universe', 'instruments', fallback='all')).strip()
     if uni_raw.lower() in ('', 'all', '*'):
         instruments = None                                  # None -> all from data.pickle
     else:
@@ -90,15 +93,12 @@ def load_config(path=None):
         'corr_thresh': cp.getfloat('fitness', 'corr_threshold'),
         'corr_penalty': cp.getfloat('fitness', 'corr_penalty'),
         'hof_cap': cp.getint('fitness', 'hof_capacity'),
+        # robust multi-block fitness (0 blocks = legacy min(TRAIN,VAL); see config.ini)
+        'fit_blocks': cp.getint('fitness', 'blocks', fallback=0),
+        'fit_quantile': cp.getfloat('fitness', 'block_quantile', fallback=0.25),
+        'fit_se_penalty': cp.getfloat('fitness', 'se_penalty', fallback=1.0),
+        'fit_conc_penalty': cp.getfloat('fitness', 'conc_penalty', fallback=0.3),
+        'fit_min_eff_n': cp.getfloat('fitness', 'min_eff_n', fallback=3.0),
         # final coordinate-descent tuning of champions' windows (continuous, off-grid)
         'window_polish': cp.getboolean('search', 'window_polish', fallback=True),
-        # --- neuro-symbolic advisor (optional; needs the anthropic SDK + credentials) ---
-        'advisor': (os.environ.get('ALPHANODE_ADVISOR', '').strip() in ('1', 'true', 'yes')
-                    or cp.getboolean('advisor', 'enabled', fallback=False)),
-        'advisor_model': (os.environ.get('ALPHANODE_ADVISOR_MODEL')
-                          or cp.get('advisor', 'model', fallback='claude-opus-5')),
-        'advisor_patience': cp.getint('advisor', 'patience', fallback=4),
-        'advisor_n': cp.getint('advisor', 'proposals', fallback=10),
-        'advisor_max_calls': int(os.environ.get('ALPHANODE_ADVISOR_MAX_CALLS', '').strip()
-                                 or cp.getint('advisor', 'max_calls', fallback=1)),
     }

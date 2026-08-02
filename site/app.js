@@ -112,9 +112,9 @@
       [`▶ round ${++round} · 1h bars · 60 pairs`, 'c'],
       ['  gen 12/25 · best fit 1.38 · dd −9.2%', ''],
       ['  ♦ champion cs_rank(ts_roc:30(close))', 'a'],
-      ['  🧠 advisor: 10 proposed → 3 survived', 'b'],
+      ['  ⚙ window polish: 3/5 champions improved', 'b'],
       ['  ✓ library +2 → 511 alphas', 'g'],
-      ['  ⇪ hub: 34 weights · bar 12:00Z · ok', 'g'],
+      ['  ▤ portfolio top-6 · TEST Sharpe +2.1', 'g'],
     ];
     if (reduced) {
       log.innerHTML = lines().map(([t, c]) => `<span class="${c}">${t}</span>`).join('\n');

@@ -101,8 +101,8 @@
       <div class="step">
         <div class="num">04</div>
         <h3>Prove it forward</h3>
-        <p>Export CSV signals and PDF reports, or push weights to AlphaHub — a notary
-        for timestamped forward track records.</p>
+        <p>Export CSV signals and PDF analytics reports, serve a local signal API, and
+        paper-trade the library on data it has never seen.</p>
       </div>
     </div>
   </div>
@@ -134,65 +134,6 @@
   </div>
 </section>
 
-<section>
-  <div class="wrap split">
-    <div>
-      <div class="kicker">Neuro Advisor · optional</div>
-      <h2>Claude proposes.<br>The simulator judges.</h2>
-      <ul class="checks">
-        <li><b>Fresh ideas on plateaus</b> — when evolution stalls, an LLM reads the
-          champions and suggests structurally new formulas.</li>
-        <li><b>Zero authority</b> — proposals face the same simulator and the same locked
-          test as any mutation. The LLM never scores anything.</li>
-        <li><b>Your key, your budget</b> — bring an Anthropic API key, cap consults per
-          round. One consult/round runs on cents a day.</li>
-        <li><b>Full provenance</b> — advisor-born alphas carry a 🧠 badge through the
-          leaderboard and every export.</li>
-      </ul>
-    </div>
-    <div class="widget reveal" aria-hidden="true">
-      <div class="whead">advisor → simulator</div>
-      <div class="wline"><span class="f">neg(cs_rank(ts_mean:30(funding)))</span>
-        <span class="ok">PASS · fit 1.31 🧠</span></div>
-      <div class="wline"><span class="f">ts_kurt:60(slog(range))</span>
-        <span class="bad">rejected</span></div>
-      <div class="wline"><span class="f">cs_zscore(ts_delta:7(vwap))</span>
-        <span class="ok">PASS · fit 0.92 🧠</span></div>
-      <div class="wline"><span class="mut">verdicts by the simulator — never by the LLM</span></div>
-    </div>
-  </div>
-</section>
-
-<section class="alt">
-  <div class="wrap split rev">
-    <div class="widget reveal" aria-hidden="true">
-      <div class="whead">alphahub — forward leaderboard</div>
-      <div class="wline"><span class="mut">node</span><span class="f">tf</span>
-        <span class="mut">fwd sharpe · hit</span></div>
-      <div class="wline"><span class="f">nd_c6f7…&nbsp;quiet-owl</span><span class="mut">1h</span>
-        <span class="ok">+2.1 · 57%</span></div>
-      <div class="wline"><span class="f">nd_98a2…&nbsp;my-node</span><span class="mut">1d</span>
-        <span class="ok">+1.4 · 55%</span></div>
-      <div class="wline"><span class="f">nd_5e11…&nbsp;newcomer</span><span class="mut">4h</span>
-        <span class="mut">quarantine · 12d</span></div>
-    </div>
-    <div>
-      <div class="kicker">AlphaHub</div>
-      <h2>Backtests argue.<br>Forward tracks prove.</h2>
-      <ul class="checks">
-        <li><b>Timestamped before the bar closes</b> — the hub only accepts weights while
-          the bar is still open. No hindsight, by the clock.</li>
-        <li><b>Weights only</b> — the protocol has no field for a formula at all. Your
-          alpha proves itself without being revealed.</li>
-        <li><b>Ungameable scoring</b> — returns are gross-normalized from public exchange
-          prices; leverage can't inflate them.</li>
-        <li><b>Keys, not accounts</b> — your node signs with its own Ed25519 identity.
-          Nothing to register, nothing to leak.</li>
-      </ul>
-    </div>
-  </div>
-</section>
-
 <section id="pricing">
   <div class="wrap center">
     <div class="kicker">Pricing</div>
@@ -206,38 +147,23 @@
           <li>GP search on all timeframes, 15m–1d</li>
           <li>Desktop GUI + headless CLI</li>
           <li>Library, portfolio builder, CSV + PDF</li>
-          <li>AlphaHub forward-track push</li>
-          <li class="no">Neuro Advisor (LLM co-pilot)</li>
+          <li>Paper trading + local signal API</li>
         </ul>
         <a class="btn ghost" href="mailto:yurbusht@gmail.com?subject=AlphaNode%20%E2%80%94%20Node%20plan">Get Node</a>
       </div>
       <div class="price-card featured reveal">
-        <div class="badge">MOST POPULAR</div>
-        <div class="tier">Node + Advisor</div>
-        <div class="price">$99<span> / month</span></div>
-        <ul>
-          <li>Everything in Node</li>
-          <li>Neuro Advisor: Claude proposes, the simulator judges</li>
-          <li>Model picker + per-round budget cap</li>
-          <li>🧠 provenance in every export</li>
-          <li>Priority support</li>
-        </ul>
-        <a class="btn" href="mailto:yurbusht@gmail.com?subject=AlphaNode%20%E2%80%94%20Node%2BAdvisor%20plan">Get Node + Advisor</a>
-      </div>
-      <div class="price-card reveal">
+        <div class="badge">BEST VALUE</div>
         <div class="tier">Lifetime</div>
         <div class="price">$990<span> one-time</span></div>
         <ul>
-          <li>Everything in Node + Advisor</li>
+          <li>Everything in Node</li>
           <li>Perpetual license — pay once, run forever</li>
           <li>12 months of updates included</li>
           <li>Priority support</li>
         </ul>
-        <a class="btn ghost" href="mailto:yurbusht@gmail.com?subject=AlphaNode%20%E2%80%94%20Lifetime%20license">Get Lifetime</a>
+        <a class="btn" href="mailto:yurbusht@gmail.com?subject=AlphaNode%20%E2%80%94%20Lifetime%20license">Get Lifetime</a>
       </div>
     </div>
-    <p class="pricing-note">The Neuro Advisor uses your own Anthropic API key — LLM usage is
-    billed by Anthropic directly. A cap of one consult per round typically costs cents per day.</p>
   </div>
 </section>
 
@@ -250,21 +176,19 @@
         <summary>Does AlphaNode guarantee profits?</summary>
         <p>No — and be suspicious of anyone who says otherwise. Every number shown is a
         hypothetical backtest. What AlphaNode guarantees is discipline: a locked held-out
-        window, robustness-first fitness, and a forward-track notary so you can prove — to
+        window, robustness-first fitness, and built-in paper trading so you can prove — to
         yourself first — whether an alpha survives contact with the future. Nothing here is
         investment advice.</p>
       </details>
       <details>
         <summary>What do I need to run it?</summary>
         <p>A Linux or Windows 10+ machine and an internet connection for market data. A few
-        CPU cores are enough — no GPU. The Neuro Advisor additionally needs your own
-        Anthropic API key.</p>
+        CPU cores are enough — no GPU.</p>
       </details>
       <details>
         <summary>Do my formulas or data ever leave my machine?</summary>
         <p>No. Search, simulation and the library are fully local. The only outbound traffic
-        is market data downloads, optional advisor calls to Anthropic (your key), and
-        optional AlphaHub pushes — which carry target weights only, never formulas.</p>
+        is market data downloads from Binance — nothing else ever leaves the machine.</p>
       </details>
       <details>
         <summary>Which markets and timeframes?</summary>
