@@ -25,6 +25,9 @@ paper_trades.csv
 # the leaderboard "CSV" export, saved wherever the user pointed the dialog
 library_*.csv
 leaderboard_top*.csv
+# signal/portfolio CSVs and PDF reports saved from the GUI dialogs
+signals_*.csv
+report_*.pdf
 
 # ── Logs ────────────────────────────────────────────────
 *.log
