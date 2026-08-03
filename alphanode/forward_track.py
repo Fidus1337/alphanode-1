@@ -269,8 +269,12 @@ def step_entry(entry, kline_cache, force=False, log=print):
     equity += pnl
     target = {t: (weights.get(t, 0.0) * lev * equity / prices[t]) if prices[t] > 0 else 0.0
               for t in tickers}
-    turnover = sum(abs((target[t] - positions.get(t, 0.0)) * prices[t]) for t in tickers
-                   if abs((target[t] - positions.get(t, 0.0)) * prices[t]) > DUST)
+    trades = {}
+    for t in tickers:
+        d = target[t] - positions.get(t, 0.0)
+        if abs(d * prices[t]) > DUST:
+            trades[t] = d
+    turnover = sum(abs(d * prices[t]) for t, d in trades.items())
     fees = turnover * entry['exec']
     equity -= fees
 
@@ -281,7 +285,12 @@ def step_entry(entry, kline_cache, force=False, log=print):
     # intraday weights are already weight×leverage (lev returned as 1.0) — log the real gross
     lev_disp = lev if tf == '1d' else sum(abs(w) for w in weights.values())
     row = {'date': end_str, 'equity': round(equity, 2), 'pnl': round(pnl, 2),
-           'fees': round(fees, 2), 'turnover': round(turnover, 2), 'leverage': round(lev_disp, 3)}
+           'fees': round(fees, 2), 'turnover': round(turnover, 2), 'leverage': round(lev_disp, 3),
+           # the SIGNALS of this step: the held book (signed fraction of equity per asset)
+           # and the executed rebalance (signed $ notional per asset)
+           'pos': {t: round(target[t] * prices[t] / equity, 4) for t in tickers
+                   if equity > 0 and abs(target[t] * prices[t]) > DUST},
+           'trades': {t: round(d * prices[t], 2) for t, d in trades.items()}}
     hist = entry['history']
     if hist and hist[-1]['date'] == end_str:              # a force re-step overwrites the same bar
         hist[-1] = row

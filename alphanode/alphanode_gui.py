@@ -1227,6 +1227,11 @@ class App:
         self.btn_fwd_chart.pack(side='left', padx=(6, 0))
         self._tip(self.btn_fwd_chart, 'Forward equity of the selected row — only live steps,\n'
                                       'nothing recomputed backwards.')
+        self.btn_fwd_sig = self._btn(fctl, 'Signals', self._fwd_signals, width=86)
+        self.btn_fwd_sig.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_fwd_sig, 'Step-by-step log of the selected strategy: the held book\n'
+                                    '(signed % of equity per asset), the executed rebalances,\n'
+                                    'P&L and fees of every live step — exportable as CSV.')
         self.btn_fwd_arch = self._btn(fctl, 'Archive', self._fwd_archive, width=90)
         self.btn_fwd_arch.pack(side='left', padx=(6, 0))
         self._tip(self.btn_fwd_arch, 'Stop stepping the selected strategy. Its history stays in\n'
@@ -3174,6 +3179,91 @@ class App:
                 x['archived'] = True
         ft.save_track(track)
         self._fwd_refresh()
+
+    @staticmethod
+    def _fwd_book_str(d):
+        """{'BTCUSDT': -0.224, ...} -> 'BTC −22.4% · ETH +5.1%' (base asset, signed % of equity)."""
+        if not d:
+            return '—'
+        items = sorted(d.items(), key=lambda kv: -abs(kv[1]))
+        return ' · '.join(f'{t.replace("USDT", "")} {v * 100:+.1f}%' for t, v in items[:8]) \
+            + (' …' if len(items) > 8 else '')
+
+    def _fwd_signals(self):
+        e = self._fwd_selected()
+        if not e:
+            return
+        hist = e.get('history') or []
+        if not hist:
+            messagebox.showinfo('Forward signals', 'No steps yet — the log appears after the '
+                                                   'first live step.', parent=self.root)
+            return
+        win = self._dialog(f'Forward signals — {e["id"]}', '1080x600')
+        frm = self._box(win)
+        frm.pack(fill='both', expand=True, padx=16, pady=14)
+        st = e.get('state') or {}
+        pos, prc = st.get('positions') or {}, st.get('prices') or {}
+        eq = float(st.get('equity') or e['start_capital'])
+        now_book = {t: u * float(prc.get(t, 0.0)) / eq for t, u in pos.items() if eq > 0}
+        self._lbl(frm, text=f'Holding now:  {self._fwd_book_str(now_book)}',
+                  text_color=TXT, font=(self.MONO, 13, 'bold')).pack(anchor='w')
+        self._lbl(frm, text='book = signed % of equity per asset · trade = executed rebalance in $ '
+                            '· rows before this feature show “—” (the log is append-only)',
+                  text_color=FAINT, font=(self.UI, 11)).pack(anchor='w', pady=(2, 8))
+        row = self._box(frm)                              # bottom bar FIRST — the table then takes
+        row.pack(side='bottom', fill='x', pady=(10, 0))   # what's left and can't push it out of view
+        self._btn(row, 'Export CSV (full log)', lambda: self._fwd_signals_csv(e),
+                  width=190).pack(side='right')
+        hist_note = self._lbl(row, text='', text_color=FAINT, font=(self.UI, 11))
+        hist_note.pack(side='left')
+        wrap = self._box(frm)
+        wrap.pack(fill='both', expand=True)
+        cols = ('date', 'book', 'trades', 'pnl', 'fees')
+        tv = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
+        for c, txt, w, anc in (('date', 'BAR', 130, 'center'), ('book', 'BOOK HELD', 330, 'w'),
+                               ('trades', 'REBALANCE ($)', 300, 'w'),
+                               ('pnl', 'P&L $', 90, 'e'), ('fees', 'FEES $', 80, 'e')):
+            tv.heading(c, text=txt)
+            tv.column(c, width=int(w * self.SCALE), anchor=anc, stretch=(c in ('book', 'trades')))
+        shown = hist[-400:]                               # a 1h track grows long — cap the widget
+        for i, h in enumerate(reversed(shown)):           # latest first
+            tr = h.get('trades')
+            trs = ('—' if tr is None else
+                   (' · '.join(f'{t.replace("USDT", "")} {v:+,.0f}'
+                               for t, v in sorted(tr.items(), key=lambda kv: -abs(kv[1]))[:8])
+                    or 'no trades'))
+            tv.insert('', 'end', tags=('odd' if i % 2 else 'even',), values=(
+                h['date'], self._fwd_book_str(h.get('pos')) if h.get('pos') is not None else '—',
+                trs, f'{h.get("pnl", 0):+,.2f}', f'{h.get("fees", 0):,.2f}'))
+        tv.tag_configure('odd', background=STRIPE)
+        tv.tag_configure('even', background=CARD)
+        vs = ctk.CTkScrollbar(wrap, orientation='vertical', command=tv.yview, fg_color=CARD,
+                              button_color=BORDER, button_hover_color=FAINT, width=14)
+        tv.configure(yscrollcommand=vs.set)
+        tv.pack(side='left', fill='both', expand=True)
+        vs.pack(side='right', fill='y')
+        if len(hist) > len(shown):
+            hist_note.configure(text=f'showing last {len(shown)} of {len(hist)} steps — '
+                                     'the CSV has all of them')
+
+    def _fwd_signals_csv(self, e):
+        path = filedialog.asksaveasfilename(
+            parent=self.root, title='Save forward signals log', defaultextension='.csv',
+            initialfile=f'forward_{e["id"]}.csv',
+            filetypes=[('CSV', '*.csv'), ('All files', '*.*')])
+        if not path:
+            return
+        rows = []
+        for h in e.get('history') or []:
+            pos, tr = h.get('pos') or {}, h.get('trades') or {}
+            for t in sorted(set(pos) | set(tr), key=lambda x: -abs(pos.get(x, 0.0))):
+                rows.append([h['date'], t, pos.get(t, ''), tr.get(t, ''),
+                             h.get('pnl', ''), h.get('fees', ''), h.get('equity', '')])
+            if not pos and not tr:                        # pre-feature rows / flat bars stay visible
+                rows.append([h['date'], '', '', '', h.get('pnl', ''), h.get('fees', ''),
+                             h.get('equity', '')])
+        self._save_csv(path, ('bar', 'ticker', 'book_frac', 'trade_usd', 'step_pnl',
+                              'step_fees', 'equity'), rows, 'signal rows')
 
     def _fwd_chart(self):
         e = self._fwd_selected()
