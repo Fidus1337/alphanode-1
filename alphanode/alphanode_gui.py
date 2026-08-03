@@ -1036,9 +1036,12 @@ class App:
         self._head(cpad, 'PROGRESS — FITNESS min(train,val) BY ROUND  ·  TEST kept held-out').pack(
             anchor='w', pady=(0, 8))
         ch = int((self.cfg.get('chart_h') or 170) * self.SCALE)
-        self.chart = tk.Canvas(cpad, height=ch, bg=CARD, highlightthickness=0)
+        self.chart = tk.Canvas(cpad, height=ch, bg=CARD, highlightthickness=0, cursor='hand2')
         self.chart.pack(fill='x')
         self.chart.bind('<Configure>', lambda e: self._draw_chart())
+        self.chart.bind('<Double-1>', self._progress_interactive)  # live zoomable copy
+        self._tip(self.chart, 'Double-click — interactive chart: zoom with the mouse wheel,\n'
+                              'pan with the toolbar; adds the TEST curve and library growth.')
         # the whole gap below this card is the drag handle (see _vgrip in the row layout)
 
         self._vgrip(right, 3, self._on_chart_drag, self._chart_reset,
@@ -2122,6 +2125,53 @@ class App:
             cv.create_text((padL + w - padR) / 2, h - 6 * S, text=f'champion TEST {last_test:+.2f} · held-out',
                            anchor='s', fill=FAINT, font=self._font(self.UI, 10))
 
+    def _progress_interactive(self, _e=None):
+        """The dashboard progress chart as a LIVE matplotlib window (wheel zoom / pan / reset),
+        with the extras the compact card has no room for: the champion's held-out TEST curve
+        over time and the library growth on a twin axis."""
+        hist = getattr(self, '_history', []) or []
+
+        def _v(p):
+            return p.get('best_base', p.get('best_test'))
+        base = [(p['round'], _v(p)) for p in hist if _v(p) is not None]
+        if len(base) < 2:
+            messagebox.showinfo('Progress', 'The chart appears after a couple of rounds.',
+                                parent=self.root)
+            return
+        test = [(p['round'], p['best_test']) for p in hist if p.get('best_test') is not None]
+        found = [(p['round'], p['found']) for p in hist if p.get('found') is not None]
+        import matplotlib
+        from matplotlib.figure import Figure
+        win = self._dialog('Progress — fitness by round  (wheel: zoom · double-click: reset)',
+                           f'{int(1040 / self.SCALE)}x{int(580 / self.SCALE)}')
+        body = self._box(win)
+        body.pack(fill='both', expand=True, padx=14, pady=12)
+        with self._plot_lock, matplotlib.rc_context(self._mpl_rc()):
+            fig = Figure(figsize=(9.9, 4.5), dpi=100, facecolor=CARD)
+            ax = fig.add_subplot(111)
+            ax.plot([r for r, _ in base], [v for _, v in base], lw=2.0, color=ACC,
+                    label='fitness min(train,val) — optimized')
+            if test:
+                ax.plot([r for r, _ in test], [v for _, v in test], lw=1.4, color='#f9a825',
+                        label='champion TEST — held-out, never optimized')
+            ax.set_xlabel('round', fontsize=9)
+            ax.set_ylabel('Sharpe', fontsize=9)
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=8)
+            hnd, lab = ax.get_legend_handles_labels()
+            if len(found) >= 2:
+                ax2 = ax.twinx()
+                ax2.plot([r for r, _ in found], [v for _, v in found], lw=1.0, ls='--',
+                         color=MUT, label='library size')
+                ax2.set_ylabel('champions in the library', fontsize=8, color=MUT)
+                ax2.tick_params(labelsize=8, colors=MUT)
+                ax2.grid(False)
+                h2, l2 = ax2.get_legend_handles_labels()
+                hnd, lab = hnd + h2, lab + l2
+            ax.legend(hnd, lab, loc='upper left', fontsize=8)
+            fig.tight_layout()
+        self._embed_fig(body, fig)
+
     def _families(self, rows, target):
         """The best alpha per family: walk `rows` (already best-first) and keep one representative
         per formula shape (SequenceMatcher < 0.80), until `target` distinct families. The scan is
@@ -2783,22 +2833,30 @@ class App:
         w.configure(background=CARD, highlightthickness=0)
         w.pack(fill='both', expand=True)
 
+        def _zoomed(lo, hi, c, f, log):
+            if log and lo > 0 and c > 0:
+                import math
+                l0, l1, lc = math.log10(lo), math.log10(hi), math.log10(c)
+                return 10 ** (lc - (lc - l0) * f), 10 ** (lc + (l1 - lc) * f)
+            return c - (c - lo) * f, c + (hi - c) * f
+
         def on_scroll(ev):
-            ax = ev.inaxes
-            if ax is None or ev.xdata is None:
-                return
+            # every axes under the cursor, each in ITS OWN data coords — a twinx sibling
+            # (e.g. library size on the progress chart) must zoom its own y scale too;
+            # a shared x-axis is zoomed ONCE per group or twins would compound to f²
             f = 1 / 1.25 if ev.button == 'up' else 1.25
-            x0, x1 = ax.get_xlim()
-            ax.set_xlim(ev.xdata - (ev.xdata - x0) * f, ev.xdata + (x1 - ev.xdata) * f)
-            y0, y1 = ax.get_ylim()
-            if ev.ydata is not None:
-                if ax.get_yscale() == 'log' and y0 > 0 and ev.ydata > 0:
-                    import math
-                    l0, l1, ld = math.log10(y0), math.log10(y1), math.log10(ev.ydata)
-                    ax.set_ylim(10 ** (ld - (ld - l0) * f), 10 ** (ld + (l1 - ld) * f))
-                else:
-                    ax.set_ylim(ev.ydata - (ev.ydata - y0) * f, ev.ydata + (y1 - ev.ydata) * f)
-            canvas.draw_idle()
+            hit, done_x = False, []
+            for ax in canvas.figure.axes:
+                if not ax.in_axes(ev):
+                    continue
+                xd, yd = ax.transData.inverted().transform((ev.x, ev.y))
+                if not any(ax.get_shared_x_axes().joined(ax, o) for o in done_x):
+                    ax.set_xlim(_zoomed(*ax.get_xlim(), xd, f, ax.get_xscale() == 'log'))
+                    done_x.append(ax)
+                ax.set_ylim(_zoomed(*ax.get_ylim(), yd, f, ax.get_yscale() == 'log'))
+                hit = True
+            if hit:
+                canvas.draw_idle()
 
         def on_press(ev):
             if getattr(ev, 'dblclick', False):
