@@ -1203,8 +1203,11 @@ class App:
         self.lbl_pf_m = self._lbl(p3, text='', text_color=TXT, font=(self.UI, 16, 'bold'),
                                      anchor='w')
         self.lbl_pf_m.pack(anchor='w')
-        self.pf_img = tk.Label(p3, bg=CARD, borderwidth=0)
+        self.pf_img = tk.Label(p3, bg=CARD, borderwidth=0, cursor='hand2')
         self.pf_img.pack(fill='x', pady=(8, 0))
+        self.pf_img.bind('<Double-1>', self._pf_interactive)  # live zoomable copy of the chart
+        self._tip(self.pf_img, 'Double-click — interactive chart: zoom with the mouse wheel,\n'
+                               'pan, reset. The card itself keeps the auto-fitted image.')
         card3.bind('<Configure>', self._on_pf_resize)         # re-render equity to the panel width
         self.root.after(500, self._load_portfolio_on_start)   # show last build, if any
 
@@ -2729,6 +2732,75 @@ class App:
         self._save()
         self._pf_rerender(delay=0)
 
+    def _embed_fig(self, parent, fig):
+        """A LIVE matplotlib canvas inside Tk: the stock pan/zoom toolbar, wheel = zoom around
+        the cursor (log-aware on log axes), double-click = reset view. Drawing happens on the
+        main thread — the very reason the figure is built pyplot-free (no global state)."""
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+
+        class _FlatDPICanvas(FigureCanvasTkAgg):
+            """CTk sets Tk's global 'scaling' from the FONT dpi; matplotlib's TkAgg reads that
+            as a device PIXEL ratio (<Map> binding) and renders a buffer ~1.75x larger than its
+            photo slot — the visible chart becomes a magnified crop. Tk windows here are 1x
+            device pixels, so the ratio update is simply wrong: neutralize it at CLASS level
+            (the Tk binding captures the bound method, instance patches don't intercept)."""
+            def _update_device_pixel_ratio(self, event=None):
+                pass
+
+        canvas = _FlatDPICanvas(fig, master=parent)
+        tb = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
+        try:                                              # best-effort theming of the stock toolbar
+            tb.configure(background=CARD)
+            for ch in tb.winfo_children():
+                ch.configure(background=CARD)
+        except tk.TclError:
+            pass
+        tb.update()
+        tb.pack(anchor='w', fill='x')
+        w = canvas.get_tk_widget()
+        w.configure(background=CARD, highlightthickness=0)
+        w.pack(fill='both', expand=True)
+
+        def on_scroll(ev):
+            ax = ev.inaxes
+            if ax is None or ev.xdata is None:
+                return
+            f = 1 / 1.25 if ev.button == 'up' else 1.25
+            x0, x1 = ax.get_xlim()
+            ax.set_xlim(ev.xdata - (ev.xdata - x0) * f, ev.xdata + (x1 - ev.xdata) * f)
+            y0, y1 = ax.get_ylim()
+            if ev.ydata is not None:
+                if ax.get_yscale() == 'log' and y0 > 0 and ev.ydata > 0:
+                    import math
+                    l0, l1, ld = math.log10(y0), math.log10(y1), math.log10(ev.ydata)
+                    ax.set_ylim(10 ** (ld - (ld - l0) * f), 10 ** (ld + (l1 - ld) * f))
+                else:
+                    ax.set_ylim(ev.ydata - (ev.ydata - y0) * f, ev.ydata + (y1 - ev.ydata) * f)
+            canvas.draw_idle()
+
+        def on_press(ev):
+            if getattr(ev, 'dblclick', False):
+                tb.home()
+                canvas.draw_idle()
+
+        canvas.mpl_connect('scroll_event', on_scroll)
+        canvas.mpl_connect('button_press_event', on_press)
+        canvas.draw()
+
+        def _sync(_e=None):
+            """CTk fixes the toplevel geometry a beat AFTER creation; the last <Configure> can
+            race the canvas redraw and leave a stale, larger buffer on screen. Force the figure
+            to the widget's FINAL pixel size and re-blit."""
+            try:
+                wpx, hpx = w.winfo_width(), w.winfo_height()
+                if wpx > 50 and hpx > 50:
+                    fig.set_size_inches(wpx / fig.dpi, hpx / fig.dpi, forward=False)
+                    canvas.draw()
+            except Exception:                             # noqa: BLE001 — cosmetic safety net
+                pass
+        w.after(350, _sync)
+        return canvas
+
     @staticmethod
     def _mpl_rc():
         """rcParams matching the active theme — an equity PNG is an image, so it inherits nothing
@@ -2739,6 +2811,87 @@ class App:
                 'grid.color': GRID, 'legend.facecolor': CARD, 'legend.edgecolor': BORDER,
                 'legend.labelcolor': TXT}
 
+    def _pf_figure(self, doc, width, fig_h, dpi=100):
+        """The portfolio chart as a plain Figure (no pyplot, no global state): shared by the
+        card's PNG render (background thread) and the interactive zoom window (main thread)."""
+        from matplotlib.figure import Figure
+        import matplotlib.transforms as mtrans
+        import numpy as np
+        import pandas as pd
+        eq = doc['equity']
+        x = pd.to_datetime(eq['dates'])
+        op = doc.get('open_pnl') or None
+        if op is not None and len(op) != len(eq['dates']):
+            op = None                                     # malformed doc — draw without the panel
+        fig = Figure(figsize=(width / dpi, fig_h), dpi=dpi, facecolor=CARD)
+        if op is not None:
+            gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.08)
+            ax = fig.add_subplot(gs[0])
+            ax2 = fig.add_subplot(gs[1], sharex=ax)
+        else:
+            ax = fig.add_subplot(111)
+            ax2 = None
+        ax.plot(x, eq['combined'], lw=2.0, color=ACC, label=f'Portfolio (top-{doc.get("n")})')
+        ax.plot(x, eq['basket'], lw=1.2, color='#f9a825', ls=':', label='buy & hold (EW)')
+        ax.set_yscale('log'); ax.grid(True, which='both', alpha=0.3)
+        bounds = doc.get('bounds') or {}
+        # full-span: segment names sit along the top edge -> legend goes bottom-right
+        ax.legend(loc=('lower right' if bounds and doc.get('span') else 'upper left'), fontsize=8)
+        if bounds and doc.get('span'):                    # full-span doc: mark the segments
+            trans = mtrans.blended_transform_factory(ax.transData, ax.transAxes)
+            lo0, hi0 = x[0], x[-1]
+            edges = [lo0] + [min(max(pd.Timestamp(bounds[k], tz=lo0.tz), lo0), hi0)
+                             for k in ('val_start', 'test_start')] + [hi0]
+            for e in edges[1:-1]:
+                if lo0 < e < hi0:                         # a late --sim-start can clip a segment
+                    ax.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
+                    if ax2 is not None:
+                        ax2.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
+            for name, lo, hi in zip(('TRAIN', 'VAL', 'TEST'), edges[:-1], edges[1:]):
+                if hi > lo:
+                    ax.text(lo + (hi - lo) / 2, 0.985, name, transform=trans,
+                            ha='center', va='top', fontsize=7.5, color=MUT, alpha=0.9)
+            title = f'combined equity — TRAIN / VAL / TEST ({doc["span"]})'
+        else:                                             # docs built before the full-span change
+            title = f'combined equity — TEST ({doc.get("test", "")})'
+        ax.set_title(title, fontsize=9)
+        ax.tick_params(labelsize=8)
+        if ax2 is not None:
+            opv = np.asarray(op, dtype=float)
+            ax2.fill_between(x, opv, 0, where=opv >= 0, color=POS, alpha=0.30, lw=0)
+            ax2.fill_between(x, opv, 0, where=opv < 0, color=NEG, alpha=0.30, lw=0)
+            ax2.plot(x, opv, lw=0.9, color=MUT)
+            ax2.axhline(0, color=MUT, lw=0.8)
+            ax2.grid(True, alpha=0.3)
+            ax2.tick_params(labelsize=8)
+            ax2.set_ylabel('open PnL', fontsize=8)
+            ax2.text(0.005, 0.93, 'open PnL — unrealized gain/loss of the held '
+                                  'positions (share of book; a close/flip realizes it away)',
+                     transform=ax2.transAxes, fontsize=7, color=MUT, va='top')
+        import warnings as _w
+        with _w.catch_warnings():                         # tight_layout grumbles about sharex axes
+            _w.simplefilter('ignore')
+            fig.tight_layout()
+        return fig
+
+    def _pf_interactive(self, _e=None):
+        """Double-click on the portfolio PNG: the same chart as a LIVE canvas — wheel zoom,
+        pan, toolbar. The card keeps the static PNG (it auto-fits the layout)."""
+        doc = self._pf_doc
+        if not doc or not (doc.get('equity') or {}).get('dates'):
+            return
+        import matplotlib
+        # CTk multiplies the geometry string by window_scaling, while the figure is raw pixels —
+        # divide back (same trick as _open_plot) so the canvas is not stretched vs the figure
+        win = self._dialog('Portfolio equity — interactive (wheel: zoom · drag with ✥: pan · '
+                           'double-click: reset)',
+                           f'{int(1200 / self.SCALE)}x{int(660 / self.SCALE)}')
+        body = self._box(win)
+        body.pack(fill='both', expand=True, padx=14, pady=12)
+        with self._plot_lock, matplotlib.rc_context(self._mpl_rc()):
+            fig = self._pf_figure(doc, width=1150, fig_h=5.3)
+        self._embed_fig(body, fig)
+
     def _render_pf_equity(self, doc, width=900):
         eq = doc.get('equity') or {}
         if not eq.get('dates'):
@@ -2746,75 +2899,15 @@ class App:
         try:
             self._pf_last_w = width
             with self._plot_lock:
-                import pandas as pd
                 import matplotlib
-                matplotlib.use('Agg')
-                import matplotlib.pyplot as plt
-                x = pd.to_datetime(eq['dates'])
-                w = width
                 dpi = 100
                 ph = self.cfg.get('pf_h') or 0            # user-dragged height (px), 0 = automatic
-                fig_h = (ph / dpi) if ph else min(3.8, max(2.4, w / dpi / 4.5))
-                op = doc.get('open_pnl') or None
-                if op is not None and len(op) != len(eq['dates']):
-                    op = None                             # malformed doc — draw without the panel
-                if op is not None and not ph:
+                fig_h = (ph / dpi) if ph else min(3.8, max(2.4, width / dpi / 4.5))
+                if doc.get('open_pnl') and not ph:
                     fig_h = min(4.8, fig_h * 1.3)         # room for the lower panel
                 with matplotlib.rc_context(self._mpl_rc()):
-                    if op is not None:
-                        fig, (ax, ax2) = plt.subplots(
-                            2, 1, sharex=True, figsize=(w / dpi, fig_h), dpi=dpi,
-                            gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.08})
-                    else:
-                        fig = plt.figure(figsize=(w / dpi, fig_h), dpi=dpi)
-                        ax = fig.gca()
-                        ax2 = None
-                    ax.plot(x, eq['combined'], lw=2.0, color=ACC, label=f'Portfolio (top-{doc.get("n")})')
-                    ax.plot(x, eq['basket'], lw=1.2, color='#f9a825', ls=':', label='buy & hold (EW)')
-                    ax.set_yscale('log'); ax.grid(True, which='both', alpha=0.3)
-                    bounds = doc.get('bounds') or {}
-                    # full-span: segment names sit along the top edge -> legend goes bottom-right
-                    ax.legend(loc=('lower right' if bounds and doc.get('span') else 'upper left'),
-                              fontsize=8)
-                    if bounds and doc.get('span'):        # full-span doc: mark the segments
-                        import matplotlib.transforms as mtrans
-                        trans = mtrans.blended_transform_factory(ax.transData, ax.transAxes)
-                        lo0, hi0 = x[0], x[-1]
-                        edges = [lo0] + [min(max(pd.Timestamp(bounds[k], tz=lo0.tz), lo0), hi0)
-                                         for k in ('val_start', 'test_start')] + [hi0]
-                        for e in edges[1:-1]:
-                            if lo0 < e < hi0:             # a late --sim-start can clip a segment
-                                ax.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
-                                if ax2 is not None:
-                                    ax2.axvline(e, color=MUT, lw=0.9, ls='--', alpha=0.55)
-                        for name, lo, hi in zip(('TRAIN', 'VAL', 'TEST'), edges[:-1], edges[1:]):
-                            if hi > lo:
-                                ax.text(lo + (hi - lo) / 2, 0.985, name, transform=trans,
-                                        ha='center', va='top', fontsize=7.5, color=MUT, alpha=0.9)
-                        title = f'combined equity — TRAIN / VAL / TEST ({doc["span"]})'
-                    else:                                 # docs built before the full-span change
-                        title = f'combined equity — TEST ({doc.get("test", "")})'
-                    ax.set_title(title, fontsize=9)
-                    ax.tick_params(labelsize=8)
-                    if ax2 is not None:
-                        import numpy as np
-                        opv = np.asarray(op, dtype=float)
-                        ax2.fill_between(x, opv, 0, where=opv >= 0, color=POS, alpha=0.30, lw=0)
-                        ax2.fill_between(x, opv, 0, where=opv < 0, color=NEG, alpha=0.30, lw=0)
-                        ax2.plot(x, opv, lw=0.9, color=MUT)
-                        ax2.axhline(0, color=MUT, lw=0.8)
-                        ax2.grid(True, alpha=0.3)
-                        ax2.tick_params(labelsize=8)
-                        ax2.set_ylabel('open PnL', fontsize=8)
-                        ax2.text(0.005, 0.93, 'open PnL — unrealized gain/loss of the held '
-                                              'positions (share of book; a close/flip realizes it away)',
-                                 transform=ax2.transAxes, fontsize=7, color=MUT, va='top')
-                    import warnings as _w
-                    with _w.catch_warnings():             # tight_layout grumbles about sharex axes
-                        _w.simplefilter('ignore')
-                        fig.tight_layout()
+                    fig = self._pf_figure(doc, width, fig_h, dpi=dpi)
                     fig.savefig(PORTFOLIO_PNG, dpi=dpi, facecolor=CARD)
-                    plt.close(fig)
             self.root.after(0, self._show_pf_img)
         except Exception:                                # noqa: BLE001
             pass
@@ -2882,9 +2975,8 @@ class App:
             img_h = max(480, avail_h)
             img_w = int(img_h * 1.7)
         dpi = 110
-        holder = {'done': False, 'path': None, 'err': None, 'dpi': dpi,
-                  'figsize': (img_w / dpi, img_h / dpi),
-                  'out': os.path.join(STATE_DIR, f'equity_view_{self._plot_seq}.png')}
+        holder = {'done': False, 'fig': None, 'err': None, 'dpi': dpi,
+                  'figsize': (img_w / dpi, (img_h - 40) / dpi)}   # -40: room for the zoom toolbar
         # img_w/img_h are REAL pixels (the PNG is shown 1:1), but CTk multiplies a geometry string by
         # window_scaling — so divide it back out, or the window opens ~SCALE times wider than its chart.
         win = self._dialog('Equity — ' + champ.get('formula', '')[:60],
@@ -3274,64 +3366,27 @@ class App:
             messagebox.showinfo('Forward track', 'No steps yet — the curve appears after the '
                                                  'first daily step.', parent=self.root)
             return
-        out = os.path.join(STATE_DIR, f'forward_view_{e["id"]}.png')
-        holder = {'done': False, 'err': None}
-
-        def work():
-            try:
-                with self._plot_lock:
-                    import matplotlib
-                    matplotlib.use('Agg')
-                    import matplotlib.pyplot as plt
-                    import pandas as pd
-                    x = pd.to_datetime([h['date'] for h in hist])
-                    y = [h['equity'] for h in hist]
-                    with matplotlib.rc_context(self._mpl_rc()):
-                        fig = plt.figure(figsize=(9.8, 4.4), dpi=100)
-                        ax = fig.gca()
-                        ax.plot(x, y, lw=2.0, color=ACC,
-                                label=f'{e["id"]} · {len(hist)} live steps')
-                        ax.axhline(e['start_capital'], color=MUT, lw=0.9, ls='--')
-                        ax.set_title(f'forward equity — enrolled {e["enrolled"]} · append-only '
-                                     '(live steps, nothing recomputed)', fontsize=9)
-                        ax.legend(loc='upper left', fontsize=8)
-                        ax.grid(True, alpha=0.3)
-                        ax.tick_params(labelsize=8)
-                        fig.tight_layout()
-                        fig.savefig(out, dpi=100, facecolor=CARD)
-                        plt.close(fig)
-            except Exception as ex:                            # noqa: BLE001
-                holder['err'] = f'{type(ex).__name__}: {ex}'
-            holder['done'] = True
-
-        threading.Thread(target=work, daemon=True).start()
-        win = self._dialog(f'Forward — {e["id"]}', '1020x520')
+        import matplotlib
+        from matplotlib.figure import Figure
+        import pandas as pd
+        win = self._dialog(f'Forward — {e["id"]}  (wheel: zoom · double-click: reset)',
+                           f'{int(1040 / self.SCALE)}x{int(580 / self.SCALE)}')
         body = self._box(win)
         body.pack(fill='both', expand=True, padx=14, pady=12)
-        status = self._lbl(body, text='rendering…', text_color=MUT, font=(self.UI, 14))
-        status.pack(pady=30)
-
-        def show():
-            if not win.winfo_exists():
-                return
-            if not holder['done']:
-                win.after(150, show)
-                return
-            if holder['err']:
-                status.configure(text='Error: ' + holder['err'], fg=NEG)
-                return
-            try:
-                photo = tk.PhotoImage(file=out)
-                status.destroy()
-                lbl = tk.Label(body, image=photo, bg=CARD, borderwidth=0)
-                lbl.image = photo
-                lbl.pack(fill='both', expand=True)
-            finally:
-                try:
-                    os.remove(out)
-                except OSError:
-                    pass
-        win.after(150, show)
+        x = pd.to_datetime([h['date'] for h in hist])
+        y = [h['equity'] for h in hist]
+        with self._plot_lock, matplotlib.rc_context(self._mpl_rc()):
+            fig = Figure(figsize=(9.9, 4.5), dpi=100, facecolor=CARD)
+            ax = fig.add_subplot(111)
+            ax.plot(x, y, lw=2.0, color=ACC, label=f'{e["id"]} · {len(hist)} live steps')
+            ax.axhline(e['start_capital'], color=MUT, lw=0.9, ls='--')
+            ax.set_title(f'forward equity — enrolled {e["enrolled"]} · append-only '
+                         '(live steps, nothing recomputed)', fontsize=9)
+            ax.legend(loc='upper left', fontsize=8)
+            ax.grid(True, alpha=0.3)
+            ax.tick_params(labelsize=8)
+            fig.tight_layout()
+        self._embed_fig(body, fig)
 
     # ---------- PDF analytics report (single alpha and the portfolio) ----------
     def _worker_cfg(self):
@@ -3714,12 +3769,13 @@ class App:
                     except Exception:                    # noqa: BLE001
                         op = None
                     with matplotlib.rc_context(self._mpl_rc()):
-                        report.plot_equity(
-                            {label: r}, basket, cfg['splits'], holder['out'],
+                        # a plain Figure (no pyplot): safe to build here in the worker thread and
+                        # embed as a LIVE zoomable canvas on the main thread (_check_plot)
+                        holder['fig'] = report.equity_figure(
+                            {label: r}, basket, cfg['splits'],
                             'Growth of $1 (NET, log):  TRAIN | VAL | TEST   vs   EW basket (buy & hold)',
                             figsize=holder['figsize'], dpi=holder['dpi'],
                             facecolor=CARD, fg=MUT, axline=TXT, open_pnl=op)
-                    holder['path'] = holder['out']
             except Exception as e:                       # noqa: BLE001
                 holder['err'] = f'{type(e).__name__}: {e}'
             finally:
@@ -3727,10 +3783,6 @@ class App:
 
     def _check_plot(self, win, holder, status, body):
         if not win.winfo_exists():
-            try:
-                os.remove(holder['out'])
-            except OSError:
-                pass
             return
         if not holder['done']:
             self.root.after(200, lambda: self._check_plot(win, holder, status, body))
@@ -3739,18 +3791,10 @@ class App:
             status.configure(text='Error: ' + holder['err'], fg=NEG)
             return
         try:
-            photo = tk.PhotoImage(file=holder['path'])
             status.destroy()
-            lbl = tk.Label(body, image=photo, bg=CARD, borderwidth=0)
-            lbl.image = photo                            # keep a reference, otherwise GC eats it
-            lbl.pack(fill='both', expand=True)
-        except Exception as e:                           # noqa: BLE001
+            self._embed_fig(body, holder['fig'])          # live canvas: wheel zoom / pan / reset
+        except Exception as e:                            # noqa: BLE001
             status.configure(text=f'Failed to show the chart: {e}', fg=NEG)
-        finally:
-            try:
-                os.remove(holder['out'])                 # png is already in PhotoImage memory
-            except OSError:
-                pass
 
 
 def main():

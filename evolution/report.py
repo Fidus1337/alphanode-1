@@ -59,21 +59,26 @@ def plot_signal(signals, splits, path, title):
     plt.close()
 
 
-def plot_equity(returns, basket, splits, path, title, figsize=(12, 7), dpi=150,
-                facecolor='white', fg='#555', axline='black', open_pnl=None):
-    """returns: dict label -> pd.Series of net returns (full period).
+def equity_figure(returns, basket, splits, title, figsize=(12, 7), dpi=150,
+                  facecolor='white', fg='#555', axline='black', open_pnl=None):
+    """Build the equity Figure WITHOUT pyplot and return it — pyplot keeps global state, while a
+    plain Figure can be built on any thread and embedded live into Tk (FigureCanvasTkAgg) for
+    pan/zoom. plot_equity() below wraps this and saves to a file for the classic callers.
 
+    returns: dict label -> pd.Series of net returns (full period).
     facecolor/fg/axline exist so a caller with its own theme (the GUI in dark mode) can hand in
     colours that stay readable; the defaults are the light look every other caller expects.
     open_pnl (optional pd.Series) adds a lower panel: the unrealized PnL of the positions
     currently held (an episode's gain/loss since entry; a close/flip realizes it away)."""
+    from matplotlib.figure import Figure
+    fig = Figure(figsize=figsize, dpi=dpi, facecolor=facecolor)
     if open_pnl is None:
-        plt.figure(figsize=figsize)
-        ax = plt.gca()
+        ax = fig.add_subplot(111)
         ax2 = None
     else:
-        _fig, (ax, ax2) = plt.subplots(2, 1, sharex=True, figsize=figsize,
-                                       gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.07})
+        gs = fig.add_gridspec(2, 1, height_ratios=[3, 1], hspace=0.07)
+        ax = fig.add_subplot(gs[0])
+        ax2 = fig.add_subplot(gs[1], sharex=ax)
     colors = ['#c62828', '#1565c0', '#2e7d32', '#6a1b9a', '#ef6c00', '#00838f']
     for i, (label, r) in enumerate(returns.items()):
         eq = (1 + r).cumprod()
@@ -117,6 +122,13 @@ def plot_equity(returns, basket, splits, path, title, figsize=(12, 7), dpi=150,
                               '(share of book; a close/flip realizes it away)',
                  transform=ax2.transAxes, fontsize=7.5, color=fg, va='top')
     (ax2 if ax2 is not None else ax).set_xlabel('Date')
-    plt.tight_layout()
-    plt.savefig(path, dpi=dpi, facecolor=facecolor)
-    plt.close()
+    fig.tight_layout()
+    return fig
+
+
+def plot_equity(returns, basket, splits, path, title, figsize=(12, 7), dpi=150,
+                facecolor='white', fg='#555', axline='black', open_pnl=None):
+    """Classic file-saving wrapper around equity_figure() — same signature as always."""
+    fig = equity_figure(returns, basket, splits, title, figsize=figsize, dpi=dpi,
+                        facecolor=facecolor, fg=fg, axline=axline, open_pnl=open_pnl)
+    fig.savefig(path, dpi=dpi, facecolor=facecolor)
