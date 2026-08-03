@@ -27,6 +27,7 @@ library_*.csv
 leaderboard_top*.csv
 # signal/portfolio CSVs and PDF reports saved from the GUI dialogs
 signals_*.csv
+forward_*.csv
 report_*.pdf
 
 # ── Logs ────────────────────────────────────────────────

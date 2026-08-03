@@ -2749,11 +2749,33 @@ class App:
 
         canvas = _FlatDPICanvas(fig, master=parent)
         tb = NavigationToolbar2Tk(canvas, parent, pack_toolbar=False)
-        try:                                              # best-effort theming of the stock toolbar
+        try:                                              # theme the stock toolbar
             tb.configure(background=CARD)
             for ch in tb.winfo_children():
-                ch.configure(background=CARD)
-        except tk.TclError:
+                try:
+                    ch.configure(background=CARD)
+                except tk.TclError:
+                    continue
+                if isinstance(ch, (tk.Button, tk.Checkbutton)):
+                    # icons were rendered against the DEFAULT (light) Tk palette at toolbar
+                    # creation; recolor the button first, then let mpl re-derive the icon —
+                    # on a dark background it swaps in the foreground-tinted variant
+                    ch.configure(foreground=TXT, activebackground=BORDER,
+                                 activeforeground=TXT, highlightthickness=0)
+                    if isinstance(ch, tk.Checkbutton):
+                        ch.configure(selectcolor=BORDER)  # Pan/Zoom pressed state
+                    if getattr(ch, '_image_file', None):
+                        tb._set_image_for_button(ch)
+                elif isinstance(ch, tk.Label):
+                    ch.configure(foreground=MUT)
+            # Tk paints DISABLED image-buttons with a checkerboard stipple (ugly, and RGBA
+            # icons flatten to a light block). Back/Forward are safe no-ops on an empty
+            # history, so keep them enabled instead of letting mpl gray them out.
+            tb.set_history_buttons = lambda: None
+            for k in ('Back', 'Forward'):
+                if k in tb._buttons:
+                    tb._buttons[k]['state'] = 'normal'
+        except (tk.TclError, AttributeError):
             pass
         tb.update()
         tb.pack(anchor='w', fill='x')
