@@ -1165,7 +1165,8 @@ class App:
                                  'the old compact view. Sorting by any column works in both.')
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
-        cols = ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'ls', 'act', 'win', 'id', 'formula')
+        cols = ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
+                'ls', 'act', 'win', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
                                  height=int(self.cfg.get('lb_rows') or 12))
         self._HEAD = {}
@@ -1175,6 +1176,7 @@ class App:
         for c, txt, w, anc in (('rank', '#', 40, 'center'), ('fit', 'fitness', 86, 'e'),
                                ('test', 'TEST OOS', 86, 'e'), ('dd', 'maxDD', 74, 'e'),
                                ('cagr', 'CAGR', 72, 'e'), ('srt', 'sortino', 80, 'e'),
+                               ('calm', 'calm', 68, 'e'), ('storm', 'storm', 74, 'e'),
                                ('ls', 'trades L/S', 100, 'center'),
                                ('act', 'tr/yr·a', 72, 'e'),
                                ('win', 'win%', 62, 'e'), ('id', 'ID', 116, 'w'),
@@ -1187,6 +1189,10 @@ class App:
         self._update_headings()                          # show the sort arrow on the active column
         self._tip(self.lbl_lb_head, 'maxDD = worst peak-to-trough drawdown; CAGR = annualized growth;\n'
                                     'sortino = like Sharpe but only downside vol counts (upside is free);\n'
+                                    'calm / storm = the alpha\'s Sharpe on the quiet vs turbulent halves\n'
+                                    'of TEST (market vol = EW-basket realized vol vs its trailing 1-year\n'
+                                    'median; causal, ~50/50 by construction). Analysis, not selection:\n'
+                                    'picking alphas by these numbers is another layer of TEST peeking;\n'
                                     'trades L/S = total number of long / short positions OPENED over TEST\n'
                                     '(a trade = crossing into long/short from flat or the opposite side);\n'
                                     'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
@@ -2379,7 +2385,8 @@ class App:
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
-    _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt', 'ls', 'act', 'win', 'formula')
+    _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm', 'ls', 'act', 'win',
+                 'formula')
 
     @staticmethod
     def _finite(v):
@@ -2402,6 +2409,8 @@ class App:
                 else self._finite(m.get(col))
         if col == 'srt':
             return self._finite(m.get('sortino'))
+        if col in ('calm', 'storm'):
+            return self._finite(m.get(col))
         if col == 'ls':
             return m.get('long', 0) + m.get('short', 0)
         if col == 'act':
@@ -2544,13 +2553,14 @@ class App:
             f = formula                                  # full length — the column fits the widest row
             need = max(need, self._tree_font.measure(f))
             m = self._metrics_cache.get(formula)
-            ls, act, win, srt = self._fmt_metrics(m)
+            ls, act, win, srt, calm, storm = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
             aid = 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
             item = self.tree.insert('', 'end', values=(
                 i + 1, f'{base:+.2f}' if base is not None else '—',
-                f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt, ls, act, win, aid, f),
+                f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt, calm, storm,
+                ls, act, win, aid, f),
                 tags=(sign, stripe))
             self._row_items[formula] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
@@ -2575,7 +2585,7 @@ class App:
         stretches to fill the card. Re-run on every render and on tree resize."""
         try:
             fixed = sum(int(self.tree.column(c, 'width'))
-                        for c in ('rank', 'fit', 'test', 'dd', 'cagr', 'srt',
+                        for c in ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
                                   'ls', 'act', 'win', 'id'))
         except tk.TclError:                              # theme rebuild mid-flight
             return
@@ -2613,7 +2623,7 @@ class App:
     def _pump_metrics(self):
         """After a redraw: compute the visible rows' stats. Sorting BY a stat column is the one case
         that needs every value at once (else the order is wrong), so there we compute the full set."""
-        if self._sort_col in ('ls', 'act', 'win', 'srt', 'dd', 'cagr'):
+        if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm', 'dd', 'cagr'):
             self._start_metrics(self._shown)
         else:
             self._start_metrics(self._visible_champs())
@@ -2638,16 +2648,17 @@ class App:
 
     @staticmethod
     def _fmt_metrics(m):
-        """('L/S', 'tr/yr·a', 'win%', 'sortino') strings from the cache: None=still computing,
-        'err'=failed."""
+        """('L/S', 'tr/yr·a', 'win%', 'sortino', 'calm', 'storm') strings from the cache:
+        None=still computing, 'err'=failed."""
         if m is None:
-            return '…', '…', '…', '…'
+            return ('…',) * 6
         if m == 'err':
-            return '—', '—', '—', '—'
+            return ('—',) * 6
         a = m.get('act', 0.0)
         astr = f'{a:.1f}' if a < 10 else f'{a:.0f}'
         return (f'{m["long"]:.0f}/{m["short"]:.0f}', astr, f'{m["win"] * 100:.0f}%',
-                App._fmt_ratio(m.get('sortino')))
+                App._fmt_ratio(m.get('sortino')), App._fmt_ratio(m.get('calm')),
+                App._fmt_ratio(m.get('storm')))
 
     def _start_metrics(self, champs):
         """Background computation of long/short/win (on TEST) for the shown alphas; cached by formula."""
@@ -2715,16 +2726,18 @@ class App:
             if not self.tree.exists(item):
                 continue
             m = self._metrics_cache.get(formula)
-            ls, act, win, srt = self._fmt_metrics(m)
+            ls, act, win, srt, calm, storm = self._fmt_metrics(m)
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
             self.tree.set(item, 'srt', srt)
+            self.tree.set(item, 'calm', calm)
+            self.tree.set(item, 'storm', storm)
             if isinstance(m, dict):                      # dd/cagr fallback for legacy library rows
                 for col in ('dd', 'cagr'):
                     if self.tree.set(item, col) in ('…', '—'):
                         self.tree.set(item, col, self._fmt_ratio(m.get(col), pct=True))
-        if self._sort_col in ('ls', 'act', 'win', 'srt', 'dd', 'cagr'):   # arrived -> reorder
+        if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm', 'dd', 'cagr'):
             self._treesig = None
             self._render_lb(self._lb_rows() or self._shown)
 
@@ -2834,12 +2847,15 @@ class App:
                         self._seg(c, 'test', 'sharpe'), self._seg(c, 'test', 'dd'),
                         self._seg(c, 'test', 'cagr'),
                         round(m['sortino'], 3) if isinstance(m.get('sortino'), (int, float)) else '',
+                        round(m['calm'], 3) if isinstance(m.get('calm'), (int, float)) else '',
+                        round(m['storm'], 3) if isinstance(m.get('storm'), (int, float)) else '',
                         m.get('long', ''), m.get('short', ''),
                         round(m['act'], 2) if 'act' in m else '',
                         round(m['win'] * 100, 1) if 'win' in m else '',
                         'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6], formula])
         self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
-                              'test_dd', 'test_cagr', 'test_sortino', 'long', 'short', 'tr_yr_a',
+                              'test_dd', 'test_cagr', 'test_sortino', 'test_sh_calm',
+                              'test_sh_storm', 'long', 'short', 'tr_yr_a',
                               'win_pct', 'id', 'formula'), out, 'rows')
 
     def _export_library(self):
@@ -3312,6 +3328,11 @@ class App:
         seg('TRAIN', champ.get('train'))
         seg('VAL', champ.get('val'))
         seg('TEST (held-out)', champ.get('test'), accent=True)
+        _m = self._metrics_cache.get(champ.get('formula', ''))
+        if isinstance(_m, dict) and (_m.get('calm') is not None or _m.get('storm') is not None):
+            self._lbl(head, text=f"TEST by market vol regime:   calm {self._fmt_ratio(_m.get('calm'))}"
+                                 f"   ·   storm {self._fmt_ratio(_m.get('storm'))}  (Sharpe)",
+                      text_color=MUT, anchor='w', font=(self.UI, 11)).pack(anchor='w')
         self._lbl(head, text=champ.get('formula', ''), text_color=MUT, justify='left', anchor='w',
                      wraplength=img_w - 30, font=(self.MONO, 12)).pack(anchor='w', pady=(6, 0))
         btnrow = self._box(head)
@@ -4058,6 +4079,21 @@ class App:
             win.after(200, pump)
         win.after(200, pump)
 
+    @staticmethod
+    def _storm_spans(reg):
+        """Contiguous (t0, t1) runs of the high-vol regime out of evaluator.vol_regime's
+        1/0/NaN series — what the equity chart tints. NaN warmup bars break a run."""
+        spans, t0, prev_t = [], None, None
+        for t, v in reg.items():
+            if v == 1.0 and t0 is None:
+                t0 = t
+            elif v != 1.0 and t0 is not None:            # 0.0 or NaN ends the run
+                spans.append((t0, t)); t0 = None
+            prev_t = t
+        if t0 is not None and prev_t is not None:
+            spans.append((t0, prev_t))
+        return spans
+
     def _compute_equity(self, champ, holder):
         with self._plot_lock:                            # pyplot is global — one at a time
             try:
@@ -4081,6 +4117,13 @@ class App:
                         op = open_pnl_series(wide, panel['ret'])
                     except Exception:                    # noqa: BLE001
                         op = None
+                    try:                                 # storm tint: best-effort as well
+                        from evaluator import vol_regime
+                        storm = self._storm_spans(vol_regime(
+                            panel, vol_window=cfg.get('vol_window', 30),
+                            ann=cfg.get('ann', 365.0)))
+                    except Exception:                    # noqa: BLE001
+                        storm = None
                     with matplotlib.rc_context(self._mpl_rc()):
                         # a plain Figure (no pyplot): safe to build here in the worker thread and
                         # embed as a LIVE zoomable canvas on the main thread (_check_plot)
@@ -4088,7 +4131,7 @@ class App:
                             {label: r}, basket, cfg['splits'],
                             'Growth of $1 (NET, log):  TRAIN | VAL | TEST   vs   EW basket (buy & hold)',
                             figsize=holder['figsize'], dpi=holder['dpi'],
-                            facecolor=CARD, fg=MUT, axline=TXT, open_pnl=op)
+                            facecolor=CARD, fg=MUT, axline=TXT, open_pnl=op, storm=storm)
             except Exception as e:                       # noqa: BLE001
                 holder['err'] = f'{type(e).__name__}: {e}'
             finally:

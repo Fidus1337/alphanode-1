@@ -12,7 +12,9 @@ GUI only ever waits on a pipe (which releases it).
 stdin  -> {"formulas": [...], "instruments": [...]|null, "vol": .., "exec": ..,
            "train_start": "YYYY-MM-DD", "test_start": ..., "test_end": ...}
 stdout -> {"ok": true, "metrics": {formula: {"long":n,"short":n,"win":f,"act":f,
-           "dd":f,"cagr":f|null,"sortino":f|null} | "err"}}
+           "dd":f,"cagr":f|null,"sortino":f|null,"calm":f|null,"storm":f|null} | "err"}}
+           calm/storm = the alpha's TEST Sharpe on low-vol / high-vol market bars
+           (EW-basket realized vol vs its trailing 1y median; see evaluator.vol_regime)
            {"ok": false, "error": "..."}   on a failure that kills the whole batch
 
 A formula that cannot be parsed or never trades comes back as "err" — same contract the GUI's
@@ -39,7 +41,7 @@ def build_ctx(opt):
     Timeframe-aware: the grid freq / vol window / bars-per-year come from load_config
     (which honors ALPHANODE_TF), so intraday libraries get intraday-correct stats."""
     from config import load_config
-    from evaluator import build_panel, make_market
+    from evaluator import build_panel, make_market, vol_regime
     cfg = load_config()
     if opt.get('instruments'):
         cfg['instruments'] = list(opt['instruments'])
@@ -57,15 +59,19 @@ def build_ctx(opt):
     elig = market['base_elig']
     n_assets = int(elig[tmask].any(axis=0).sum()) or int(elig.shape[1])   # assets live on TEST
     years = max(float(np.count_nonzero(tmask)) / ann, 1e-9)
+    # market vol regime on the same grid: 1=storm / 0=calm / NaN=warmup (causal, alpha-independent)
+    reg = vol_regime(panel, vol_window=cfg.get('vol_window', 30), ann=ann)
+    reg = reg.reindex(pd.DatetimeIndex(market['index'])).to_numpy()
     return {'panel': panel, 'market': market, 'V': market['V'], 'elig': elig, 'tmask': tmask,
             'n_assets': max(1, n_assets), 'years': years, 'vol': vol, 'exec': ex,
-            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06))}
+            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06)), 'reg': reg}
 
 
 def trade_stats(formula, ctx):
-    """{long, short, win, act, dd, cagr, sortino} for one formula on TEST — act = trades per
-    asset per year (relative activity, universe/period independent); dd/cagr/sortino from the
-    same simulated TEST equity. 'err' if it doesn't parse or never trades."""
+    """{long, short, win, act, dd, cagr, sortino, calm, storm} for one formula on TEST — act =
+    trades per asset per year (relative activity, universe/period independent); dd/cagr/sortino
+    from the same simulated TEST equity; calm/storm = Sharpe on the low-vol / high-vol halves of
+    TEST (market regime, not the alpha's own vol). 'err' if it doesn't parse or never trades."""
     from genome import parse
     from evaluator import eval_alpha_panel
     from fastsim import fast_sim
@@ -96,11 +102,19 @@ def trade_stats(formula, ctx):
         dstd = float(np.sqrt(np.mean(np.minimum(rt, 0.0) ** 2)))            # downside deviation
         sortino = (float(rt.mean()) * ctx['ann'] / (dstd * np.sqrt(ctx['ann']))
                    if dstd > 1e-12 else None)                               # no losing bars -> null
+        reg = ctx['reg'][tmask]                                             # 1 storm / 0 calm / NaN
+
+        def _regsh(x):                                                      # Sharpe of one regime slice
+            if x.size < 30 or float(x.std()) < 1e-12:                       # too few bars -> null
+                return None
+            return float(x.mean()) * ctx['ann'] / (float(x.std()) * np.sqrt(ctx['ann']))
+        sh_calm, sh_storm = _regsh(rt[reg == 0.0]), _regsh(rt[reg == 1.0])
 
         def _fin(v):                                                        # JSON-safe: NaN/inf -> null
             return float(v) if (v is not None and np.isfinite(v)) else None
         return {'long': long_tr, 'short': short_tr, 'win': win, 'act': act,
-                'dd': _fin(dd), 'cagr': _fin(cagr), 'sortino': _fin(sortino)}
+                'dd': _fin(dd), 'cagr': _fin(cagr), 'sortino': _fin(sortino),
+                'calm': _fin(sh_calm), 'storm': _fin(sh_storm)}
     except Exception:                                                   # noqa: BLE001
         return 'err'
 

@@ -237,6 +237,18 @@ def basket_returns(panel):
     return panel['ret'].where(eligible).mean(axis=1).fillna(0.0)
 
 
+def vol_regime(panel, vol_window=30, ann=365.0):
+    """Market volatility regime per bar: 1.0 = "storm" (the EW basket's realized vol is above
+    its own trailing 1-year median), 0.0 = "calm", NaN = warmup (either window not filled yet).
+    Causal — both the vol estimate and the median only look back — so regime-sliced stats have
+    no look-ahead. The median split makes the two buckets roughly equal by construction, which
+    keeps per-regime Sharpe comparable without showing bar counts."""
+    b = basket_returns(panel)
+    v = b.rolling(vol_window, min_periods=max(2, vol_window // 2)).std()
+    med = v.rolling(int(ann), min_periods=max(vol_window, int(ann) // 4)).median()
+    return (v > med).astype(float).where(v.notna() & med.notna())
+
+
 def open_pnl_series(weights, rets):
     """Unrealized ("open") PnL of the currently held positions, as a share of the book.
 

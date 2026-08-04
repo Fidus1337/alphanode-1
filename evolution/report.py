@@ -60,7 +60,7 @@ def plot_signal(signals, splits, path, title):
 
 
 def equity_figure(returns, basket, splits, title, figsize=(12, 7), dpi=150,
-                  facecolor='white', fg='#555', axline='black', open_pnl=None):
+                  facecolor='white', fg='#555', axline='black', open_pnl=None, storm=None):
     """Build the equity Figure WITHOUT pyplot and return it — pyplot keeps global state, while a
     plain Figure can be built on any thread and embedded live into Tk (FigureCanvasTkAgg) for
     pan/zoom. plot_equity() below wraps this and saves to a file for the classic callers.
@@ -69,7 +69,9 @@ def equity_figure(returns, basket, splits, title, figsize=(12, 7), dpi=150,
     facecolor/fg/axline exist so a caller with its own theme (the GUI in dark mode) can hand in
     colours that stay readable; the defaults are the light look every other caller expects.
     open_pnl (optional pd.Series) adds a lower panel: the unrealized PnL of the positions
-    currently held (an episode's gain/loss since entry; a close/flip realizes it away)."""
+    currently held (an episode's gain/loss since entry; a close/flip realizes it away).
+    storm (optional list of (t0, t1)) tints the market's high-vol regime spans so you can see
+    WHERE the curve earns: in the quiet grind or in the turbulence."""
     from matplotlib.figure import Figure
     fig = Figure(figsize=figsize, dpi=dpi, facecolor=facecolor)
     if open_pnl is None:
@@ -92,6 +94,13 @@ def equity_figure(returns, basket, splits, title, figsize=(12, 7), dpi=150,
     for x in (va0, te0):
         ax.axvline(x, color=axline, ls='--', lw=1.2)
     ax.axvspan(te0, beq.index[-1], color='grey', alpha=0.10)
+    if storm:                                            # high-vol market regime, tinted
+        for t0, t1 in storm:
+            ax.axvspan(t0, t1, color='#e65100', alpha=0.07, lw=0, zorder=0)
+        from matplotlib.patches import Patch
+        ax.add_artist(ax.legend(handles=[Patch(facecolor='#e65100', alpha=0.25,
+                                               label='storm — market vol above its 1y median')],
+                                loc='lower right', fontsize=7, framealpha=0.2))
     tr = ax.get_xaxis_transform()
     ax.text(tr0 + (va0 - tr0) / 2, 0.02, 'TRAIN\n(evolution)', transform=tr,
             ha='center', va='bottom', fontsize=10, color=fg)
