@@ -123,6 +123,7 @@ DEFAULTS = {
     'theme': '',            # 'light' | 'dark' | '' = follow the OS on first run
     'settings_open': False,  # settings pane hidden by default; toggled by the header button
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
+    'card_order': [],       # dashboard card order (drag a card to reorder); [] = default layout
     'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
     'chart_h': 0,           # progress-chart height, 100%-DPI px; 0 = default (170)
     'pf_h': 0,              # portfolio equity-plot height, px; 0 = automatic (from width)
@@ -1013,7 +1014,7 @@ class App:
         right.bind('<Configure>', _fit)      # cards appear/grow -> refresh the scrollregion
         self._bind_wheel(canvas, through=True)
         self._dash_canvas = canvas
-        right.rowconfigure(4, weight=1)                  # the leaderboard takes the slack
+        self._dash_right = right                         # row weights are set by _regrid_cards
         right.columnconfigure(0, weight=1)
 
         card = self._card(right)
@@ -1066,9 +1067,9 @@ class App:
                               'pan with the toolbar; adds the TEST curve and library growth.')
         # the whole gap below this card is the drag handle (see _vgrip in the row layout)
 
-        self._vgrip(right, 3, self._on_chart_drag, self._chart_reset,
-                    'Drag: the chart above grows/shrinks, the leaderboard absorbs it.\n'
-                    'Double-click — default chart height.')
+        self._chart_grip = self._vgrip(right, 3, self._on_chart_drag, self._chart_reset,
+                                       'Drag: the chart above grows/shrinks, the leaderboard '
+                                       'absorbs it.\nDouble-click — default chart height.')
         card2 = self._card(right)
         card2.grid(row=4, column=0, sticky='nsew')
         p2 = self._pad(card2)
@@ -1287,6 +1288,94 @@ class App:
         if not getattr(self, '_fwd_tick_on', False):          # _build reruns on theme switch —
             self._fwd_tick_on = True                          # keep exactly one tick loop
             self.root.after(20_000, self._fwd_tick)
+
+        # ---- the dashboard cards are REORDERABLE: drag one by its padding / header strip ----
+        self._cards = {'status': card, 'signals': self.sig_card, 'chart': chart_card,
+                       'leaderboard': card2, 'portfolio': card3, 'forward': card4}
+        self._wire_card_drag('status', pad, head, stats)
+        self._wire_card_drag('chart', cpad)
+        self._wire_card_drag('leaderboard', p2, hrow)
+        self._wire_card_drag('portfolio', p3, hp)
+        self._wire_card_drag('forward', p4, hf)
+        self._regrid_cards()
+
+    # ---------- reorderable dashboard cards ----------
+    DASH_CARDS = ('status', 'signals', 'chart', 'leaderboard', 'portfolio', 'forward')
+
+    def _card_order(self):
+        saved = [k for k in (self.cfg.get('card_order') or []) if k in self.DASH_CARDS]
+        return saved + [k for k in self.DASH_CARDS if k not in saved]
+
+    def _regrid_cards(self):
+        """Grid the dashboard cards in the user's order. The chart's resize grip always rides
+        right below the chart card; the leaderboard's row soaks up the window slack wherever
+        it lands; a card hidden via grid_remove (signals while idle) keeps its slot hidden."""
+        right = self._dash_right
+        hidden = {n for n, w in self._cards.items() if not w.winfo_manager()}
+        for r in range(2 * len(self._cards)):
+            right.rowconfigure(r, weight=0)
+        row, after_grip = 0, False
+        for i, name in enumerate(self._card_order()):
+            w = self._cards[name]
+            w.grid(row=row, column=0, sticky=('nsew' if name == 'leaderboard' else 'ew'),
+                   pady=((0 if (i == 0 or after_grip) else 16), 0))
+            if name in hidden:
+                w.grid_remove()                          # grid() above re-showed it — undo
+            if name == 'leaderboard':
+                right.rowconfigure(row, weight=1)
+            after_grip = False
+            row += 1
+            if name == 'chart':
+                self._chart_grip.grid(row=row, column=0, sticky='ew')
+                row += 1
+                after_grip = True                        # the grip itself is the 16px gap
+
+    def _wire_card_drag(self, name, *widgets):
+        for w in widgets:
+            w.bind('<ButtonPress-1>', lambda e, n=name: self._card_press(e, n))
+            w.bind('<B1-Motion>', self._card_motion)
+            w.bind('<ButtonRelease-1>', self._card_release)
+
+    def _card_press(self, e, name):
+        self._cdrag = {'name': name, 'y0': e.y_root, 'live': False}
+
+    def _card_motion(self, e):
+        d = getattr(self, '_cdrag', None)
+        if d is None:
+            return
+        if not d['live']:
+            if abs(e.y_root - d['y0']) < int(12 * self.SCALE):
+                return                                   # a stray click, not a drag yet
+            d['live'] = True
+            try:                                         # accent border marks the card in flight
+                self._cards[d['name']].configure(border_width=2, border_color=ACC)
+            except tk.TclError:
+                pass
+        order = self._card_order()
+        vis = [n for n in order if n != d['name'] and self._cards[n].winfo_manager()]
+        place = len(vis)
+        for i, n in enumerate(vis):                      # insert before the first card whose
+            w = self._cards[n]                           # midpoint the pointer is above
+            if e.y_root < w.winfo_rooty() + w.winfo_height() / 2:
+                place = i
+                break
+        new = vis[:place] + [d['name']] + vis[place:]
+        for h in (n for n in order if n != d['name'] and n not in vis):   # weave hidden back
+            nxt = next((s for s in order[order.index(h) + 1:] if s in new), None)
+            new.insert(new.index(nxt) if nxt is not None else len(new), h)
+        if new != order:
+            self.cfg['card_order'] = new
+            self._regrid_cards()                         # live feedback while dragging
+
+    def _card_release(self, _e):
+        d = getattr(self, '_cdrag', None)
+        self._cdrag = None
+        if d and d.get('live'):
+            try:
+                self._cards[d['name']].configure(border_width=CARD_BW, border_color=BORDER)
+            except tk.TclError:
+                pass
+            self._save()
 
     def _load_portfolio_on_start(self):
         try:
@@ -1690,6 +1779,7 @@ class App:
         self._tip(self.btn_sig_all, 'Stop every running signal API and release its port.')
         self._sig_rows = self._box(pad)
         self._sig_rows.pack(fill='x', pady=(8, 0))
+        self._wire_card_drag('signals', pad, hs)
         card.grid_remove()                               # shown only while something is being served
 
     @staticmethod
