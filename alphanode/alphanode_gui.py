@@ -124,6 +124,9 @@ DEFAULTS = {
     'settings_open': False,  # settings pane hidden by default; toggled by the header button
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
     'card_order': [],       # dashboard card order (drag a card to reorder); [] = default layout
+    'log_h': 0,             # live-log height, dp; 0 = natural (7 lines)
+    'lb_rows': 12,          # leaderboard rows on screen (its in-card grip)
+    'fwd_rows': 4,          # forward-track rows on screen (its in-card grip)
     'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
     'chart_h': 0,           # progress-chart height, 100%-DPI px; 0 = default (170)
     'pf_h': 0,              # portfolio equity-plot height, px; 0 = automatic (from width)
@@ -989,6 +992,62 @@ class App:
         self._tip(outer, tip)
         return outer
 
+    def _hgrip(self, parent, on_drag, on_reset, tip):
+        """An IN-CARD resize strip (packed at the card's bottom): same look as _vgrip but it
+        lives inside the card, so it travels with it when cards are drag-reordered."""
+        strip = tk.Frame(parent, bg=CARD, height=max(12, int(12 * self.SCALE)),
+                         cursor='sb_v_double_arrow')
+        strip.pack(fill='x', pady=(6, 0))
+        strip.pack_propagate(False)
+        bar = tk.Frame(strip, bg=BORDER, height=max(4, int(4 * self.SCALE)),
+                       width=int(64 * self.SCALE), cursor='sb_v_double_arrow')
+        bar.place(relx=0.5, rely=0.5, anchor='center')
+        for w in (strip, bar):
+            w.bind('<B1-Motion>', on_drag)
+            w.bind('<ButtonRelease-1>', lambda e: self._save())
+            w.bind('<Double-1>', on_reset)
+            w.bind('<Enter>', lambda e: bar.configure(bg=ACC))
+            w.bind('<Leave>', lambda e: bar.configure(bg=BORDER))
+        self._tip(strip, tip)
+        return strip
+
+    def _tree_rows_drag(self, tree, key, e, lo, hi):
+        """Shared row-count resize for a Treeview card: rows from the pointer's distance to
+        the table top, clamped, persisted under cfg[key]."""
+        rh = max(1, int(32 * self.SCALE))                # matches the Treeview style rowheight
+        rows = max(lo, min(hi, round((e.y_root - tree.winfo_rooty()) / rh)))
+        if rows != int(tree['height']):
+            tree.configure(height=rows)
+            self.cfg[key] = rows
+
+    def _on_log_drag(self, e):
+        h = max(int(60 * self.SCALE), min(int(600 * self.SCALE),
+                                          e.y_root - self._logwrap.winfo_rooty()))
+        self._logwrap.pack_propagate(False)
+        self._logwrap.configure(height=h)
+        self.cfg['log_h'] = round(h / self.SCALE)
+
+    def _log_reset(self, _e=None):
+        self.cfg['log_h'] = 0
+        self._logwrap.pack_propagate(True)               # back to the text's natural height
+        self._save()
+
+    def _on_lb_rows_drag(self, e):
+        self._tree_rows_drag(self.tree, 'lb_rows', e, 4, 40)
+
+    def _lb_rows_reset(self, _e=None):
+        self.cfg['lb_rows'] = 12
+        self.tree.configure(height=12)
+        self._save()
+
+    def _on_fwd_rows_drag(self, e):
+        self._tree_rows_drag(self.fwd_tree, 'fwd_rows', e, 2, 30)
+
+    def _fwd_rows_reset(self, _e=None):
+        self.cfg['fwd_rows'] = 4
+        self.fwd_tree.configure(height=4)
+        self._save()
+
     def _build_status(self, body):
         # The dashboard column SCROLLS: on a short window the cards keep their natural heights
         # and the scrollbar moves between blocks; on a tall one the inner frame is stretched to
@@ -1048,6 +1107,12 @@ class App:
                          ('warn', NEG), ('err', NEG), ('ts', FAINT), ('i', MUT)):
             self.logbox.tag_configure(tag, foreground=col)
         self.logbox.pack(fill='both', expand=True, padx=8, pady=6)
+        self._logwrap = logwrap
+        if self.cfg.get('log_h'):                        # user-dragged log height (dp), 0 = natural
+            logwrap.configure(height=int(self.cfg['log_h'] * self.SCALE))
+            logwrap.pack_propagate(False)
+        self._hgrip(pad, self._on_log_drag, self._log_reset,
+                    'Drag: the live log grows/shrinks. Double-click — natural height.')
         self._events_last = None
         self._log_placeholder()
 
@@ -1101,7 +1166,8 @@ class App:
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         cols = ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'ls', 'act', 'win', 'id', 'formula')
-        self.tree = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
+        self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
+                                 height=int(self.cfg.get('lb_rows') or 12))
         self._HEAD = {}
         # Widths fit the WIDEST real value plus the sort arrow the heading grows by (' ▼'), and are
         # scaled with the display: a Treeview column is raw pixels while its text follows the DPI,
@@ -1145,6 +1211,8 @@ class App:
         vsb.pack(side='right', fill='y', padx=(4, 0))
         hsb.pack(side='bottom', fill='x', pady=(4, 0))
         self.tree.pack(side='left', fill='both', expand=True)
+        self._hgrip(p2, self._on_lb_rows_drag, self._lb_rows_reset,
+                    'Drag: more/fewer leaderboard rows on screen. Double-click — default (12).')
         self.tree.bind('<Configure>', lambda e: self._fit_formula_col())
         self.tree.bind('<Double-1>', self._on_row_open)
         self.tree.bind('<Button-3>', self._on_row_menu)             # right-click — context menu
@@ -1161,7 +1229,7 @@ class App:
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
-        self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
+        self._pf_grip = self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
                     'Drag up — a taller portfolio equity plot (the leaderboard shrinks);\n'
                     'drag down — more room for the leaderboard. Double-click — automatic height.')
         card3 = self._card(right)
@@ -1273,7 +1341,8 @@ class App:
                                  wraplength=900, anchor='w', justify='left')
         self.lbl_fwd.pack(anchor='w', fill='x', pady=(8, 2))
         fcols = ('id', 'kind', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
-        self.fwd_tree = ttk.Treeview(p4, columns=fcols, show='headings', height=4)
+        self.fwd_tree = ttk.Treeview(p4, columns=fcols, show='headings',
+                                     height=int(self.cfg.get('fwd_rows') or 4))
         for c, txt, w, anch in (('id', 'STRATEGY', 240, 'w'), ('kind', 'KIND', 96, 'w'),
                                 ('enrolled', 'ENROLLED', 100, 'center'), ('days', 'STEPS', 64, 'e'),
                                 ('equity', 'EQUITY', 100, 'e'), ('ret', 'RETURN', 90, 'e'),
@@ -1283,6 +1352,8 @@ class App:
             self.fwd_tree.column(c, width=int(w * self.SCALE), anchor=anch,
                                  stretch=(c == 'id'))
         self.fwd_tree.pack(fill='x', pady=(4, 0))
+        self._hgrip(p4, self._on_fwd_rows_drag, self._fwd_rows_reset,
+                    'Drag: more/fewer forward-track rows on screen. Double-click — default (4).')
         self.fwd_tree.bind('<Double-1>', lambda _e: self._fwd_chart())
         self.root.after(900, self._fwd_refresh)
         if not getattr(self, '_fwd_tick_on', False):          # _build reruns on theme switch —
@@ -1312,10 +1383,14 @@ class App:
         it lands; a card hidden via grid_remove (signals while idle) keeps its slot hidden."""
         right = self._dash_right
         hidden = {n for n, w in self._cards.items() if not w.winfo_manager()}
-        for r in range(2 * len(self._cards)):
+        for r in range(3 * len(self._cards)):
             right.rowconfigure(r, weight=0)
         row, after_grip = 0, False
         for i, name in enumerate(self._card_order()):
+            if name == 'portfolio':                      # its plot-height grip is the gap ABOVE
+                self._pf_grip.grid(row=row, column=0, sticky='ew')
+                row += 1
+                after_grip = True
             w = self._cards[name]
             w.grid(row=row, column=0, sticky=('nsew' if name == 'leaderboard' else 'ew'),
                    pady=((0 if (i == 0 or after_grip) else 16), 0))
