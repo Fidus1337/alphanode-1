@@ -99,6 +99,11 @@ def load_config(path=None):
         'fit_se_penalty': cp.getfloat('fitness', 'se_penalty', fallback=1.0),
         'fit_conc_penalty': cp.getfloat('fitness', 'conc_penalty', fallback=0.3),
         'fit_min_eff_n': cp.getfloat('fitness', 'min_eff_n', fallback=3.0),
+        # selection statistic + drawdown fence (sharpe is the only default-grade choice;
+        # sortino/calmar are opt-in experiments, dd_cap=0 disables the fence)
+        'fit_metric': cp.get('fitness', 'metric', fallback='sharpe').strip().lower(),
+        'fit_dd_cap': cp.getfloat('fitness', 'max_dd', fallback=0.0),
+        'fit_dd_penalty': cp.getfloat('fitness', 'dd_penalty', fallback=1.0),
         # final coordinate-descent tuning of champions' windows (continuous, off-grid)
         'window_polish': cp.getboolean('search', 'window_polish', fallback=True),
     }

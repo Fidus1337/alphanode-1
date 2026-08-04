@@ -84,11 +84,15 @@ def main():
           f'TEST {sp["test"][0].date()}..{sp["test"][1].date()} (closed)')
     print(f'  pop={cfg["pop"]} gens={cfg["gens"]} depth<={cfg["max_depth"]} '
           f'size<={cfg["max_size"]} jobs={cfg["n_jobs"]} seed={cfg["seed"]}')
+    met = cfg.get('fit_metric', 'sharpe').capitalize()
     if cfg.get('fit_blocks', 0) >= 2:
         print(f'  fitness = q{cfg["fit_quantile"]:g} of {cfg["fit_blocks"]} SE-shrunk block '
-              f'Sharpes - {cfg["parsimony"]}*size - correlation/concentration penalties')
+              f'{met}s - {cfg["parsimony"]}*size - correlation/concentration penalties')
     else:
-        print(f'  fitness = min(train,val) Sharpe - {cfg["parsimony"]}*size - correlation_penalty')
+        print(f'  fitness = min(train,val) {met} - {cfg["parsimony"]}*size - correlation_penalty')
+    if cfg.get('fit_dd_cap', 0.0) > 0:
+        print(f'  DD fence: worst TRAIN/VAL drawdown over {cfg["fit_dd_cap"]:.0%} bleeds '
+              f'{cfg.get("fit_dd_penalty", 1.0):g} fitness per +100% of cap')
     print('-' * 74)
 
     hof, history, cache = evolve(cfg, log=print)

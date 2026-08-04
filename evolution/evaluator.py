@@ -163,6 +163,32 @@ def _sharpe(r, ann=ANN):
     return (r.mean() * ann) / (s * np.sqrt(ann))
 
 
+def _metric_value(r, ann, metric):
+    """The per-slice selection statistic. 'sharpe' is the default and the only one with real
+    error theory; 'sortino' (downside deviation only) and 'calmar' (CAGR / |maxDD|, clipped)
+    are opt-in alternatives — both are easier for the GA to game, which is exactly why they
+    stay a config choice rather than the default. NaN = no evidence in this slice."""
+    if metric == 'sortino':
+        act = (r != 0).sum()
+        d = float(np.sqrt(np.mean(np.minimum(r, 0.0) ** 2)))
+        if act < 5 or not np.isfinite(d) or d < STD_FLOOR:
+            return np.nan                                  # incl. "no losing bars": unmeasurable, not infinite
+        return float((r.mean() * ann) / (d * np.sqrt(ann)))
+    if metric == 'calmar':
+        act = (r != 0).sum()
+        if act < 5:
+            return np.nan
+        eq = (1 + r).cumprod()
+        yrs = len(r) / ann
+        last = float(eq.iloc[-1])
+        if yrs <= 0 or last <= 0:
+            return np.nan                                  # wiped out
+        cagr = last ** (1 / yrs) - 1
+        dd = abs(float((eq / eq.cummax() - 1).min()))
+        return float(np.clip(cagr / max(dd, 0.01), -50.0, 50.0))   # dd floor + clip: no infinities to chase
+    return _sharpe(r, ann)
+
+
 def _metrics(r, ann=ANN):
     act = int((r != 0).sum())
     s = r.std()
@@ -185,7 +211,7 @@ def _metrics(r, ann=ANN):
 # lucky slices lose the most), and the fitness is the `quantile` of the shrunk values
 # (0 = strict worst block). One golden regime can no longer carry a formula: it has to
 # work, at least modestly, almost everywhere. blocks = 0 restores min(TRAIN, VAL).
-def _block_fitness(sel, ann, blocks, quantile, se_penalty):
+def _block_fitness(sel, ann, blocks, quantile, se_penalty, metric='sharpe'):
     n = len(sel)
     if n < blocks * 30:                                # too short to measure per block
         return None
@@ -193,10 +219,14 @@ def _block_fitness(sel, ann, blocks, quantile, se_penalty):
     adj = []
     for a, b in zip(edges[:-1], edges[1:]):
         r = sel.iloc[a:b]
-        sh = _sharpe(r, ann)
+        sh = _metric_value(r, ann, metric)
         if not np.isfinite(sh):
             sh = 0.0                                   # no evidence in this slice ≠ disaster
-        se = np.sqrt((1.0 + 0.5 * sh * sh) * ann / max(b - a, 1))
+        if metric == 'calmar':
+            se = 0.0                                   # no SE theory for a path statistic; equal-length
+        else:                                          # blocks stay comparable without it
+            # Lo 2002 for Sharpe; reused as an approximation for Sortino (same shape/units)
+            se = np.sqrt((1.0 + 0.5 * sh * sh) * ann / max(b - a, 1))
         adj.append(sh - se_penalty * se)
     return float(np.quantile(adj, quantile)), [round(float(x), 3) for x in adj]
 
@@ -265,9 +295,10 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lamb
              fit=None):
     """Run the genome through the fast engine. Return a dict with per-segment metrics, the
     selection fitness `base_fit` and the train+val returns vector (for correlation/novelty).
-    None -> an invalid genome. `fit` (optional dict: blocks / quantile / se_penalty /
-    conc_penalty / min_eff_n) switches base_fit from the legacy min(TRAIN, VAL) Sharpe to
-    the robust multi-block fitness — see _block_fitness."""
+    None -> an invalid genome. `fit` (optional dict: metric / blocks / quantile / se_penalty /
+    conc_penalty / min_eff_n / dd_cap / dd_penalty) switches base_fit from the legacy
+    min(TRAIN, VAL) Sharpe to the robust multi-block fitness (see _block_fitness), changes
+    the selection statistic (sharpe/sortino/calmar) and fences the worst segment drawdown."""
     try:
         alpha_panel = eval_alpha_panel(node, panel)
     except Exception:
@@ -293,13 +324,20 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lamb
     if m_tr is None or m_va is None:
         return None
 
-    base_fit = min(m_tr['sharpe'], m_va['sharpe'])     # legacy fitness (blocks = 0)
+    metric = str((fit or {}).get('metric', 'sharpe') or 'sharpe').lower()
+    if metric == 'sharpe':
+        base_fit = min(m_tr['sharpe'], m_va['sharpe'])   # legacy fitness (blocks = 0)
+    else:
+        mt, mv = _metric_value(tr, ann, metric), _metric_value(va, ann, metric)
+        if not (np.isfinite(mt) and np.isfinite(mv)):    # unmeasurable for the chosen goal
+            return None
+        base_fit = min(mt, mv)
     blocks_adj = eff_n = None
     if fit and int(fit.get('blocks', 0)) >= 2:
         sel = ret[(ret.index >= splits['train'][0]) & (ret.index < splits['test'][0])]
         bf = _block_fitness(sel, ann, int(fit['blocks']),
                             float(fit.get('quantile', 0.25)),
-                            float(fit.get('se_penalty', 1.0)))
+                            float(fit.get('se_penalty', 1.0)), metric=metric)
         if bf is None:
             return None
         base_fit, blocks_adj = bf
@@ -310,6 +348,11 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lamb
         need = float(fit.get('min_eff_n', 3.0))
         if eff_n < need:                               # one-coin books bleed fitness
             base_fit -= float(fit['conc_penalty']) * (need - eff_n) / need
+    if fit and float(fit.get('dd_cap', 0.0)) > 0:      # drawdown as a FENCE, not a goal:
+        worst = max(abs(m_tr['dd']), abs(m_va['dd']))  # worst segment DD vs the user's cap
+        over = worst - float(fit['dd_cap'])
+        if over > 0:                                   # scale-free: +100% of cap = -λ fitness
+            base_fit -= float(fit.get('dd_penalty', 1.0)) * over / float(fit['dd_cap'])
 
     rv = pd.concat([tr, va])                    # vector for correlation/novelty
     return {
