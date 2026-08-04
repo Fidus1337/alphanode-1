@@ -11,7 +11,8 @@ GUI only ever waits on a pipe (which releases it).
 
 stdin  -> {"formulas": [...], "instruments": [...]|null, "vol": .., "exec": ..,
            "train_start": "YYYY-MM-DD", "test_start": ..., "test_end": ...}
-stdout -> {"ok": true, "metrics": {formula: {"long":n,"short":n,"win":f,"act":f} | "err"}}
+stdout -> {"ok": true, "metrics": {formula: {"long":n,"short":n,"win":f,"act":f,
+           "dd":f,"cagr":f|null,"sortino":f|null} | "err"}}
            {"ok": false, "error": "..."}   on a failure that kills the whole batch
 
 A formula that cannot be parsed or never trades comes back as "err" — same contract the GUI's
@@ -62,8 +63,9 @@ def build_ctx(opt):
 
 
 def trade_stats(formula, ctx):
-    """{long, short, win, act} for one formula on TEST — act = trades per asset per year
-    (relative activity, universe/period independent). 'err' if it doesn't parse or never trades."""
+    """{long, short, win, act, dd, cagr, sortino} for one formula on TEST — act = trades per
+    asset per year (relative activity, universe/period independent); dd/cagr/sortino from the
+    same simulated TEST equity. 'err' if it doesn't parse or never trades."""
     from genome import parse
     from evaluator import eval_alpha_panel
     from fastsim import fast_sim
@@ -87,7 +89,18 @@ def trade_stats(formula, ctx):
         active = np.abs(rt) > 1e-9                                       # days when something happened
         win = float((rt[active] > 0).mean()) if active.any() else 0.0
         act = (long_tr + short_tr) / ctx['n_assets'] / ctx['years']     # trades / asset / year
-        return {'long': long_tr, 'short': short_tr, 'win': win, 'act': act}
+        eq = np.cumprod(1.0 + rt)
+        dd = float((eq / np.maximum.accumulate(eq) - 1.0).min())
+        last = float(eq[-1])
+        cagr = (last ** (1.0 / ctx['years']) - 1.0) if last > 0 else None   # wiped out -> null
+        dstd = float(np.sqrt(np.mean(np.minimum(rt, 0.0) ** 2)))            # downside deviation
+        sortino = (float(rt.mean()) * ctx['ann'] / (dstd * np.sqrt(ctx['ann']))
+                   if dstd > 1e-12 else None)                               # no losing bars -> null
+
+        def _fin(v):                                                        # JSON-safe: NaN/inf -> null
+            return float(v) if (v is not None and np.isfinite(v)) else None
+        return {'long': long_tr, 'short': short_tr, 'win': win, 'act': act,
+                'dd': _fin(dd), 'cagr': _fin(cagr), 'sortino': _fin(sortino)}
     except Exception:                                                   # noqa: BLE001
         return 'err'
 

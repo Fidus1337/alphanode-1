@@ -1077,14 +1077,16 @@ class App:
                                  'the old compact view. Sorting by any column works in both.')
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
-        cols = ('rank', 'fit', 'test', 'ls', 'act', 'win', 'id', 'formula')
+        cols = ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'ls', 'act', 'win', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
         self._HEAD = {}
         # Widths fit the WIDEST real value plus the sort arrow the heading grows by (' ▼'), and are
         # scaled with the display: a Treeview column is raw pixels while its text follows the DPI,
         # which is what cut "3069/2100" down to "3069/:" and clipped the "tr/yr·a" heading itself.
         for c, txt, w, anc in (('rank', '#', 40, 'center'), ('fit', 'fitness', 86, 'e'),
-                               ('test', 'TEST OOS', 86, 'e'), ('ls', 'trades L/S', 100, 'center'),
+                               ('test', 'TEST OOS', 86, 'e'), ('dd', 'maxDD', 74, 'e'),
+                               ('cagr', 'CAGR', 72, 'e'), ('srt', 'sortino', 80, 'e'),
+                               ('ls', 'trades L/S', 100, 'center'),
                                ('act', 'tr/yr·a', 72, 'e'),
                                ('win', 'win%', 62, 'e'), ('id', 'ID', 116, 'w'),
                                ('formula', 'formula', 260, 'w')):
@@ -1094,7 +1096,9 @@ class App:
             self.tree.heading(c, text=txt, **kw)
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
         self._update_headings()                          # show the sort arrow on the active column
-        self._tip(self.lbl_lb_head, 'trades L/S = total number of long / short positions OPENED over TEST\n'
+        self._tip(self.lbl_lb_head, 'maxDD = worst peak-to-trough drawdown; CAGR = annualized growth;\n'
+                                    'sortino = like Sharpe but only downside vol counts (upside is free);\n'
+                                    'trades L/S = total number of long / short positions OPENED over TEST\n'
                                     '(a trade = crossing into long/short from flat or the opposite side);\n'
                                     'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
                                     'filter drops barely-trading alphas); win% = share of days with profit.\n'
@@ -2188,7 +2192,13 @@ class App:
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
-    _SORTABLE = ('fit', 'test', 'ls', 'act', 'win', 'formula')
+    _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt', 'ls', 'act', 'win', 'formula')
+
+    @staticmethod
+    def _finite(v):
+        """A finite number or None — NaN must never reach the sort (it poisons comparisons)."""
+        return v if (isinstance(v, (int, float)) and v == v
+                     and v not in (float('inf'), float('-inf'))) else None
 
     def _sort_key(self, c, col):
         if col == 'fit':
@@ -2197,8 +2207,14 @@ class App:
             return self._LB_TESTKEY(c)
         if col == 'formula':
             return c.get('formula', '')
-        m = self._metrics_cache.get(c.get('formula', ''))    # ls / act / win — from the metrics cache
+        m = self._metrics_cache.get(c.get('formula', ''))    # the rest — from the metrics cache
         m = m if isinstance(m, dict) else {}
+        if col in ('dd', 'cagr'):                            # library row first, worker fallback
+            t = c.get('test') if isinstance(c.get('test'), dict) else {}
+            return self._finite(t.get(col)) if self._finite(t.get(col)) is not None \
+                else self._finite(m.get(col))
+        if col == 'srt':
+            return self._finite(m.get('sortino'))
         if col == 'ls':
             return m.get('long', 0) + m.get('short', 0)
         if col == 'act':
@@ -2341,11 +2357,13 @@ class App:
             f = formula                                  # full length — the column fits the widest row
             need = max(need, self._tree_font.measure(f))
             m = self._metrics_cache.get(formula)
-            ls, act, win = self._fmt_metrics(m)
+            ls, act, win, srt = self._fmt_metrics(m)
+            dd = self._lb_test_ratio(c, m, 'dd', pct=True)
+            cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
             aid = 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
             item = self.tree.insert('', 'end', values=(
                 i + 1, f'{base:+.2f}' if base is not None else '—',
-                f'{ts:+.2f}' if ts is not None else '—', ls, act, win, aid, f),
+                f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt, ls, act, win, aid, f),
                 tags=(sign, stripe))
             self._row_items[formula] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
@@ -2370,7 +2388,8 @@ class App:
         stretches to fill the card. Re-run on every render and on tree resize."""
         try:
             fixed = sum(int(self.tree.column(c, 'width'))
-                        for c in ('rank', 'fit', 'test', 'ls', 'act', 'win', 'id'))
+                        for c in ('rank', 'fit', 'test', 'dd', 'cagr', 'srt',
+                                  'ls', 'act', 'win', 'id'))
         except tk.TclError:                              # theme rebuild mid-flight
             return
         avail = self.tree.winfo_width() - fixed - int(4 * self.SCALE)
@@ -2407,21 +2426,41 @@ class App:
     def _pump_metrics(self):
         """After a redraw: compute the visible rows' stats. Sorting BY a stat column is the one case
         that needs every value at once (else the order is wrong), so there we compute the full set."""
-        if self._sort_col in ('ls', 'act', 'win'):
+        if self._sort_col in ('ls', 'act', 'win', 'srt', 'dd', 'cagr'):
             self._start_metrics(self._shown)
         else:
             self._start_metrics(self._visible_champs())
 
     @staticmethod
+    def _fmt_ratio(v, pct=False):
+        """'—' unless v is a finite number; percents rounded to whole, ratios to 2 decimals."""
+        if not isinstance(v, (int, float)) or v != v or v in (float('inf'), float('-inf')):
+            return '—'
+        return f'{v * 100:+.0f}%' if pct else f'{v:+.2f}'
+
+    def _lb_test_ratio(self, c, m, key, pct):
+        """dd/cagr cell: the library row's own TEST metrics first (stored at mining time),
+        the metrics worker's number as a fallback for old rows; '…' while it may still come."""
+        t = c.get('test') if isinstance(c.get('test'), dict) else {}
+        v = t.get(key)
+        if not isinstance(v, (int, float)) and isinstance(m, dict):
+            v = m.get(key)
+        if not isinstance(v, (int, float)) and m is None:
+            return '…'
+        return self._fmt_ratio(v, pct=pct)
+
+    @staticmethod
     def _fmt_metrics(m):
-        """('L/S', 'tr/yr·a', 'win%') strings from the cache: None=still computing, 'err'=failed."""
+        """('L/S', 'tr/yr·a', 'win%', 'sortino') strings from the cache: None=still computing,
+        'err'=failed."""
         if m is None:
-            return '…', '…', '…'
+            return '…', '…', '…', '…'
         if m == 'err':
-            return '—', '—', '—'
+            return '—', '—', '—', '—'
         a = m.get('act', 0.0)
         astr = f'{a:.1f}' if a < 10 else f'{a:.0f}'
-        return f'{m["long"]:.0f}/{m["short"]:.0f}', astr, f'{m["win"] * 100:.0f}%'
+        return (f'{m["long"]:.0f}/{m["short"]:.0f}', astr, f'{m["win"] * 100:.0f}%',
+                App._fmt_ratio(m.get('sortino')))
 
     def _start_metrics(self, champs):
         """Background computation of long/short/win (on TEST) for the shown alphas; cached by formula."""
@@ -2482,17 +2521,23 @@ class App:
         return doc.get('metrics') or {}
 
     def _apply_metrics(self, seq):
-        """Set the computed long/short/win cells into the already shown rows (main thread)."""
+        """Set the computed metric cells into the already shown rows (main thread)."""
         if seq != self._metrics_seq:
             return
         for formula, item in list(self._row_items.items()):
             if not self.tree.exists(item):
                 continue
-            ls, act, win = self._fmt_metrics(self._metrics_cache.get(formula))
+            m = self._metrics_cache.get(formula)
+            ls, act, win, srt = self._fmt_metrics(m)
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
-        if self._sort_col in ('ls', 'act', 'win'):       # metrics just arrived -> reorder by them
+            self.tree.set(item, 'srt', srt)
+            if isinstance(m, dict):                      # dd/cagr fallback for legacy library rows
+                for col in ('dd', 'cagr'):
+                    if self.tree.set(item, col) in ('…', '—'):
+                        self.tree.set(item, col, self._fmt_ratio(m.get(col), pct=True))
+        if self._sort_col in ('ls', 'act', 'win', 'srt', 'dd', 'cagr'):   # arrived -> reorder
             self._treesig = None
             self._render_lb(self._lb_rows() or self._shown)
 
@@ -2601,13 +2646,14 @@ class App:
                         self._seg(c, 'train', 'sharpe'), self._seg(c, 'val', 'sharpe'),
                         self._seg(c, 'test', 'sharpe'), self._seg(c, 'test', 'dd'),
                         self._seg(c, 'test', 'cagr'),
+                        round(m['sortino'], 3) if isinstance(m.get('sortino'), (int, float)) else '',
                         m.get('long', ''), m.get('short', ''),
                         round(m['act'], 2) if 'act' in m else '',
                         round(m['win'] * 100, 1) if 'win' in m else '',
                         'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6], formula])
         self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
-                              'test_dd', 'test_cagr', 'long', 'short', 'tr_yr_a', 'win_pct',
-                              'id', 'formula'), out, 'rows')
+                              'test_dd', 'test_cagr', 'test_sortino', 'long', 'short', 'tr_yr_a',
+                              'win_pct', 'id', 'formula'), out, 'rows')
 
     def _export_library(self):
         """Everything the node has ever mined — no dedup, no TEST filter. The table on screen is a
