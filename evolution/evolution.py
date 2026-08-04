@@ -26,10 +26,7 @@ def fit_cfg(cfg):
     return {'blocks': cfg.get('fit_blocks', 0), 'quantile': cfg.get('fit_quantile', 0.25),
             'se_penalty': cfg.get('fit_se_penalty', 1.0),
             'conc_penalty': cfg.get('fit_conc_penalty', 0.0),
-            'min_eff_n': cfg.get('fit_min_eff_n', 3.0),
-            'metric': cfg.get('fit_metric', 'sharpe'),
-            'dd_cap': cfg.get('fit_dd_cap', 0.0),
-            'dd_penalty': cfg.get('fit_dd_penalty', 1.0)}
+            'min_eff_n': cfg.get('fit_min_eff_n', 3.0)}
 
 
 def _winit(data, start, end, splits, vol, exec_rate, instruments, freq, vol_window, ann,

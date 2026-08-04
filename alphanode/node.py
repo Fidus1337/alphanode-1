@@ -223,9 +223,6 @@ def _apply_overrides(cfg):
     _override(cfg, 'corr_penalty', 'CORR_PENALTY', float)
     _override(cfg, 'hof_cap', 'HOF_CAPACITY', int)
     _override(cfg, 'fit_blocks', 'FIT_BLOCKS', int)    # robust fitness; 0 = legacy min(train,val)
-    _override(cfg, 'fit_metric', 'FIT_METRIC', lambda s: str(s).strip().lower())
-    _override(cfg, 'fit_dd_cap', 'DD_CAP', float)      # worst-segment |DD| fence; 0 = off
-    _override(cfg, 'fit_dd_penalty', 'DD_PENALTY', float)
     _apply_segments(cfg)
 
 
