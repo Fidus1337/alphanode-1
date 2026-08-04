@@ -389,6 +389,28 @@ class App:
         s.map('TSpinbox', bordercolor=[('focus', ACC)], lightcolor=[('focus', ACC)],
               darkcolor=[('focus', ACC)])
 
+        # comboboxes (Timeframe, portfolio "by …") — clam's default is a light-gray box that
+        # glares on a dark card, and in 'readonly' the text is drawn as a SELECTION, which is
+        # what read as a white smear. Same tonal look as the spinboxes/entries.
+        s.configure('TCombobox', fieldbackground=HEAD_BG, background=HEAD_BG, foreground=TXT,
+                    arrowcolor=MUT, bordercolor=BORDER, lightcolor=HEAD_BG, darkcolor=HEAD_BG,
+                    borderwidth=1, padding=int(4 * self.SCALE), insertcolor=TXT,
+                    font=self._font(F, 13))
+        s.map('TCombobox',
+              fieldbackground=[('readonly', HEAD_BG), ('disabled', CARD)],
+              background=[('readonly', HEAD_BG), ('active', HEAD_HI)],
+              foreground=[('readonly', TXT), ('disabled', FAINT)],
+              selectbackground=[('readonly', HEAD_BG)],
+              selectforeground=[('readonly', TXT)],
+              bordercolor=[('focus', ACC)], lightcolor=[('focus', ACC)],
+              darkcolor=[('focus', ACC)], arrowcolor=[('disabled', FAINT)])
+        # the drop-down list is a plain Tk listbox created by ttk — reachable only via the
+        # option database; re-adding on a theme switch overrides the previous values
+        for opt, val in (('background', HEAD_BG), ('foreground', TXT),
+                         ('selectBackground', ACC), ('selectForeground', '#ffffff'),
+                         ('borderWidth', 0), ('font', self._font(F, 13))):
+            self.root.option_add(f'*TCombobox*Listbox.{opt}', val)
+
         # the leaderboard — CustomTkinter has no table, so this stays a ttk.Treeview.
         # rowheight/fonts are deliberately roomier than ttk's defaults: this table IS the app.
         # bordercolor matters: clam draws a frame around the field, which reads as a stray light
