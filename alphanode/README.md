@@ -101,13 +101,27 @@ python alphanode/cli.py run [flags]     # continuous search in foreground (log t
 python alphanode/cli.py fetch [flags]   # download fresh Binance data
 python alphanode/cli.py top [flags]     # top alphas found, as a table in the terminal
 python alphanode/cli.py status          # node state (rounds, best)
+python alphanode/cli.py forward list    # forward track: enrolled strategies + paper equity
+python alphanode/cli.py forward step    # advance the forward track now (run does it itself)
 python alphanode/cli.py export [flags]  # assemble a paper-trading bundle from a formula/rank
 ```
 
 - **`run`** — the same settings as in the GUI, but as flags: `--cpu 50 --pop 200 --gens 25 --universe all
   --max-rounds 0 --port 8787 --state-dir /data …` (an unset flag = from `ALPHANODE_*`/`config.ini`).
+  While running it also **steps the forward track** every 5 minutes (see below).
 - **`top`** — like the GUI leaderboard: `--sort fitness|test`, `--min-test 1` (threshold on TEST OOS), `-n 20`,
   `--all` (no family dedup). ⚠ `--sort test` is a cherry-pick on held-out (the number is inflated).
+  **`--stats`** adds the GUI's TEST trade-stat columns per row — maxDD, CAGR, sortino, **calm/storm**
+  (Sharpe on the quiet vs turbulent half of the market: EW-basket realized vol vs its trailing
+  1-year median), trades L/S, win% — it simulates every shown row, so it takes a few seconds.
+  Calm/storm is analysis, not selection: picking alphas by these numbers is another layer of
+  TEST peeking.
+- **`forward`** — the honest append-only paper test, now fully headless. Historically only the
+  open GUI advanced enrolled strategies; a `run` node (local or Docker) now steps them itself
+  every 5 minutes, on closed bars only, same code path as the GUI — so GUI and node never
+  double-step. `forward list` shows equity/Sharpe per entry; disable the built-in stepping
+  with `ALPHANODE_FORWARD=0`. Enrolling is still done in the GUI (double-click an alpha →
+  "Forward track ➕") — the state files are shared.
 - **`export`** — `--rank N --sort test` (the N-th alpha) or `--formula "cs_…"`; puts the bundle in `exports/`.
 
 It reads/writes state in `ALPHANODE_STATE_DIR` (in Docker — `/data`), so `top`/`status`/`export`
@@ -125,10 +139,16 @@ docker-compose logs -f           # what it's doing
 
 # same /data, without disturbing the running node:
 docker compose run --rm alphanode top --sort test --min-test 1
+docker compose run --rm alphanode top --stats -n 10        # + maxDD/CAGR/sortino/calm/storm
+docker compose run --rm alphanode forward list             # forward-track paper equity
 docker compose run --rm alphanode status
 docker compose run --rm alphanode fetch --top 150 --min-years 3
 docker compose down              # stop
 ```
+
+The running node steps the **forward track** by itself (every 5 min, closed bars only) and shows
+it on the status page at `:8787` — a server deployment no longer needs the GUI open anywhere.
+Opt out with `ALPHANODE_FORWARD=0` in the environment.
 
 Build/run the image directly (on any machine with Docker):
 ```bash

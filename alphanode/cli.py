@@ -3,7 +3,10 @@
     python alphanode/cli.py run [flags]        # start continuous search (foreground, log to stdout)
     python alphanode/cli.py fetch [flags]      # download fresh Binance data
     python alphanode/cli.py top [flags]        # top alphas found in the library (table in the terminal)
+    python alphanode/cli.py top --stats        # + trade stats on TEST (maxDD/CAGR/sortino/calm/storm/win)
     python alphanode/cli.py status             # current node state (rounds, best)
+    python alphanode/cli.py forward list       # forward track: enrolled strategies + their paper equity
+    python alphanode/cli.py forward step       # advance the forward track now (run also does it itself)
     python alphanode/cli.py portfolio [flags]  # build a combined portfolio from top-N alphas by TEST
     python alphanode/cli.py signal [flags]     # serve live target positions over a local HTTP API (JSON)
     python alphanode/cli.py export [flags]     # build a paper-trading bundle from a formula/rank
@@ -82,7 +85,9 @@ def cmd_fetch(args):
 
 # ---- top: rank the library (like the GUI leaderboard) --------------------------------------
 def _load_library(state_dir):
-    path = os.path.join(state_dir, 'library.jsonl')
+    # per-timeframe library names, same rule as node.py: 1d keeps the legacy 'library.jsonl'
+    tf = (os.environ.get('ALPHANODE_TF', '') or '1d').strip().lower()
+    path = os.path.join(state_dir, 'library.jsonl' if tf == '1d' else f'library_{tf}.jsonl')
     rows = []
     try:
         for line in open(path, encoding='utf-8'):
@@ -119,6 +124,31 @@ def _fmt(v):
     return f'{v:+.2f}' if isinstance(v, (int, float)) else '—'
 
 
+def _trade_stats(formulas):
+    """The GUI leaderboard's TEST columns, in-process: one shared panel, fast_sim per alpha.
+    Reuses metrics_worker (the exact code the GUI runs out of process), so the numbers match
+    the desktop app cell for cell — including calm/storm, the Sharpe on the quiet vs turbulent
+    half of the market (EW-basket realized vol vs its trailing 1-year median)."""
+    import metrics_worker
+    from config import load_config
+    cfg = load_config()
+    sp = cfg['splits']
+
+    def ev(name, fallback):
+        return os.environ.get('ALPHANODE_' + name) or fallback
+    # the same ALPHANODE_* overrides the node applies on top of config.ini (node._apply_overrides
+    # is what reads them for `run`) — otherwise the stats simulate with different vol/fees/dates
+    # than the library was mined with and the columns stop matching the GUI
+    opt = {'instruments': cfg.get('instruments'),
+           'vol': float(ev('TARGET_VOL', cfg['vol'])),
+           'exec': float(ev('EXEC_COST', cfg['exec'])),
+           'train_start': ev('TRAIN_START', sp['train'][0].strftime('%Y-%m-%d')),
+           'test_start': ev('TEST_START', sp['test'][0].strftime('%Y-%m-%d')),
+           'test_end': ev('TEST_END', sp['test'][1].strftime('%Y-%m-%d'))}
+    ctx = metrics_worker.build_ctx(opt)
+    return {f: metrics_worker.trade_stats(f, ctx) for f in formulas}
+
+
 def cmd_top(args):
     rows, path = _load_library(_state_dir())
     if not rows:
@@ -129,17 +159,60 @@ def cmd_top(args):
         width = int(os.environ.get('COLUMNS') or os.get_terminal_size().columns)
     except (OSError, ValueError):
         width = 120
-    fcol = max(30, width - 26)
     order = 'TEST OOS' if args.sort == 'test' else 'fitness min(train,val)'
     note = '' if args.sort != 'test' else '   ⚠ cherry-pick on held-out (number is inflated)'
     print(f'Top-{len(picked)} by {order}{note}   ·   {path}')
-    print(f'{"#":>3}  {"fitness":>7}  {"TEST":>6}  formula')
-    print('─' * min(width, 100))
+    stats = None
+    if getattr(args, 'stats', False):
+        print('computing TEST trade stats (builds the panel + simulates every row)…')
+        stats = _trade_stats([c.get('formula', '') for c in picked])
+        fcol = max(24, width - 84)
+        print(f'{"#":>3}  {"fitness":>7}  {"TEST":>6}  {"maxDD":>6}  {"CAGR":>6}  {"srtno":>6}  '
+              f'{"calm":>6}  {"storm":>6}  {"L/S":>9}  {"win%":>4}  formula')
+    else:
+        fcol = max(30, width - 26)
+        print(f'{"#":>3}  {"fitness":>7}  {"TEST":>6}  formula')
+    print('─' * min(width, 140 if stats else 100))
     for i, c in enumerate(picked, 1):
         f = c.get('formula', '')
         if len(f) > fcol:
             f = f[:fcol - 1] + '…'
-        print(f'{i:>3}  {_fmt(c.get("base")):>7}  {_fmt(_testsh(c)):>6}  {f}')
+        if stats is None:
+            print(f'{i:>3}  {_fmt(c.get("base")):>7}  {_fmt(_testsh(c)):>6}  {f}')
+            continue
+        m = stats.get(c.get('formula', ''))
+        m = m if isinstance(m, dict) else {}
+
+        def pct(v):
+            return f'{v * 100:+.0f}%' if isinstance(v, (int, float)) else '—'
+        ls = f"{m['long']}/{m['short']}" if 'long' in m else '—'
+        win = f"{m['win'] * 100:.0f}" if 'win' in m else '—'
+        print(f'{i:>3}  {_fmt(c.get("base")):>7}  {_fmt(_testsh(c)):>6}  {pct(m.get("dd")):>6}  '
+              f'{pct(m.get("cagr")):>6}  {_fmt(m.get("sortino")):>6}  {_fmt(m.get("calm")):>6}  '
+              f'{_fmt(m.get("storm")):>6}  {ls:>9}  {win:>4}  {f}')
+    if stats is not None:
+        print('\ncalm/storm = TEST Sharpe on the quiet / turbulent half of the market '
+              '(basket vol vs its 1y median). Analysis, not selection: picking by these '
+              'is another layer of TEST peeking.')
+
+
+def cmd_forward(args):
+    """Forward track without the GUI. `list` shows the enrolled strategies and their paper
+    equity; `step` advances every due entry right now (a running `run` node already does this
+    itself every 5 minutes — see node.forward_loop)."""
+    import forward_track as ft
+    if args.action == 'step':
+        return ft.step_all(force=args.force)
+    track = ft.load_track()
+    if not track['entries']:
+        print('forward track is empty — enroll a champion or a portfolio (GUI: double-click '
+              'an alpha → "Forward track ➕"); a headless node then steps it automatically')
+        return
+    for e in track['entries']:
+        m = ft.metrics(e)
+        sh = f'{m["sharpe"]:+.2f}' if m['sharpe'] is not None else '—'
+        print(f'{"[arch] " if e.get("archived") else ""}{e["id"]}: {m["days"]} steps · '
+              f'${m["equity"]:,.0f} ({m["ret"] * 100:+.1f}%) · Sharpe {sh} · since {e["enrolled"]}')
 
 
 def cmd_status(args):
@@ -305,11 +378,22 @@ def build_parser():
                    help='show only alphas with TEST OOS > X')
     t.add_argument('-n', type=int, default=20, help='how many rows')
     t.add_argument('--all', action='store_true', help='no family dedup (raw top)')
+    t.add_argument('--stats', action='store_true',
+                   help='add TEST trade stats per row (maxDD, CAGR, sortino, calm/storm '
+                        'vol-regime Sharpe, trades L/S, win%%) — simulates every row, takes '
+                        'a few seconds')
     t.set_defaults(func=cmd_top)
 
     s = sub.add_parser('status', help='current node state')
     s.add_argument('-n', type=int, default=5, help='how many best to show')
     s.set_defaults(func=cmd_status)
+
+    fw = sub.add_parser('forward', help='forward track: honest append-only paper test '
+                                        '(a running node steps it automatically)')
+    fw.add_argument('action', choices=('list', 'step'),
+                    help='list — enrolled strategies + paper equity; step — advance due entries now')
+    fw.add_argument('--force', action='store_true', help='re-step even if the bar was processed')
+    fw.set_defaults(func=cmd_forward)
 
     e = sub.add_parser('export', help='build a paper-trading bundle')
     g = e.add_mutually_exclusive_group()

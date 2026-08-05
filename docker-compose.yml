@@ -4,9 +4,14 @@
 #   docker compose up -d --build node                 # start the search node
 #   docker compose logs -f node                       # follow the search log
 #   docker compose run --rm node top -n 20            # leaderboard in the terminal
+#   docker compose run --rm node top --stats -n 10    # + maxDD/CAGR/sortino/calm/storm per row
+#   docker compose run --rm node forward list         # forward track: paper equity per strategy
 #   docker compose run --rm node fetch --top 150      # refresh Binance data (into the volume)
 #   docker compose run --rm node portfolio --top 6    # build a combined portfolio -> state/portfolio.json
 #   docker compose --profile signal up -d signal      # serve the top alpha's live signal on :8799
+#
+# The node steps the forward track itself (every 5 min, closed bars only) and shows it on the
+# status page — no GUI needed anywhere. Disable with ALPHANODE_FORWARD: "0" below.
 services:
   node:
     build: .

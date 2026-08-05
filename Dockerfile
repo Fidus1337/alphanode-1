@@ -1,7 +1,9 @@
 # Headless AlphaNode — everything the GUI does, minus the desktop UI: the evolutionary search node
-# with a live web status page, the Binance data fetcher, portfolio builder, and the signal API.
-# Drive it through the CLI:  docker run ... alphanode <command>  (run / fetch / top / status /
-# portfolio / signal / export). See docker-compose.yml and the README's Docker section.
+# with a live web status page, the Binance data fetcher, portfolio builder, the signal API, and
+# the forward track (a running node steps enrolled strategies every 5 min; ALPHANODE_FORWARD=0
+# opts out). Drive it through the CLI:  docker run ... alphanode <command>  (run / fetch /
+# top [--stats] / status / forward / portfolio / signal / export). See docker-compose.yml
+# and the README's Docker section.
 FROM python:3.11-slim
 
 ENV PYTHONUNBUFFERED=1 \

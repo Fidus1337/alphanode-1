@@ -55,6 +55,7 @@ STATE_DIR = env('STATE_DIR', os.path.join(HERE, 'state'))
 STATUS_PORT = int(env('STATUS_PORT', '8787'))
 KEEP = int(env('LEADERBOARD', '20'))
 TF = (env('TF', '') or '1d').strip().lower()           # bar size; also read by load_config (ALPHANODE_TF)
+FORWARD = env('FORWARD', '1').strip().lower() not in ('0', 'false', 'no', 'off')
 
 os.makedirs(STATE_DIR, exist_ok=True)
 # per-timeframe library/history: alphas mined on different bar sizes are NOT comparable
@@ -254,6 +255,18 @@ def render_html():
     adv_log = (f"<div class=card style='margin-bottom:16px'>"
                f"<div class=k style='margin-bottom:6px'>live log — what the node is doing</div>"
                f"{ev_lines}</div>") if ev_lines else ''
+    fwd = status.get('forward') or []
+    fwd_rows = ''.join(
+        f"<tr><td class=f>{e['id']}</td><td>{e.get('tf', '1d')}</td><td>{e['steps']}</td>"
+        f"<td>{e['ret'] * 100:+.1f}%</td>"
+        f"<td>{('%+.2f' % e['sharpe']) if e['sharpe'] is not None else '—'}</td></tr>"
+        for e in fwd)
+    fwd_card = (f"<div class=card style='margin-bottom:16px'>"
+                f"<div class=k style='margin-bottom:8px'>forward track — append-only paper steps "
+                f"(stepped by this node; no GUI needed)</div>"
+                f"<table><thead><tr><th class=f>id</th><th>tf</th><th>steps</th><th>return</th>"
+                f"<th>sharpe</th></tr></thead><tbody>{fwd_rows}</tbody></table></div>"
+                if fwd_rows else '')
     return f"""<!doctype html><meta charset=utf-8><title>AlphaNode</title>
 <style>body{{font:14px system-ui;background:#0f1115;color:#d7dce3;margin:0;padding:26px;max-width:1100px}}
 h1{{margin:0 0 2px;font-size:20px}} .sub{{color:#8a93a2;margin:0 0 18px}} .k{{color:#8a93a2;font-size:12px}}
@@ -277,6 +290,7 @@ th{{color:#8a93a2}} td.f,th.f{{text-align:left;font-family:ui-monospace,monospac
 </div>
 <div class=gen>{status.get('current','')} &nbsp; {status.get('gen','')}</div>
 {adv_log}
+{fwd_card}
 <div class=card><div class=k style="margin-bottom:8px">best by fitness min(train,val) · TEST — honest held-out (read-only, does NOT enter selection)</div>
 <table><thead><tr><th>#</th><th>fitness</th><th>TEST (OOS)</th><th class=f>formula</th></tr></thead><tbody>{rows}</tbody></table></div>
 <script>setTimeout(()=>location.reload(),4000)</script>"""
@@ -305,6 +319,46 @@ def serve():
         http.server.ThreadingHTTPServer(('0.0.0.0', STATUS_PORT), Handler).serve_forever()
     except OSError as e:
         print('status server off:', e)
+
+
+# ---- forward track, headless ----
+def _fwd_summary(ft, track):
+    out = []
+    for e in track['entries']:
+        if e.get('archived'):
+            continue
+        m = ft.metrics(e)
+        out.append({'id': e['id'], 'tf': e.get('tf', '1d'), 'steps': m['days'],
+                    'ret': m['ret'], 'sharpe': m['sharpe']})
+    return out
+
+
+def forward_loop():
+    """Step the forward track WITHOUT the GUI. Historically only the desktop app advanced the
+    enrolled strategies (its 5-minute tick), so a server/Docker node silently froze the honest
+    forward test the moment the window closed. Same cadence and the same code path as the GUI
+    (forward_track.is_due / step_all — append-only, closed bars only, 2-bar lag), so the two
+    never double-step: whoever wakes up first appends the bar, the other sees it as done.
+    Disable with ALPHANODE_FORWARD=0."""
+    import forward_track as ft
+    while not STOP:
+        try:
+            track = ft.load_track()
+            active = [e for e in track['entries'] if not e.get('archived')]
+            due = [e for e in active if ft.is_due(e)]
+            if due:
+                log_event('round', f'forward track: {len(due)}/{len(active)} entries have a '
+                                   f'new closed bar — stepping…')
+                ft.step_all(log=lambda m: log_event('polish', f'[forward] {m}'))
+                track = ft.load_track()
+            status['forward'] = _fwd_summary(ft, track)
+            save_status()
+        except Exception as ex:                        # noqa: BLE001 — never kill the loop
+            log_event('warn', f'forward step failed: {type(ex).__name__}: {ex}')
+        for _ in range(300):                           # 5 min, responsive to shutdown
+            if STOP:
+                return
+            time.sleep(1)
 
 
 # ---- main loop ----
@@ -355,6 +409,8 @@ def main():
     c0 = build_cfg(BASE_SEED)
     status['target_vol'] = c0.get('vol')                     # effective target vol (env or config.ini)
     threading.Thread(target=serve, daemon=True).start()
+    if FORWARD:
+        threading.Thread(target=forward_loop, daemon=True).start()
     print(f'AlphaNode: {CPU_PERCENT}% -> {N_JOBS}/{CORES} cores | universe={UNIVERSE} tf={TF} '
           f'pop={POP} gens={GENS} | status: http://localhost:{STATUS_PORT}')
     if SEED_FROM_LIB and EXPLORE_EVERY == 1:
