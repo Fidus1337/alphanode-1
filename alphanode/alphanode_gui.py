@@ -1921,8 +1921,9 @@ class App:
             'Daily only (for now)',
             f'{what} runs through the real quantpylib engine, which is tuned for daily bars — '
             f'on {self._tf()} its numbers would be silently wrong.\n\n'
-            'On intraday timeframes use the search, the leaderboard, equity charts, CSV signals '
-            'and PDF reports. Portfolio/paper support is the next phase.', parent=self.root)
+            'On intraday timeframes use the search, the leaderboard, equity charts, CSV signals, '
+            'PDF reports, the forward track and the live signal API. Portfolio/paper support '
+            'is the next phase.', parent=self.root)
         return True
 
     # ---------- start/stop ----------
@@ -2154,8 +2155,8 @@ class App:
         return None
 
     def _serve_signal(self, formulas, label):
-        if self._tf_gate('The live signal API'):
-            return
+        # tf-aware since the intraday branch landed in signal_service (fastsim math,
+        # same numbers the forward track trades) — no daily-only gate here anymore
         formulas = [f for f in (formulas or []) if f and f.strip()]
         if not formulas:
             return
@@ -2182,9 +2183,13 @@ class App:
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
                    ALPHANODE_TF=self._tf(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini(),
+                   # served numbers must match the leaderboard/forward: same vol & fee as here
+                   ALPHANODE_TARGET_VOL=str(self.cfg['target_vol']),
+                   ALPHANODE_EXEC_COST=str(self.cfg['exec_cost']),
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
-                   ALPHANODE_SIGNAL_PORT=str(port), ALPHANODE_SIGNAL_REFRESH='900')
+                   ALPHANODE_SIGNAL_PORT=str(port),
+                   ALPHANODE_SIGNAL_REFRESH=('300' if self._tf() in ('15m', '1h') else '900'))
         log_path = os.path.join(STATE_DIR, f'signal_{port}.log')
         try:
             fh = open(log_path, 'w', buffering=1)

@@ -224,6 +224,14 @@ the portfolio share as a percentage (`+8.9%` / `−15.8%`), sorted by day and by
 a **"what to hold now"** window pops up — the last day's positions as a list. It is computed by the same engine
 as the equity chart.
 
+**"Serve signal (API)"** starts a local JSON service with the strategy's live target book
+(`/signal`, `/health` on the next free port from 8799) — and it is **timeframe-aware**: daily
+strategies run through the real quantpylib engine, intraday ones (15m/1h/4h) through the same
+fastsim math the forward track trades, parameterized by the bar size — the served weights match
+the forward track's book bit-for-bit. Intraday payloads carry `tf`, a bar-timestamped `as_of`,
+and weights that already include leverage (`leverage: 1.0`), so consumer math is unchanged:
+position = weight × leverage × equity.
+
 ⚠️ This is paper and a hypothetical backtest. **First — a forward-test on NEW data** (weeks/months),
 and only then real money in small size. Live execution is deliberately not part of the bundle
 (it needs keys, limits, a kill-switch).

@@ -4,10 +4,12 @@ computed on LIVE Binance data, over a tiny stdlib HTTP server (JSON, localhost o
     python alphanode/signal_service.py          # config from ALPHANODE_SIGNAL_* env + config.ini
     <exe> --role signal                         # frozen build
 
-It is `paper_export`'s compute_targets turned into a live service: fetch fresh CLOSED daily
-candles -> run each alpha through the REAL quantpylib engine -> combine via Portfolio -> the last
-row's target weights + leverage. A background thread recomputes every REFRESH seconds and keeps the
-last result in memory; requests are served instantly from that cache.
+It is `paper_export`'s compute_targets turned into a live service: fetch fresh CLOSED candles
+at the active timeframe -> compute target weights -> serve the last bar's book. Daily bars run
+through the REAL quantpylib engine (combine via Portfolio); intraday timeframes (15m/1h/4h) use
+the forward track's math — fastsim parameterized by the bar size — because the quantpylib
+engine is daily-tuned. A background thread recomputes every REFRESH seconds and keeps the last
+result in memory; requests are served instantly from that cache.
 
 Env:
   ALPHANODE_SIGNAL_FORMULAS  JSON list of formula strings (or a single string). Required.
@@ -51,7 +53,8 @@ DUST_W = 0.0005                                          # ignore weights below 
 
 # ---- shared state (the HTTP handler reads this; the refresh thread writes it) ----
 _STATE = {'lock': threading.Lock(), 'signal': None, 'updated': None, 'ts': 0.0,
-          'error': None, 'computing': False, 'name': 'signal', 'formulas': [], 'n_tickers': 0}
+          'error': None, 'computing': False, 'name': 'signal', 'formulas': [], 'n_tickers': 0,
+          'tf': '1d'}
 
 
 # ---------------- live Binance klines (stdlib, no keys) ----------------
@@ -75,13 +78,13 @@ def fetch_klines(symbol, start_ms, end_ms, interval='1d'):
     return df[~df.index.duplicated()]
 
 
-def fetch_live_dfs(tickers, start):
-    """{ticker: OHLCV df} of fresh closed daily candles from `start` to now (skips failures)."""
+def fetch_live_dfs(tickers, start, interval='1d'):
+    """{ticker: OHLCV df} of fresh closed candles from `start` to now (skips failures)."""
     start_ms = int(pd.Timestamp(start, tz='UTC').timestamp() * 1000)
     dfs = {}
     for t in tickers:
         try:
-            df = fetch_klines(t, start_ms, _now_ms())
+            df = fetch_klines(t, start_ms, _now_ms(), interval=interval)
             if len(df) > 60:
                 dfs[t] = df
         except Exception:                                # noqa: BLE001
@@ -124,11 +127,53 @@ def compute_from_dfs(formulas, dfs, start, vol, exec_rate):
             'n_assets': len(tk), 'positions': positions}
 
 
-def compute_signal(formulas, tickers, start, vol, exec_rate):
-    dfs = fetch_live_dfs(tickers, start)
+def compute_from_dfs_fast(formulas, dfs, start, vol, exec_rate, tf):
+    """Intraday target weights — the forward track's math, not the daily engine: fastsim
+    parameterized by the bar size (ann, vol window, EWMA λ from timeframe.resolve). The
+    combined path's last row is already weight×leverage, so `leverage` is served as 1.0 and
+    `weight` carries the whole signed position size — consumer math (weight × leverage ×
+    equity) stays identical to the daily payload. Bit-for-bit the same numbers the forward
+    track would trade on this bar."""
+    from genome import parse
+    from evaluator import panel_from_raw, make_market, eval_alpha_panel
+    from fastsim import fast_sim_paths
+    from timeframe import resolve
+    t = resolve(tf)
+    tk = [x for x in dfs if len(dfs[x]) > 60]
+    if not tk:
+        raise RuntimeError('no usable data for any ticker')
+    start_ts = pd.Timestamp(start, tz='UTC')
+    end = max(dfs[x].index[-1] for x in tk)
+    panel = panel_from_raw(tk, dfs, start_ts, end, t.pandas_freq)
+    market = make_market(panel, tk, dfs, vol_window=t.vol_window)
+    paths = []
+    for f in formulas:
+        ap = eval_alpha_panel(parse(f), panel)
+        _r, wl = fast_sim_paths(ap[tk].to_numpy(dtype=np.float64), market, vol, exec_rate,
+                                ann=t.periods_per_year, ewma_lambda=t.ewma_lambda)
+        paths.append(wl)
+    comb = np.sum(paths, axis=0)
+    _r, comb_wl = fast_sim_paths(comb, market, vol, exec_rate,
+                                 ann=t.periods_per_year, ewma_lambda=t.ewma_lambda)
+    last = np.nan_to_num(comb_wl[-1])
+    positions = []
+    for i, x in enumerate(tk):
+        w = float(last[i])
+        if abs(w) > DUST_W:
+            positions.append({'ticker': x, 'side': 'LONG' if w > 0 else 'SHORT',
+                              'weight': round(w, 6), 'weight_pct': f'{w * 100:+.1f}%'})
+    positions.sort(key=lambda p: -abs(p['weight']))
+    return {'as_of': f'{end:%Y-%m-%d %H:%M}', 'leverage': 1.0,
+            'n_assets': len(tk), 'positions': positions}
+
+
+def compute_signal(formulas, tickers, start, vol, exec_rate, tf='1d'):
+    dfs = fetch_live_dfs(tickers, start, interval=tf)
     if not dfs:
         raise RuntimeError('could not fetch live data for any ticker')
-    return compute_from_dfs(formulas, dfs, start, vol, exec_rate)
+    if tf == '1d':
+        return compute_from_dfs(formulas, dfs, start, vol, exec_rate)
+    return compute_from_dfs_fast(formulas, dfs, start, vol, exec_rate, tf)
 
 
 # ---------------- background refresh loop ----------------
@@ -136,12 +181,12 @@ def _utcnow_iso():
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def refresh_loop(formulas, tickers, start, vol, exec_rate, refresh, stop):
+def refresh_loop(formulas, tickers, start, vol, exec_rate, refresh, stop, tf='1d'):
     while not stop.is_set():
         with _STATE['lock']:
             _STATE['computing'] = True
         try:
-            sig = compute_signal(formulas, tickers, start, vol, exec_rate)
+            sig = compute_signal(formulas, tickers, start, vol, exec_rate, tf=tf)
             with _STATE['lock']:
                 _STATE.update(signal=sig, updated=_utcnow_iso(), ts=time.time(), error=None)
             print(f'[signal] updated {sig["as_of"]} · {len(sig["positions"])} positions · '
@@ -177,15 +222,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if path == '/health':
             # pid + counts: everything the GUI needs to re-adopt a service it lost the handle to
             self._send(200, {'ok': sig is not None, 'name': name, 'pid': os.getpid(),
-                             'n_formulas': len(forms), 'n_tickers': n_tick, 'updated_at': upd,
-                             'age_secs': age, 'computing': computing, 'error': err})
+                             'n_formulas': len(forms), 'n_tickers': n_tick, 'tf': _STATE['tf'],
+                             'updated_at': upd, 'age_secs': age, 'computing': computing,
+                             'error': err})
         elif path in ('/', '/signal'):
             if sig is None:
                 self._send(503, {'ok': False, 'name': name, 'formulas': forms,
                                  'error': err or 'computing the first signal…'})
             else:
                 self._send(200, {'ok': True, 'name': name, 'formulas': forms,
-                                 'updated_at': upd, 'age_secs': age, 'error': err, **sig})
+                                 'tf': _STATE['tf'], 'updated_at': upd, 'age_secs': age,
+                                 'error': err, **sig})
         else:
             self._send(404, {'ok': False, 'error': 'not found', 'endpoints': ['/signal', '/health']})
 
@@ -209,9 +256,18 @@ def main():
 
     name = os.environ.get('ALPHANODE_SIGNAL_NAME') or 'signal'
     port = int(os.environ.get('ALPHANODE_SIGNAL_PORT') or 8799)
-    refresh = max(30, int(os.environ.get('ALPHANODE_SIGNAL_REFRESH') or 900))
+    tf = (os.environ.get('ALPHANODE_TF') or '1d').strip().lower()
+    # intraday bars close often — refresh accordingly unless the caller pinned a cadence
+    refresh_dflt = {'15m': 300, '1h': 300, '4h': 900}.get(tf, 900)
+    refresh = max(30, int(os.environ.get('ALPHANODE_SIGNAL_REFRESH') or refresh_dflt))
     start_env = os.environ.get('ALPHANODE_SIGNAL_START')
     start = datetime.fromisoformat(start_env) if start_env else cfg['start']
+
+    def ev(k, fallback):
+        raw_v = os.environ.get('ALPHANODE_' + k)
+        return float(raw_v) if raw_v not in (None, '') else fallback
+    vol = ev('TARGET_VOL', cfg['vol'])                    # load_config does not apply these env
+    exec_rate = ev('EXEC_COST', cfg['exec'])              # overrides itself (node does) — mirror it
 
     tk_env = os.environ.get('ALPHANODE_SIGNAL_TICKERS')   # explicit universe (from the GUI)
     if tk_env:
@@ -226,14 +282,15 @@ def main():
     _STATE['name'] = name
     _STATE['formulas'] = formulas
     _STATE['n_tickers'] = len(tickers)
+    _STATE['tf'] = tf
     stop = threading.Event()
     threading.Thread(target=refresh_loop,
-                     args=(formulas, tickers, start, cfg['vol'], cfg['exec'], refresh, stop),
+                     args=(formulas, tickers, start, vol, exec_rate, refresh, stop, tf),
                      daemon=True).start()
 
     host = os.environ.get('ALPHANODE_SIGNAL_HOST') or '127.0.0.1'   # Docker: set 0.0.0.0 to expose it
     srv = http.server.ThreadingHTTPServer((host, port), Handler)
-    print(f'[signal] "{name}" · {len(formulas)} formula(s) · {len(tickers)} pairs · '
+    print(f'[signal] "{name}" · {len(formulas)} formula(s) · {len(tickers)} pairs · tf {tf} · '
           f'refresh {refresh}s · serving http://{host}:{port}/signal', flush=True)
     try:
         srv.serve_forever()
