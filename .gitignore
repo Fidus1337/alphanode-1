@@ -45,7 +45,7 @@ Thumbs.db
 data*.pickle
 
 # ── local research scratch (notebooks etc.) — not for git ──
-site/
+
 research/
 alphanode/anthropic_key
 alphanode/alphahub_identity

@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>AlphaNode — an alpha-mining node for crypto perps</title>
+<meta name="description" content="AlphaNode breeds trading formulas with an evolutionary search over real crypto market data — and holds every one of them to locked out-of-sample tests, forward tracking and a fee-and-funding-aware simulator.">
+<style>
+/* Visual language: nixtla.io — warm paper, near-black ink, hairline borders, near-square
+   corners, uppercase mono micro-labels, periwinkle + orange accents, one dark graphite band.
+   Deliberately single-theme (the paper IS the brand); every surface paints its own color.
+   Self-contained: system font stacks only, zero external requests. */
+:root{
+  --paper:#f6f4f0; --card:#ffffff; --ink:#222121; --mut:#6f6b66;
+  --line:#dedddd; --soft:#eae9e6;
+  --acc:#7d8cff; --acctext:#5261d6; --orange:#f99c00;
+  --green:#1e7f4e; --red:#c14b36;
+  --dark:#2e2b27; --darkline:#3f3b36; --darkline2:#57524b;
+  --darkink:#f6f4f0; --darkmut:#a5a09a; --darkacc:#bfd1ff; --darkgreen:#5abd8c; --darkred:#e57a63;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px}
+a{color:var(--ink)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+
+/* ---------- nav ---------- */
+nav{border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
+.logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--acc)}
+.nav-links{display:flex;gap:22px;margin-left:auto}
+.nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
+.nav-links a:hover{color:var(--ink)}
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:1px solid var(--ink);
+  border-radius:3px;padding:10px 20px;font-size:14px;font-weight:550;text-decoration:none;cursor:pointer}
+.btn:hover{opacity:.85}
+.btn.ghost{background:transparent;color:var(--ink)}
+.btn.ghost:hover{background:var(--soft);opacity:1}
+
+/* ---------- eyebrow / section scaffolding ---------- */
+.eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin:0 0 14px}
+section{padding:120px 0;border-bottom:1px solid var(--line)}
+h1,h2{letter-spacing:-.025em;text-wrap:balance;margin:0}
+h2{font-size:34px;font-weight:650;margin-bottom:14px}
+.lead{color:var(--mut);font-size:18px;max-width:62ch;margin:0}
+
+/* ---------- hero ---------- */
+.hero{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:56px;align-items:center;
+  padding:96px 0}
+h1{font-size:clamp(38px,5vw,56px);font-weight:680;line-height:1.06}
+h1 .quiet{color:var(--mut);font-weight:500}
+.hero p{margin:22px 0 30px}
+.cta-row{display:flex;gap:12px;flex-wrap:wrap}
+.hero-note{margin-top:18px;font-size:13px;color:var(--mut)}
+
+/* the product, as it actually looks: the node's status page, flat and chrome-free */
+.term{background:var(--dark);border:1px solid var(--darkline2);border-radius:4px;
+  padding:18px 20px;color:var(--darkink);min-width:0}
+.term .head{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--darkmut);
+  border-bottom:1px solid var(--darkline);padding-bottom:10px;margin-bottom:4px}
+.term .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--darkmut);margin:14px 0 6px}
+.term .tw{overflow-x:auto}
+.term table{width:100%;border-collapse:collapse;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.term td{padding:4.5px 6px;border-bottom:1px solid var(--darkline);white-space:nowrap}
+.term tr:last-child td{border-bottom:none}
+.term .fit{color:var(--darkacc)} .term .pos{color:var(--darkgreen)} .term .neg{color:var(--darkred)}
+.term .f{color:var(--darkink);overflow:hidden;text-overflow:ellipsis;max-width:230px}
+.term .warn{color:var(--orange)}
+.term .log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--darkmut)}
+.cursor{display:inline-block;width:7px;height:13px;background:var(--acc);vertical-align:-2px;animation:blink 1s infinite}
+@keyframes blink{50%{opacity:.2}}
+.term-note{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.06em;color:var(--mut);margin-top:10px}
+.term-note a{color:var(--mut)}
+
+/* ---------- pipeline ---------- */
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:24px;margin-top:44px}
+.step{background:var(--card);border:1px solid var(--line);border-radius:3px;padding:22px}
+.step .no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--acctext);letter-spacing:.1em}
+.step h3{margin:10px 0 8px;font-size:16px;letter-spacing:-.01em}
+.step p{margin:0;font-size:14px;color:var(--mut)}
+
+/* ---------- honesty band (dark) ---------- */
+.band{background:var(--dark);color:var(--darkink);border-bottom:1px solid var(--darkline)}
+.band .eyebrow{color:var(--orange)}
+.band h2{color:var(--darkink)}
+.band .lead{color:var(--darkmut)}
+.truths{display:grid;grid-template-columns:repeat(2,1fr);gap:24px;margin-top:44px}
+.truth{border:1px solid var(--darkline2);border-radius:3px;padding:20px 22px}
+.truth h3{margin:0 0 6px;font-size:16px;color:var(--darkink)}
+.truth p{margin:0;font-size:14px;color:var(--darkmut)}
+.truth .tag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--darkacc)}
+
+/* ---------- features ---------- */
+.feats{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:44px}
+.feat{background:var(--card);border:1px solid var(--line);border-radius:3px;padding:22px}
+.feat:hover{border-color:var(--ink)}
+.feat h3{margin:0 0 8px;font-size:16px;letter-spacing:-.01em}
+.feat p{margin:0;font-size:14px;color:var(--mut)}
+.feat .chip{display:inline-block;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--acctext);
+  border:1px solid var(--line);padding:2px 6px;margin-bottom:12px}
+
+/* ---------- get it ---------- */
+.get{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.9fr);gap:56px;align-items:start}
+.get ul{margin:20px 0 0;padding:0;list-style:none}
+.get li{padding:10px 0;border-bottom:1px solid var(--soft);font-size:15px;display:flex;gap:14px}
+.get li b{font-weight:600}
+.get li .m{color:var(--acctext);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11px;letter-spacing:.1em;text-transform:uppercase;padding-top:4px;min-width:72px}
+.faq h3{font-size:16px;margin:0 0 4px}
+.faq p{margin:0 0 18px;font-size:14px;color:var(--mut)}
+
+/* ---------- footer ---------- */
+footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
+.disclaimer{border:1px solid var(--line);border-left:3px solid var(--orange);border-radius:3px;
+  background:var(--card);padding:18px 22px;margin-bottom:28px;font-size:13px;line-height:1.65;color:var(--mut)}
+.foot-row{display:flex;gap:24px;flex-wrap:wrap;align-items:center}
+.foot-row a{color:var(--mut)}
+
+@media (max-width: 900px){
+  .hero,.get{grid-template-columns:minmax(0,1fr);gap:36px}
+  .hero{padding:64px 0}
+  .steps{grid-template-columns:repeat(2,1fr)}
+  .feats{grid-template-columns:1fr 1fr}
+  .truths{grid-template-columns:1fr}
+  section{padding:72px 0}
+}
+@media (max-width: 560px){
+  .steps,.feats{grid-template-columns:1fr}
+  .nav-links{display:none}
+  .nav-in > .btn{margin-left:auto}
+  .term .f{max-width:150px}
+}
+</style>
+</head>
+<body id="top">
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="logo" href="#top"><span class="dot" aria-hidden="true"></span>AlphaNode</a>
+    <div class="nav-links">
+      <a href="#how">How it works</a>
+      <a href="#honesty">Honesty</a>
+      <a href="#features">Features</a>
+      <a href="#get">Get it</a>
+    </div>
+    <a class="btn" href="#get">Get early access</a>
+  </div>
+</nav>
+
+<main>
+<section class="wrap hero" style="border-bottom:none">
+  <div>
+    <p class="eyebrow">Alpha-mining node · crypto perpetuals · runs on your machine</p>
+    <h1>Mines trading formulas.<br><span class="quiet">Tells you the truth about them.</span></h1>
+    <p class="lead">An evolutionary search breeds thousands of alpha formulas over real
+      perp market data — then holds each one to a locked out-of-sample test, an append-only
+      forward track, and a simulator that charges fees and funding. What survives is yours.</p>
+    <div class="cta-row">
+      <a class="btn" href="#get">Get early access</a>
+      <a class="btn ghost" href="#how">See how it works</a>
+    </div>
+    <p class="hero-note">No exchange keys required — the node mines on public market data.</p>
+  </div>
+
+  <div>
+    <div class="term" role="img" aria-label="AlphaNode status page: leaderboard of mined formulas with held-out TEST scores, some positive and some negative, and a forward track">
+      <div class="head">alphanode · localhost:8787 — status</div>
+      <div class="k">best by fitness min(train,val) · test — held-out, read-only</div>
+      <div class="tw"><table>
+        <tr><td class="fit">+2.49</td><td class="pos">+0.69</td><td class="f">cs_demean(cs_demean(cs_rank(ts_zscore:197(…))))</td></tr>
+        <tr><td class="fit">+2.31</td><td class="pos">+0.49</td><td class="f">cs_zscore(cs_zscore(ts_delta:12(ema:132(range))))</td></tr>
+        <tr><td class="fit">+2.12</td><td class="neg">−0.90</td><td class="f">cs_zscore(cs_demean(cs_scale(cs_scale(…))))</td></tr>
+      </table></div>
+      <div class="k">forward track — append-only paper steps</div>
+      <div class="tw"><table>
+        <tr><td class="f">portfolio_top6</td><td>27 steps</td><td class="pos">+2.3%</td></tr>
+        <tr><td class="f">alpha_1c90f5</td><td>25 steps</td><td class="neg">−1.9%</td></tr>
+      </table></div>
+      <div class="k">live log</div>
+      <div class="log">12:06 ★ new best: fitness +2.49 (TEST +0.69)<br>
+        12:06 <span class="warn">⚠ sort by TEST = cherry-picking on held-out data</span><br>
+        12:07 round 18: refining best (seed 19)… <span class="cursor" aria-hidden="true"></span></div>
+    </div>
+    <p class="term-note">illustrative · simulated results from a real mining session, wins and
+      losses alike — see the <a href="#disclosure">risk disclosure</a></p>
+  </div>
+</section>
+
+<section id="how">
+  <div class="wrap">
+    <p class="eyebrow">How it works</p>
+    <h2>A strategy factory with a quality gate at every door</h2>
+    <p class="lead">The pipeline is a sequence on purpose: each stage exists so a formula
+      earns its way toward your exchange instead of jumping straight from a backtest.</p>
+    <div class="steps">
+      <div class="step"><div class="no">01 · MINE</div>
+        <h3>Evolve</h3>
+        <p>A genetic search breeds formula trees over price, volume and funding —
+           scored through a real portfolio simulator with vol targeting, fees and
+           funding costs. Not a toy backtest.</p></div>
+      <div class="step"><div class="no">02 · VALIDATE</div>
+        <h3>Hold out</h3>
+        <p>Fitness is min(TRAIN, VAL) Sharpe. A configurable most-recent slice of
+           history stays locked: it is reported read-only and never enters fitness.
+           Views that rank by it are labeled with a warning, not a highlight.</p></div>
+      <div class="step"><div class="no">03 · FORWARD</div>
+        <h3>Track</h3>
+        <p>One click enrolls a champion into the forward track: paper steps appended
+           on closed live bars, fees charged, never rewritten by the app. The record
+           is the record.</p></div>
+      <div class="step"><div class="no">04 · TRADE</div>
+        <h3>Deploy</h3>
+        <p>Export a paper-trading bundle, serve target weights over a local JSON
+           API, or run the whole node headless in Docker on a server.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="honesty" class="band">
+  <div class="wrap">
+    <p class="eyebrow">Why trust it</p>
+    <h2>The product argues with you. That's the point.</h2>
+    <p class="lead">Most strategy tools are built to show you good numbers.
+       AlphaNode is built to make good numbers hard to fake — including by itself.</p>
+    <div class="truths">
+      <div class="truth"><span class="tag">locked test</span>
+        <h3>The search never sees the held-out data</h3>
+        <p>A configurable most-recent slice of history is fenced off: the evolutionary
+           search can't see it and fitness never uses it. It is reported read-only,
+           next to every formula.</p></div>
+      <div class="truth"><span class="tag">⚠ labels</span>
+        <h3>Cherry-picking is called cherry-picking</h3>
+        <p>Rank anything by held-out results — a leaderboard view, a portfolio — and
+           the app labels it as cherry-picking with the warning that the number is
+           inflated. A lucky draw never gets to pose as skill.</p></div>
+      <div class="truth"><span class="tag">append-only</span>
+        <h3>The forward track is never rewritten</h3>
+        <p>The app only ever appends paper steps on closed bars, with fees charged.
+           No backfills, no do-overs. If a strategy decays, you will see it decay.</p></div>
+      <div class="truth"><span class="tag">battle-tested</span>
+        <h3>We attacked our own engine</h3>
+        <p>Reinforcement learning, meta-labeling, ML ensembles, volatility forecasting,
+           alternative fitness objectives — every overlay we built failed to beat the
+           simple engine out-of-sample. So the simple engine is what ships.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="features">
+  <div class="wrap">
+    <p class="eyebrow">What's in the box</p>
+    <h2>One node, three faces: desktop, terminal, server</h2>
+    <div class="feats">
+      <div class="feat"><span class="chip">desktop</span>
+        <h3>Live dashboard</h3>
+        <p>Progress, leaderboard, portfolio and forward track as rearrangeable cards
+           with interactive zoomable charts and PDF reports.</p></div>
+      <div class="feat"><span class="chip">timeframes</span>
+        <h3>15m to 1d bars</h3>
+        <p>Each timeframe keeps its own library and its own honest splits — intraday
+           and daily alphas never mix in one leaderboard.</p></div>
+      <div class="feat"><span class="chip">simulator</span>
+        <h3>Fees and funding included</h3>
+        <p>Every candidate pays execution costs and perp funding inside the simulation.
+           Carry-style alphas are mined on real economics, not free money.</p></div>
+      <div class="feat"><span class="chip">analytics</span>
+        <h3>Regime X-ray</h3>
+        <p>Per-alpha Sharpe in calm and storm volatility regimes, drawdown, CAGR,
+           Sortino, win rate — computed on held-out data, labeled as analysis.</p></div>
+      <div class="feat"><span class="chip">server</span>
+        <h3>Headless &amp; Docker</h3>
+        <p>The same node runs on a server with a live status page, CLI control and
+           a self-stepping forward track. Cap it at any share of your CPU.</p></div>
+      <div class="feat"><span class="chip">signals</span>
+        <h3>Signal API</h3>
+        <p>Target weights and leverage of any champion or portfolio, served as JSON
+           on localhost — plug it into your own execution.</p></div>
+    </div>
+  </div>
+</section>
+
+<section id="get">
+  <div class="wrap get">
+    <div>
+      <p class="eyebrow">Get it</p>
+      <h2>Early access</h2>
+      <p class="lead">AlphaNode is a desktop and server application. Your data,
+         your hardware, your strategies — nothing leaves your machine.</p>
+      <ul>
+        <li><span class="m">deb</span><span><b>Ubuntu / Debian:</b> native installer — menu entry, terminal CLI, no Python needed.</span></li>
+        <li><span class="m">AppImage</span><span><b>Any Linux:</b> a single portable file.</span></li>
+        <li><span class="m">exe</span><span><b>Windows:</b> installer + portable build.</span></li>
+        <li><span class="m">docker</span><span><b>Servers:</b> compose file with a status page and a resource cap.</span></li>
+        <li><span class="m">license</span><span><b>Licensing (planned):</b> an offline-friendly signed license file; payment options will be announced at launch.</span></li>
+      </ul>
+      <div class="cta-row" style="margin-top:28px">
+        <a class="btn" href="mailto:yurbusht@gmail.com?subject=AlphaNode%20early%20access">Request early access</a>
+      </div>
+    </div>
+    <div class="faq">
+      <p class="eyebrow">Plain answers</p>
+      <h3>Does it need my exchange API keys?</h3>
+      <p>No. Mining and forward tracking read public market data. Keys only matter
+         if you wire the signal API into your own execution — and that part runs on
+         your machine too.</p>
+      <h3>Will the mined strategies make money?</h3>
+      <p>Unknown — and anyone who promises otherwise is selling you something.
+         AlphaNode's job is to make sure the numbers you see are honestly measured:
+         held-out tests, real costs, forward tracking. The decision stays yours.</p>
+      <h3>Is my data sent anywhere?</h3>
+      <p>No. The node downloads public candles from the exchange and everything else
+         stays local: library, settings, forward track, signals.</p>
+      <h3>What does it run on?</h3>
+      <p>Linux (deb / AppImage), Windows, or any Docker host. The headless Docker
+         node runs on just NumPy and pandas; a laptop core or two is enough to mine
+         around the clock.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="disclaimer" id="disclosure">
+      <b>Risk disclosure.</b> AlphaNode is research software, not investment advice.
+      Trading cryptocurrency derivatives involves substantial risk of loss; leverage can
+      work against you. The results shown anywhere in AlphaNode and on this page are
+      simulated or hypothetical. Hypothetical and simulated performance has inherent
+      limitations: it is generally prepared with the benefit of hindsight, does not
+      reflect actual trading or real market frictions such as slippage and liquidity,
+      and no representation is made that any account will or is likely to achieve
+      results similar to those shown. Strategies you mine, deploy or trade are your own
+      decisions and your own responsibility. Crypto derivatives may be restricted or
+      unavailable in your jurisdiction; check your local rules and your exchange's
+      terms before trading.
+    </div>
+    <div class="foot-row">
+      <span>© 2026 AlphaNode</span>
+      <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#honesty">Honesty principles</a>
+      <a href="#get">Early access</a>
+      <span style="margin-left:auto" class="mono">mined on your machine · measured honestly</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
