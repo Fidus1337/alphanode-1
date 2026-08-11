@@ -134,7 +134,11 @@ python alphanode/cli.py export [flags]  # assemble a paper-trading bundle from a
   every 5 minutes, on closed bars only, same code path as the GUI — so GUI and node never
   double-step. `forward list` shows equity/Sharpe per entry; disable the built-in stepping
   with `ALPHANODE_FORWARD=0`. Enrolling is still done in the GUI (double-click an alpha →
-  "Forward track ➕") — the state files are shared.
+  "Forward track ➕") — the state files are shared. Each step also **accrues perp funding**
+  (longs pay positive rates, shorts receive — the same economics the mining simulator
+  charges); when rates are unavailable the step records funding as *unknown*, never as zero.
+  A step waits whenever any ticker's feed lacks the newest common bar — no phantom churn
+  on partial data.
 - **`export`** — `--rank N --sort test` (the N-th alpha) or `--formula "cs_…"`; puts the bundle in `exports/`.
 
 It reads/writes state in `ALPHANODE_STATE_DIR` (in Docker — `/data`), so `top`/`status`/`export`
