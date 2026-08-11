@@ -22,17 +22,21 @@ Note: these are SURVIVING coins (Binance doesn't serve delisted ones) — surviv
 """
 import os
 import sys
+import json
 import pickle
 import asyncio
 import argparse
+import urllib.request
 from datetime import datetime, timezone
 
 import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-for _p in (HERE, os.path.join(HERE, 'evolution')):
+for _p in (HERE, os.path.join(HERE, 'evolution'), os.path.join(HERE, 'alphanode')):
     if _p not in sys.path:
         sys.path.insert(0, _p)
+
+import vision_klines as vk                                       # noqa: E402  (fapi→archive fallback)
 
 from quantpylib.wrappers.binance import Binance                 # noqa: E402
 from quantpylib.throttler.rate_semaphore import AsyncRateSemaphore  # noqa: E402
@@ -151,6 +155,82 @@ async def _funding_series(bn, sym, start, end):
     return ser[~ser.index.duplicated(keep='last')]
 
 
+def _resolve_source(source):
+    """'auto' probes fapi once: reachable → the live API exactly as before; blocked (US geo-fence,
+    DNS, firewall) → the data.binance.vision archive. Same Binance bars either way."""
+    mode = (source or os.environ.get('ALPHANODE_DATA_SOURCE') or 'auto').strip().lower()
+    if mode not in ('auto', 'api', 'vision'):
+        print(f'  unknown source "{mode}" → auto', flush=True)
+        mode = 'auto'
+    if mode == 'auto':
+        mode = 'api' if vk.fapi_reachable() else 'vision'
+        if mode == 'vision':
+            print('· fapi.binance.com unreachable from here (geo-block?) → falling back to the '
+                  'data.binance.vision public archive: same bars, no keys, ~10-30h behind live',
+                  flush=True)
+    return mode
+
+
+def _vision_df(sym, start, end, interval):
+    """Vision-archive klines as the same DataFrame the API wrapper returns: UTC open-time index,
+    float64 OHLCV, deduped, sliced to [start, end]."""
+    rows = vk.vision_rows(sym, int(start.timestamp() * 1000), int(end.timestamp() * 1000), interval)
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=['t', 'open', 'high', 'low', 'close', 'volume',
+                                     'T', '-1', '-2', '-3', '-4', '-5'])
+    df['datetime'] = pd.to_datetime(df['t'], unit='ms', utc=True)
+    df = df.set_index('datetime')[['open', 'high', 'low', 'close', 'volume']].astype('float64')
+    df = df[~df.index.duplicated(keep='last')]
+    return df[start:end]
+
+
+def _vision_funding_series(sym, start, end):
+    """Funding events from monthly archive files as a Series (same shape as _funding_series).
+    The current month is not in the archive yet — those bars stay 0 until the file lands."""
+    ev = vk.vision_funding(sym, int(start.timestamp() * 1000), int(end.timestamp() * 1000))
+    if not ev:
+        return None
+    idx = pd.to_datetime([t for t, _ in ev], unit='ms', utc=True)
+    ser = pd.Series([r for _, r in ev], index=idx, dtype=float).sort_index()
+    return ser[~ser.index.duplicated(keep='last')]
+
+
+def _gate_universe(top_n, min_years, end, quote='USDT'):
+    """Universe listing without fapi: rank Gate.io USDT-perp tickers by 24h turnover (their public
+    data API serves US IPs), map BTC_USDT→BTCUSDT, and keep only symbols whose Binance Vision
+    archive actually has klines min_years back (HEAD probe of the cutoff-month file) — that one
+    check replaces both the exchangeInfo existence test and the onboardDate age filter."""
+    raw = json.load(urllib.request.urlopen(
+        'https://api.gateio.ws/api/v4/futures/usdt/tickers', timeout=30))
+    vols = []
+    for t in raw:
+        c = t.get('contract', '')
+        if not c.endswith('_' + quote):
+            continue
+        v = 0.0
+        for k in ('volume_24h_quote', 'volume_24h_settle', 'volume_24h_base'):
+            try:
+                v = float(t.get(k) or 0)
+            except (TypeError, ValueError):
+                v = 0.0
+            if v:
+                break
+        vols.append((c.replace('_', ''), v))
+    vols.sort(key=lambda x: -x[1])
+    cutoff = end - pd.Timedelta(days=min_years * 365.25)
+    chosen, probed = [], 0
+    for sym, _v in vols:
+        if len(chosen) >= top_n:
+            break
+        probed += 1
+        if vk.vision_has_month(sym, '1d', cutoff.year, cutoff.month):
+            chosen.append(sym)
+    print(f'  Gate ranking: {len(vols)} perps; archive age-check passed {len(chosen)}/{probed} '
+          f'probed (cutoff {cutoff.date()})', flush=True)
+    return chosen
+
+
 def _attach_funding(df, fser, freq):
     """`funding` column = sum of the 8h payments that land inside each bar (floor() also absorbs
     the occasional ms jitter in fundingTime). Bars without a payment -> 0.0 (it's a flow)."""
@@ -163,44 +243,64 @@ def _attach_funding(df, fser, freq):
 
 
 async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, timeout, interval='1d',
-                symbols=None):
+                symbols=None, source='auto'):
     gran, mult = INTERVALS[interval]
     bar_freq = _bar_freq(interval)
-    bn = _make_binance()
-
-    print('· pulling instrument list (exchangeInfo)…', flush=True)
-    info = await bn.exchange_info()
+    mode = _resolve_source(source)
+    bn = _make_binance() if mode == 'api' else None
     onboard = {}
-    perps = []
-    for s in info.get('symbols', []):
-        if (s.get('status') == 'TRADING' and s.get('contractType') == 'PERPETUAL'
-                and s.get('quoteAsset') == quote):
-            perps.append(s['symbol'])
-            onboard[s['symbol']] = _onboard_ts(s)
 
-    if symbols:                                               # explicit universe: no ranking, no age filter
-        want = [s.strip().upper() for s in symbols if s.strip()]
-        missing = [s for s in want if s not in onboard]
-        if missing:
-            print(f'  not a TRADING {quote} perp on Binance (skipped): {", ".join(missing)}', flush=True)
-        chosen = [s for s in want if s in onboard]
-        print(f'  explicit universe ({len(chosen)}): {", ".join(chosen)}', flush=True)
-        if not chosen:
-            print('✗ none of the requested symbols trade on Binance perps', flush=True)
-            await _aclose(bn)
-            return 1
-    else:
-        cutoff = end.timestamp() - min_years * YEAR_SECS      # listed no later than min_years before the end
-        aged = [sym for sym in perps if onboard.get(sym) is not None and onboard[sym] <= cutoff]
-        print(f'  {quote} perps TRADING: {len(perps)}; with history >= {min_years:g} years: {len(aged)} '
-              f'(young filtered out: {len(perps) - len(aged)})', flush=True)
+    if mode == 'api':
+        print('· pulling instrument list (exchangeInfo)…', flush=True)
+        info = await bn.exchange_info()
+        perps = []
+        for s in info.get('symbols', []):
+            if (s.get('status') == 'TRADING' and s.get('contractType') == 'PERPETUAL'
+                    and s.get('quoteAsset') == quote):
+                perps.append(s['symbol'])
+                onboard[s['symbol']] = _onboard_ts(s)
 
-        print('· ranking by 24h turnover (ticker/24hr)…', flush=True)
-        tick = await bn.http_client.request(endpoint='/fapi/v1/ticker/24hr', method='GET')
-        vol = {t['symbol']: float(t.get('quoteVolume', 0) or 0) for t in tick}
-        aged.sort(key=lambda s: vol.get(s, 0.0), reverse=True)
-        chosen = aged[:top_n]
-        print(f'  taking top-{len(chosen)}: {", ".join(chosen[:12])}{" …" if len(chosen) > 12 else ""}', flush=True)
+        if symbols:                                           # explicit universe: no ranking, no age filter
+            want = [s.strip().upper() for s in symbols if s.strip()]
+            missing = [s for s in want if s not in onboard]
+            if missing:
+                print(f'  not a TRADING {quote} perp on Binance (skipped): {", ".join(missing)}', flush=True)
+            chosen = [s for s in want if s in onboard]
+            print(f'  explicit universe ({len(chosen)}): {", ".join(chosen)}', flush=True)
+            if not chosen:
+                print('✗ none of the requested symbols trade on Binance perps', flush=True)
+                await _aclose(bn)
+                return 1
+        else:
+            cutoff = end.timestamp() - min_years * YEAR_SECS  # listed no later than min_years before the end
+            aged = [sym for sym in perps if onboard.get(sym) is not None and onboard[sym] <= cutoff]
+            print(f'  {quote} perps TRADING: {len(perps)}; with history >= {min_years:g} years: {len(aged)} '
+                  f'(young filtered out: {len(perps) - len(aged)})', flush=True)
+
+            print('· ranking by 24h turnover (ticker/24hr)…', flush=True)
+            tick = await bn.http_client.request(endpoint='/fapi/v1/ticker/24hr', method='GET')
+            vol = {t['symbol']: float(t.get('quoteVolume', 0) or 0) for t in tick}
+            aged.sort(key=lambda s: vol.get(s, 0.0), reverse=True)
+            chosen = aged[:top_n]
+            print(f'  taking top-{len(chosen)}: {", ".join(chosen[:12])}{" …" if len(chosen) > 12 else ""}', flush=True)
+    else:                                                     # vision: archive zips, no fapi at all
+        if symbols:
+            chosen = [s.strip().upper() for s in symbols if s.strip()]
+            print(f'  explicit universe ({len(chosen)}): {", ".join(chosen)} '
+                  f'(existence checked by download — empty pairs are skipped)', flush=True)
+        else:
+            print('· ranking by Gate.io 24h turnover + Vision archive age probe '
+                  '(exchangeInfo is unreachable here)…', flush=True)
+            loop = asyncio.get_event_loop()
+            chosen = await loop.run_in_executor(None, _gate_universe, top_n, min_years, end, quote)
+            if not chosen:
+                print('✗ universe listing failed (Gate.io unreachable too?) — pass --symbols explicitly',
+                      flush=True)
+                return 1
+            print(f'  taking top-{len(chosen)}: {", ".join(chosen[:12])}{" …" if len(chosen) > 12 else ""}', flush=True)
+        print('  note: funding for the CURRENT month is not in the archive yet (monthly files, '
+              '~1-2 day lag after month end) — those newest bars keep funding=0 until the next fetch',
+              flush=True)
 
     print(f'· downloading {interval} bars up to {end.date()} '
           f'(each pair starts from its listing; {concurrency} in parallel)…', flush=True)
@@ -214,15 +314,26 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
             ob_dt = datetime.fromtimestamp(ob, tz=timezone.utc)
             if ob_dt > start:
                 s_start = ob_dt                                # without a day-by-day walk of the pre-listing period
+        loop = asyncio.get_event_loop()
         async with sem:
-            active[sym] = asyncio.get_event_loop().time()
+            active[sym] = loop.time()
             try:
-                df = await asyncio.wait_for(bn.get_trade_bars(sym, s_start, end, gran, mult),
-                                            timeout=timeout)
-                if df is not None and not df.empty:            # perp funding history (light pages)
+                if mode == 'api':
+                    df = await asyncio.wait_for(bn.get_trade_bars(sym, s_start, end, gran, mult),
+                                                timeout=timeout)
+                else:                                          # archive: pre-listing months 404 -> skipped
+                    df = await asyncio.wait_for(
+                        loop.run_in_executor(None, _vision_df, sym, s_start, end, interval),
+                        timeout=timeout)
+                if df is not None and not df.empty:            # perp funding history (light pages/files)
                     try:
-                        fser = await asyncio.wait_for(_funding_series(bn, sym, s_start, end),
-                                                      timeout=FUNDING_TIMEOUT)
+                        if mode == 'api':
+                            fser = await asyncio.wait_for(_funding_series(bn, sym, s_start, end),
+                                                          timeout=FUNDING_TIMEOUT)
+                        else:
+                            fser = await asyncio.wait_for(
+                                loop.run_in_executor(None, _vision_funding_series, sym, s_start, end),
+                                timeout=FUNDING_TIMEOUT)
                     except Exception:                          # noqa: BLE001 — funding is optional
                         fser = None
                         print(f'  {sym}: funding history unavailable — column zeroed', flush=True)
@@ -282,15 +393,18 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
     ohlcvs = [got[s] for s in tickers]
     if not tickers:
         print('✗ nothing downloaded — not overwriting data.pickle', flush=True)
-        await _aclose(bn)
+        if bn is not None:
+            await _aclose(bn)
         return 1
 
     tmp = out_path + '.tmp'                                    # atomic: the node won't catch a half-written file
     save_pickle(tmp, (tickers, ohlcvs))
     os.replace(tmp, out_path)
     span = f'{min(df.index.min() for df in ohlcvs).date()}..{max(df.index.max() for df in ohlcvs).date()}'
-    print(f'✓ wrote {out_path}: {len(tickers)} pairs, range {span}', flush=True)
-    await _aclose(bn)
+    print(f'✓ wrote {out_path}: {len(tickers)} pairs, range {span} (source: '
+          f'{"fapi live API" if mode == "api" else "data.binance.vision archive"})', flush=True)
+    if bn is not None:
+        await _aclose(bn)
     return 0
 
 
@@ -330,7 +444,8 @@ async def add_funding(out_path, interval, concurrency=6):
     return 0
 
 
-def run(out_path, interval='1d', symbols=None, top=150, min_years=3.0, start=None, end=None):
+def run(out_path, interval='1d', symbols=None, top=150, min_years=3.0, start=None, end=None,
+        source='auto'):
     """Programmatic entry for the node/GUI bootstrap — unlike main(), returns an exit code
     instead of os._exit(), so the caller keeps running after the download."""
     if start is None:
@@ -343,7 +458,7 @@ def run(out_path, interval='1d', symbols=None, top=150, min_years=3.0, start=Non
     try:
         return loop.run_until_complete(fetch(top, start_dt, end_dt, out_path, 'USDT', min_years,
                                              CONCURRENCY[interval], TIMEOUTS[interval],
-                                             interval=interval, symbols=symbols))
+                                             interval=interval, symbols=symbols, source=source))
     except KeyboardInterrupt:
         return 130
 
@@ -371,6 +486,11 @@ def main():
                          'starter universe of 10 majors')
     ap.add_argument('--interval', default='1d', choices=sorted(INTERVALS),
                     help='bar size (15m|1h|4h|1d); intraday is written to its own data_<tf>.pickle')
+    ap.add_argument('--source', default=None, choices=('auto', 'api', 'vision'),
+                    help='where to download from: api = live fapi endpoints (as always), '
+                         'vision = the data.binance.vision public archive (same bars, works where '
+                         'fapi is geo-blocked, ~10-30h behind live), auto = probe fapi and pick '
+                         '(default; also via ALPHANODE_DATA_SOURCE)')
     ap.add_argument('--add-funding', action='store_true',
                     help='do NOT refetch klines: add the funding column to the existing snapshot '
                          'of --interval (or --out) and exit')
@@ -414,7 +534,8 @@ def main():
     try:
         rc = loop.run_until_complete(fetch(args.top, start, end, args.out, args.quote,
                                            args.min_years, args.concurrency, args.timeout,
-                                           interval=args.interval, symbols=symbols))
+                                           interval=args.interval, symbols=symbols,
+                                           source=args.source))
     except KeyboardInterrupt:
         rc = 130
     sys.stdout.flush()
