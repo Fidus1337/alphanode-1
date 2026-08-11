@@ -3350,6 +3350,12 @@ class App:
         self._tip(pdf_btn, 'Analytics dashboard as PDF: KPIs, equity and drawdown,\n'
                            'exposure and turnover, weight structure, monthly returns,\n'
                            'TRAIN/VAL/TEST breakdown and conclusions.')
+        pp_btn = self._btn(btnrow, 'Passport', lambda: self._formula_passport(champ), width=110)
+        pp_btn.pack(side='left', padx=(8, 0))
+        self._tip(pp_btn, 'Explain the formula: its tree with human labels, plain-English\n'
+                          'reading steps, its position on one asset\'s price, which inputs\n'
+                          'feed it (ablation), and which strategy archetype it behaves like.\n'
+                          'An explanation is not evidence — TEST and forward still decide.')
         fwd_btn = self._btn(btnrow, 'Forward track ➕',
                             lambda: self._fwd_enroll(
                                 [_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6], 'alpha'),
@@ -4093,6 +4099,48 @@ class App:
         if t0 is not None and prev_t is not None:
             spans.append((t0, prev_t))
         return spans
+
+    # ---------- formula passport (anatomy + behavior; offline, deterministic) ----------
+    def _formula_passport(self, champ):
+        self._plot_seq += 1
+        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
+        img_w = int(min(1560, max(1000, sw * 0.78)))
+        img_h = int(img_w * 0.82)
+        avail_h = int(sh * 0.92) - 120
+        if img_h > avail_h:
+            img_h = max(560, avail_h)
+            img_w = int(img_h / 0.82)
+        dpi = 110
+        holder = {'done': False, 'fig': None, 'err': None, 'dpi': dpi,
+                  'figsize': (img_w / dpi, (img_h - 40) / dpi)}
+        win = self._dialog('Formula passport — ' + champ.get('formula', '')[:56],
+                           f'{int((img_w + 44) / self.SCALE)}x{int((img_h + 90) / self.SCALE)}')
+        body = self._box(win)
+        body.pack(fill='both', expand=True, padx=16, pady=(10, 14))
+        status = self._lbl(body, text='building the passport (tree · ablation · archetypes)…',
+                           text_color=MUT, font=(self.UI, 15))
+        status.pack(pady=40)
+        threading.Thread(target=self._compute_passport, args=(champ, holder), daemon=True).start()
+        self.root.after(200, lambda: self._check_plot(win, holder, status, body))
+
+    def _compute_passport(self, champ, holder):
+        with self._plot_lock:                            # figure building is serialized
+            try:
+                import matplotlib
+                import formula_passport as fp
+                cfg = self._build_plot_cfg()
+                tk_, panel, market, _basket = self._get_market(cfg)
+                ann = float(cfg.get('ann', 365.0))
+                with matplotlib.rc_context(self._mpl_rc()):
+                    holder['fig'] = fp.build_figure(
+                        champ['formula'], panel, market, tk_, cfg['vol'], cfg['exec'],
+                        ann=ann, ewma=cfg.get('ewma_lambda', 0.06), ppd=ann / 365.0,
+                        tf_name=cfg.get('tf', '1d'), figsize=holder['figsize'],
+                        dpi=holder['dpi'], facecolor=CARD, fg=MUT, ink=TXT, accent=ACC)
+            except Exception as e:                       # noqa: BLE001
+                holder['err'] = f'{type(e).__name__}: {e}'
+            finally:
+                holder['done'] = True
 
     def _compute_equity(self, champ, holder):
         with self._plot_lock:                            # pyplot is global — one at a time
