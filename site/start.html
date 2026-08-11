@@ -254,24 +254,27 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
       <div class="stepno">STEP 02</div>
       <div class="stepbody">
         <h3>Press <b>▶ Start node</b> — and only that</h3>
-        <p>Resist the settings panel on day one. The only control worth touching is the
-           <b>CPU slider</b> — how much of your machine the miner may use (it runs at low
-           priority either way, so your computer stays responsive). Then press the one
-           accented button.</p>
-        <div class="shot" role="img" aria-label="Simplified AlphaNode window: header with Settings, Stop and a highlighted Start node button">
+        <p>The app opens in <b>Simple mode</b>: one accented button and a single choice —
+           <b>Power</b> (Quiet / Balanced / Turbo), how much of the machine the miner may
+           use. It runs at low priority either way, so your computer stays responsive.
+           The first launch also greets you with a three-line reassurance card; its
+           <span class="ui">▶ Start mining</span> button and the header's
+           <span class="ui">▶ Start node</span> do the same thing.</p>
+        <div class="shot" role="img" aria-label="Simplified AlphaNode window in Simple mode: power presets, status, and a highlighted Start node button">
           <div class="whead">
             <span class="t"><span class="dot" aria-hidden="true"></span>AlphaNode</span>
             <span class="sp"></span>
-            <span class="uibtn">⚙&nbsp; Settings</span>
+            <span class="uibtn">Advanced</span>
             <span class="uibtn">■&nbsp; Stop</span>
             <span class="uibtn accent click">▶&nbsp; Start node</span>
             <span class="tap">← press this</span>
           </div>
           <div class="wbody">
-            <div class="pane dim">
-              <p class="k">settings — leave them alone today</p>
-              <div class="fakerow w1"></div><div class="fakerow w3"></div>
-              <div class="fakerow w2"></div><div class="fakerow w4"></div>
+            <div class="pane">
+              <p class="k">power — the only knob</p>
+              <p style="margin:6px 0 0"><span class="uibtn">Quiet</span>
+                 <span class="uibtn accent">Balanced</span>
+                 <span class="uibtn">Turbo</span></p>
             </div>
             <div class="pane">
               <p class="k">status</p>
@@ -285,7 +288,11 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
         </div>
         <p>That's it. The node now mines in rounds: breed a population of formula trees,
            score every one through the fee-charging simulator, keep the champions, repeat —
-           forever, until you press <span class="ui">■ Stop</span>.</p>
+           forever, until you press <span class="ui">■ Stop</span>. Your search is yours
+           alone: each install mints a unique <b>node ID</b> that seeds its own trajectory
+           through formula space, so no two nodes mine the same library. The full control
+           room — every setting, the portfolio builder, all analytics columns — waits
+           behind the <span class="ui">Advanced</span> button for later.</p>
       </div>
     </li>
 
@@ -303,19 +310,20 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
            never seen. It is read-only — good, bad, or ugly, it's the closest thing to
            the future you can get from the past. Negative TEST rows stay on the board
            on purpose: that's what honest results look like.</p>
-        <div class="shot" role="img" aria-label="Simplified leaderboard: columns fitness, TEST, calm, storm, formula; one row highlighted for double-click">
+        <div class="shot" role="img" aria-label="Simplified leaderboard: columns fitness, TEST and formula; one row highlighted for double-click">
           <div class="tw"><table class="lb">
-            <tr><th>fitness</th><th>test oos</th><th>calm</th><th>storm</th><th>formula</th></tr>
-            <tr class="sel"><td class="fit">+2.49</td><td class="pos">+0.69</td><td class="pos">+1.09</td><td class="neg">−0.31</td><td class="f">cs_demean(cs_rank(ts_zscore:197(dvol)))</td></tr>
-            <tr><td class="fit">+2.31</td><td class="pos">+0.49</td><td class="pos">+0.72</td><td class="pos">+0.18</td><td class="f">cs_zscore(ts_delta:12(ema:132(range)))</td></tr>
-            <tr><td class="fit">+2.12</td><td class="neg">−0.90</td><td class="neg">−0.44</td><td class="neg">−1.21</td><td class="f">cs_zscore(cs_demean(cs_scale(logret)))</td></tr>
+            <tr><th>fitness</th><th>test oos</th><th>formula</th></tr>
+            <tr class="sel"><td class="fit">+2.49</td><td class="pos">+0.69</td><td class="f">cs_demean(cs_rank(ts_zscore:197(dvol)))</td></tr>
+            <tr><td class="fit">+2.31</td><td class="pos">+0.49</td><td class="f">cs_zscore(ts_delta:12(ema:132(range)))</td></tr>
+            <tr><td class="fit">+2.12</td><td class="neg">−0.90</td><td class="f">cs_zscore(cs_demean(cs_scale(logret)))</td></tr>
           </table></div>
           <p class="cap">illustrative · simulated — double-click any row to open it (step 04)</p>
         </div>
         <p>Column headers sort on click. Sort by TEST and the app will warn you: that's
            <b>cherry-picking</b> — the top of a TEST-sorted list is always inflated by luck.
-           The <b>calm / storm</b> columns split TEST into quiet and turbulent markets, so
-           you can see <em>when</em> a formula earns. Analysis, not selection.</p>
+           The Advanced view adds more columns — drawdown, CAGR, and <b>calm / storm</b>
+           Sharpe that splits TEST into quiet and turbulent markets, so you can see
+           <em>when</em> a formula earns. Analysis, not selection.</p>
       </div>
     </li>
 
@@ -461,9 +469,10 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
          pauses while the window is closed is mining itself — put the node in Docker
          if you want it running around the clock.</p>
       <h3>What if I mess up the settings?</h3>
-      <p>Press <b>Reset to defaults</b> — one click restores the configuration this
-         walkthrough assumes. The only destructive button in the app,
-         <b>Clear all history</b>, is labeled in red and asks before it acts.</p>
+      <p>In Simple mode there is nothing to mess up — the honest defaults are the whole
+         configuration. If you've gone Advanced, <b>Reset to defaults</b> restores them in
+         one click. The only destructive button in the app, <b>Clear all history</b>, is
+         labeled in red and asks before it acts.</p>
     </div>
   </div>
 </section>
