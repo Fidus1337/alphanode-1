@@ -26,8 +26,10 @@ import os
 import sys
 import csv
 import json
+import math
 import time
 import queue
+import random
 from datetime import datetime, timezone, timedelta
 import signal
 import pickle
@@ -262,11 +264,14 @@ class App:
         self.cfg['theme'] = _apply_palette(self.cfg.get('theme') or _system_theme())
         self._init_window()
         self._style()
+        self._splash()                                    # logo intro; hides the window until done
         self._build()
         self._poll()
         self._sig_tick()                                  # live status of the served signal APIs
         threading.Thread(target=self._sig_restore, daemon=True).start()   # re-adopt ones left running
-        self.root.after(900, self._maybe_bootstrap)       # first run: no data -> fetch 10 majors
+        if not getattr(self, '_splash_on', False):       # first run: no data -> fetch 10 majors.
+            self._boot_arm()                             # With a splash up its dialog must not pop
+        #                                                  mid-intro — finish() arms it instead.
         root.protocol('WM_DELETE_WINDOW', self._on_close)
 
     # ---------- settings (persist) ----------
@@ -356,6 +361,206 @@ class App:
         self.root.geometry('1100x860')                   # CTk scales this by window_scaling
         self.root.minsize(980, 680)                      # raw, like geometry: CTk scales it too, and
         #                                                  pre-scaling made the floor 1.75x too big
+
+    # ---------- splash (logo intro) ----------
+    def _boot_arm(self):
+        """Schedule the first-run bootstrap check exactly once — it is armed either straight from
+        __init__ (no splash) or from the splash's finish(), and a skip-click racing __init__ could
+        otherwise arm it twice."""
+        if not getattr(self, '_boot_armed', False):
+            self._boot_armed = True
+            self.root.after(900, self._maybe_bootstrap)
+
+    def _splash(self):
+        """The logo animation before the dashboard opens: a swarm of candidate formulas pops in,
+        selection culls all but one, and the surviving dot flies in to become the logo mark. Plays
+        centered on the SCREEN while the main window stays hidden; a click skips it. The window is
+        shown when the animation ends — and on ANY failure too: the splash must never brick the
+        app. ALPHANODE_NO_SPLASH=1 disables it (smoke tests, headless runs)."""
+        if os.environ.get('ALPHANODE_NO_SPLASH'):
+            return
+        top = None
+        try:
+            S = self.SCALE
+            W, H = int(640 * S), int(340 * S)
+            top = tk.Toplevel(self.root)
+            top.overrideredirect(True)                   # bare rectangle: no WM title bar
+            top.configure(bg=BORDER)                     # 1px hairline around the canvas
+            sw, sh = top.winfo_screenwidth(), top.winfo_screenheight()
+            top.geometry(f'{W}x{H}+{(sw - W) // 2}+{max(0, (sh - H) // 2 - int(20 * S))}')
+            try:
+                top.attributes('-topmost', True)
+            except tk.TclError:
+                pass
+            cv = tk.Canvas(top, width=W - 2, height=H - 2, bg=BG, highlightthickness=0, bd=0)
+            cv.place(x=1, y=1)
+            self.root.withdraw()
+            self._splash_on = True
+
+            cx, cy = W / 2, H / 2
+            # the lockup: [dot] [gap] AlphaNode — measured to center it as a whole
+            f_word = tkfont.Font(family=self.UI, size=self._px(52), weight='bold')
+            widths = [f_word.measure(ch) for ch in 'AlphaNode']
+            dot_d, gap = 25 * S, 15 * S
+            x0 = cx - (dot_d + gap + sum(widths)) / 2
+            dcx, dcy = x0 + dot_d / 2, cy                # where the surviving dot lands
+            lxs, ax = [], x0 + dot_d + gap
+            for w in widths:
+                lxs.append(ax)
+                ax += w
+            letters = [cv.create_text(lxs[i], cy, text=ch, font=f_word, fill=BG, anchor='w',
+                                      state='hidden')
+                       for i, ch in enumerate('AlphaNode')]
+            f_mono = (self.MONO, self._px(11))
+            tagline = cv.create_text(cx, cy + 46 * S, text='alpha-mining node · runs on your machine',
+                                     font=f_mono, fill=BG, state='hidden')
+            chip = cv.create_text(x0, cy - 48 * S, text='* new best · fitness +2.49',
+                                  font=f_mono, fill=BG, anchor='w', state='hidden')
+
+            # the swarm: formula fragments + candidate dots on a loose ellipse around the center
+            FR = ('cs_zscore(x)', 'ts_delta:12', 'ema:132(close)', 'cs_rank(v)', 'cs_demean(p)',
+                  'ts_zscore:197', 'range_hl', 'cs_scale(r)', 'funding_8h', 'oi_delta')
+            C_FRAG = _mix(BG, FAINT, 0.55)               # canvas has no alpha: bake the opacity in
+            frags = [(cv.create_text((0.05 + random.random() * 0.78) * W,
+                                     (0.06 + random.random() * 0.84) * H,
+                                     text=FR[i], font=f_mono, fill=BG, anchor='w'),
+                      random.random() * 400) for i in range(len(FR))]
+            N, R0, RL = 11, 4.5 * S, 12.5 * S
+            surv_i = random.randrange(N)
+            dots = []
+            for j in range(N):
+                a = (j / N) * 6.2832 + random.random() * 0.5
+                r = (60 + random.random() * 85) * S
+                x = min(max(cx + math.cos(a) * r * 1.7, 16 * S), W - 16 * S)
+                y = min(max(cy - 14 * S + math.sin(a) * r * 0.72, 14 * S), H - 40 * S)
+                dots.append({'it': cv.create_oval(x, y, x, y, fill=BG, outline=''),
+                             'x': x, 'y': y, 'pop': 120 + j * 45,
+                             'die': 850 + len(dots) * 55 if j != surv_i else 10 ** 9})
+            surv = dots[surv_i]
+            sx, sy = surv['x'], surv['y']
+            ring = cv.create_oval(sx, sy, sx, sy, fill='', outline=BG,
+                                  width=max(1, round(1.5 * S)), state='hidden')
+            for it in (*letters, tagline, chip):         # canvas hides by colour, not alpha: swarm
+                cv.tag_raise(it)                         # leftovers must sit UNDER the lockup text
+
+            T_END = 4400
+            sp = {'t0': None, 'done': False, 'after': None}
+            self._sp = sp
+
+            def win(t, at, dur):
+                return max(0.0, min(1.0, (t - at) / dur))
+
+            def ease_out(k):
+                return 1 - (1 - k) ** 3
+
+            def back(k, c):                              # ease-out with a slight overshoot past 1
+                k -= 1
+                return 1 + (c + 1) * k ** 3 + c * k ** 2
+
+            def frame(t):
+                for it, dly in frags:
+                    k = win(t, dly, 500) * (1 - win(t, 1100 + dly, 500))
+                    cv.itemconfig(it, fill=_mix(BG, C_FRAG, k))
+                for d in dots:
+                    k = win(t, d['pop'], 350)
+                    if k <= 0:
+                        continue
+                    rr = R0 * (0.3 + 0.7 * back(k, 1.4))
+                    x, y, col = d['x'], d['y'], _mix(BG, FAINT, k)
+                    if d is surv:
+                        if t >= 1550:
+                            col = POS
+                        f = win(t, 1950, 640)
+                        if f > 0:                        # the flight into the logo mark
+                            b = back(f, 0.7)
+                            x, y = sx + (dcx - sx) * b, sy + (dcy - sy) * b
+                            rr, col = R0 + (RL - R0) * f, _mix(POS, ACC, f)
+                    else:
+                        e = win(t, d['die'], 420)
+                        if e >= 1:                       # fully faded: stop painting (a BG-coloured
+                            cv.itemconfig(d['it'], state='hidden')   # blob still occludes things)
+                            continue
+                        if e > 0:                        # culled: flush red, sink, fade
+                            col = (_mix(FAINT, NEG, e / 0.2) if e < 0.2
+                                   else _mix(NEG, BG, (e - 0.2) / 0.8))
+                            y += 16 * S * e * e
+                            rr *= 1 - 0.6 * e
+                    cv.coords(d['it'], x - rr, y - rr, x + rr, y + rr)
+                    cv.itemconfig(d['it'], fill=col)
+                rk = win(t, 1550, 650)
+                if 0 < rk < 1:
+                    rr = 6 * S + 21 * S * ease_out(rk)
+                    cv.coords(ring, sx - rr, sy - rr, sx + rr, sy + rr)
+                    cv.itemconfig(ring, outline=_mix(POS, BG, rk), state='normal')
+                elif rk >= 1:
+                    cv.itemconfig(ring, state='hidden')
+                for i, it in enumerate(letters):
+                    k = win(t, 2590 + i * 42, 520)
+                    cv.coords(it, lxs[i], cy + 18 * S * (1 - (back(k, 0.5) if k > 0 else 0)))
+                    cv.itemconfig(it, fill=_mix(BG, TXT, min(1.0, k / 0.55)),
+                                  state='normal' if k > 0 else 'hidden')
+                kt = win(t, 3240, 500)
+                cv.itemconfig(tagline, fill=_mix(BG, MUT, kt),
+                              state='normal' if kt > 0 else 'hidden')
+                kc = win(t, 3390, 200) * (1 - win(t, 4090, 200))
+                cv.itemconfig(chip, fill=_mix(BG, POS, kc),
+                              state='normal' if kc > 0 else 'hidden')
+
+            def finish(_=None):
+                if sp['done']:
+                    return
+                sp['done'] = True
+                self._splash_on = False
+                if sp['after'] is not None:
+                    try:
+                        top.after_cancel(sp['after'])
+                    except Exception:                    # noqa: BLE001
+                        pass
+                try:
+                    top.destroy()
+                except Exception:                        # noqa: BLE001
+                    pass
+                try:
+                    self.root.deiconify()
+                    self.root.lift()
+                    self.root.focus_force()
+                except tk.TclError:
+                    pass
+                self._boot_arm()
+
+            def tick():
+                if sp['done']:
+                    return
+                if sp['t0'] is None:                     # clock starts when the UI is actually live,
+                    sp['t0'] = time.monotonic()          # not while __init__ is still building
+                t = (time.monotonic() - sp['t0']) * 1000.0
+                try:
+                    frame(t)
+                except tk.TclError:                      # window died under us — just show the app
+                    finish()
+                    return
+                if t >= T_END:
+                    finish()
+                else:
+                    sp['after'] = top.after(33, tick)
+
+            cv.bind('<Button-1>', finish)
+            top.bind('<Escape>', finish)
+            frame(0)                                     # paint the empty stage right away…
+            top.update_idletasks()
+            top.update()                                 # …so the window isn't a grey flash
+            sp['after'] = top.after(15, tick)
+        except Exception:                                # noqa: BLE001 — the intro is optional
+            self._splash_on = False
+            try:
+                if top is not None:
+                    top.destroy()
+            except Exception:                            # noqa: BLE001
+                pass
+            try:
+                self.root.deiconify()
+            except tk.TclError:
+                pass
 
     def _style(self):
         """Fonts + the ttk styles for the widgets CustomTkinter has no answer for (the leaderboard
