@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Getting started — AlphaNode</title>
+<meta name="description" content="Your first hour with AlphaNode, step by step: install it, press one button, read the leaderboard, open an alpha, put it on the forward track. Nothing to configure, nothing to break.">
+<style>
+/* Same visual language as index.html: warm paper, near-black ink, hairline borders,
+   uppercase mono micro-labels, periwinkle + orange accents, one dark graphite band.
+   Deliberately single-theme (the paper IS the brand); every surface paints its own color.
+   Self-contained: system font stacks only, zero external requests. */
+:root{
+  --paper:#f6f4f0; --card:#ffffff; --ink:#222121; --mut:#6f6b66;
+  --line:#dedddd; --soft:#eae9e6;
+  --acc:#7d8cff; --acctext:#5261d6; --orange:#f99c00;
+  --green:#1e7f4e; --red:#c14b36;
+  --dark:#2e2b27; --darkline:#3f3b36; --darkline2:#57524b;
+  --darkink:#f6f4f0; --darkmut:#a5a09a; --darkacc:#bfd1ff; --darkgreen:#5abd8c; --darkred:#e57a63;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+body{
+  margin:0; background:var(--paper); color:var(--ink);
+  font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+a{color:var(--ink)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+
+/* ---------- nav ---------- */
+nav{border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
+.logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--acc)}
+.nav-links{display:flex;gap:22px;margin-left:auto}
+.nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
+.nav-links a:hover{color:var(--ink)}
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:1px solid var(--ink);
+  border-radius:3px;padding:10px 20px;font-size:14px;font-weight:550;text-decoration:none;cursor:pointer}
+.btn:hover{opacity:.85}
+
+/* ---------- scaffolding ---------- */
+.eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin:0 0 14px}
+section{padding:96px 0;border-bottom:1px solid var(--line)}
+h1,h2{letter-spacing:-.025em;text-wrap:balance;margin:0}
+h1{font-size:clamp(34px,4.6vw,50px);font-weight:680;line-height:1.08}
+h1 .quiet{color:var(--mut);font-weight:500}
+h2{font-size:30px;font-weight:650;margin-bottom:14px}
+.lead{color:var(--mut);font-size:18px;max-width:62ch;margin:0}
+
+/* ---------- hero ---------- */
+.hero{padding:80px 0 64px;border-bottom:1px solid var(--line)}
+.hero p.lead{margin:22px 0 0}
+.assure{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:44px}
+.as{background:var(--card);border:1px solid var(--line);border-radius:3px;padding:18px 20px}
+.as .tag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--acctext)}
+.as p{margin:8px 0 0;font-size:14px;color:var(--mut)}
+
+/* ---------- walkthrough rail ---------- */
+.rail{list-style:none;margin:24px 0 0;padding:0}
+.stepitem{display:grid;grid-template-columns:76px minmax(0,1fr);gap:28px;padding:44px 0;border-top:1px solid var(--line)}
+.rail .stepitem:first-child{border-top:none}
+.stepno{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
+  letter-spacing:.1em;color:var(--acctext);padding-top:5px}
+.stepbody h3{margin:0 0 10px;font-size:21px;letter-spacing:-.015em}
+.stepbody p{margin:0 0 12px;font-size:15px;color:var(--mut);max-width:66ch}
+.stepbody p:last-child{margin-bottom:0}
+.stepbody b{color:var(--ink);font-weight:600}
+.ui{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.86em;background:var(--card);
+  border:1px solid var(--line);border-radius:4px;padding:1px 7px;color:var(--ink);white-space:nowrap}
+
+/* install table */
+.get-ul{margin:8px 0 0;padding:0;list-style:none;max-width:640px}
+.get-ul li{padding:9px 0;border-bottom:1px solid var(--soft);font-size:15px;display:flex;gap:14px}
+.get-ul li:last-child{border-bottom:none}
+.get-ul .m{color:var(--acctext);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:11px;letter-spacing:.1em;text-transform:uppercase;padding-top:4px;min-width:78px}
+.get-ul span:not(.m){color:var(--mut)} .get-ul b{color:var(--ink)}
+
+/* ---------- window mock ---------- */
+.shot{background:var(--card);border:1px solid var(--line);border-radius:4px;
+  padding:16px 18px 14px;margin:20px 0 6px;min-width:0}
+.whead{display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--soft);
+  padding-bottom:12px;margin-bottom:14px;flex-wrap:wrap}
+.whead .t{display:flex;align-items:center;gap:8px;font-weight:650;font-size:14px}
+.whead .sp{flex:1}
+.uibtn{display:inline-block;font-size:13px;border:1px solid var(--line);border-radius:9px;
+  padding:6px 13px;background:var(--paper);color:var(--ink);white-space:nowrap}
+.uibtn.accent{background:var(--acc);border-color:var(--acc);color:#fff;font-weight:600}
+.uibtn.danger{color:var(--red);border-color:#e5c9c2}
+.click{box-shadow:0 0 0 3px rgba(125,140,255,.30);border-color:var(--acc)}
+.tap{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--acctext);white-space:nowrap}
+.cap{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.06em;color:var(--mut);margin:10px 0 0}
+.wbody{display:grid;grid-template-columns:minmax(0,.9fr) minmax(0,1.6fr);gap:14px}
+.pane{border:1px solid var(--soft);border-radius:3px;padding:12px 14px;min-width:0}
+.pane .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10px;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--mut);margin:0 0 8px}
+.pane.dim{color:var(--mut)}
+.fakerow{height:9px;background:var(--soft);border-radius:2px;margin:9px 0}
+.fakerow.w1{width:82%}.fakerow.w2{width:64%}.fakerow.w3{width:74%}.fakerow.w4{width:56%}
+.statline{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--mut);margin:6px 0}
+.statline b{color:var(--ink);font-weight:600}
+
+/* leaderboard mock */
+.tw{overflow-x:auto}
+.lb{width:100%;border-collapse:collapse;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.lb th{text-align:left;font-weight:500;color:var(--mut);font-size:10px;letter-spacing:.09em;
+  text-transform:uppercase;padding:6px;border-bottom:1px solid var(--line);white-space:nowrap}
+.lb td{padding:6.5px 6px;border-bottom:1px solid var(--soft);white-space:nowrap}
+.lb tr:last-child td{border-bottom:none}
+.lb .fit{color:var(--acctext)} .lb .pos{color:var(--green)} .lb .neg{color:var(--red)}
+.lb .f{overflow:hidden;text-overflow:ellipsis;max-width:250px;color:var(--ink)}
+.lb tr.sel td{background:rgba(125,140,255,.10)}
+
+/* equity mock */
+.eq{position:relative;height:130px;margin-top:6px;border:1px solid var(--soft);border-radius:3px;
+  display:grid;grid-template-columns:46% 27% 27%;overflow:hidden}
+.eq .z{position:relative;border-left:1px dashed var(--line)}
+.eq .z:first-child{border-left:none}
+.eq .z .zl{position:absolute;top:6px;left:8px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  font-size:10px;letter-spacing:.1em;color:var(--mut)}
+.eq .z.test{background:rgba(125,140,255,.07)}
+.eq svg{position:absolute;inset:0;width:100%;height:100%}
+
+/* ---------- rules band (dark) ---------- */
+.band{background:var(--dark);color:var(--darkink);border-bottom:1px solid var(--darkline)}
+.band .eyebrow{color:var(--orange)}
+.band h2{color:var(--darkink)}
+.band .lead{color:var(--darkmut)}
+.rules{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:44px}
+.rule{border:1px solid var(--darkline2);border-radius:3px;padding:20px 22px}
+.rule h3{margin:0 0 6px;font-size:16px;color:var(--darkink)}
+.rule p{margin:0;font-size:14px;color:var(--darkmut)}
+.rule .tag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--darkacc)}
+
+/* status page mock (dark, like the landing hero) */
+.term{background:var(--dark);border:1px solid var(--darkline2);border-radius:4px;
+  padding:16px 18px;color:var(--darkink);min-width:0;margin-top:18px;max-width:640px}
+.term .head{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--darkmut);
+  border-bottom:1px solid var(--darkline);padding-bottom:10px;margin-bottom:4px}
+.term .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--darkmut);margin:12px 0 6px}
+.term table{width:100%;border-collapse:collapse;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.term td{padding:4.5px 6px;border-bottom:1px solid var(--darkline);white-space:nowrap}
+.term tr:last-child td{border-bottom:none}
+.term .pos{color:var(--darkgreen)} .term .neg{color:var(--darkred)} .term .f{color:var(--darkink)}
+
+/* ---------- faq ---------- */
+.faq{display:grid;grid-template-columns:repeat(2,1fr);gap:8px 56px;margin-top:36px}
+.faq h3{font-size:16px;margin:0 0 4px}
+.faq p{margin:0 0 18px;font-size:14px;color:var(--mut)}
+
+/* ---------- footer ---------- */
+footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
+.disclaimer{border:1px solid var(--line);border-left:3px solid var(--orange);border-radius:3px;
+  background:var(--card);padding:18px 22px;margin-bottom:28px;font-size:13px;line-height:1.65;color:var(--mut)}
+.foot-row{display:flex;gap:24px;flex-wrap:wrap;align-items:center}
+.foot-row a{color:var(--mut)}
+
+@media (max-width: 900px){
+  section{padding:64px 0}
+  .assure,.rules{grid-template-columns:1fr}
+  .faq{grid-template-columns:1fr}
+  .wbody{grid-template-columns:minmax(0,1fr)}
+  .pane.dim{display:none}
+}
+@media (max-width: 560px){
+  .nav-links{display:none}
+  .nav-in > .btn{margin-left:auto}
+  .stepitem{grid-template-columns:minmax(0,1fr);gap:8px;padding:36px 0}
+  .lb .f{max-width:150px}
+}
+</style>
+</head>
+<body id="top">
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="logo" href="index.html"><span class="dot" aria-hidden="true"></span>AlphaNode</a>
+    <div class="nav-links">
+      <a href="#walk">The walkthrough</a>
+      <a href="#rules">Three rules</a>
+      <a href="#faq">Questions</a>
+      <a href="index.html">About AlphaNode</a>
+    </div>
+    <a class="btn" href="index.html#get">Get early access</a>
+  </div>
+</nav>
+
+<main>
+<section class="wrap hero">
+  <p class="eyebrow">Getting started · a guided first hour</p>
+  <h1>Press one button.<br><span class="quiet">The node does the rest.</span></h1>
+  <p class="lead">This page walks you from a fresh install to your first mined formula
+     on the forward track. You will click five things in total. The defaults are sane,
+     and nothing in this walkthrough can touch real money.</p>
+
+  <div class="assure">
+    <div class="as"><span class="tag">no keys</span>
+      <p>AlphaNode never asks for exchange API keys. Mining runs on public market data —
+         there is no account to connect and nothing to lose.</p></div>
+    <div class="as"><span class="tag">paper only</span>
+      <p>Everything you'll do today is simulation and paper tracking. Real execution is
+         a separate, deliberate step that stays entirely in your hands.</p></div>
+    <div class="as"><span class="tag">stop anytime</span>
+      <p>Close the app whenever you like. The library of found formulas lives on disk
+         and survives every restart — nothing is ever lost by stopping.</p></div>
+  </div>
+</section>
+
+<section class="wrap" id="walk" style="border-bottom:none;padding-bottom:40px">
+  <p class="eyebrow">The walkthrough</p>
+  <h2>Five steps, one hour</h2>
+  <p class="lead">Each step tells you exactly what to click and what you should see
+     before moving on.</p>
+
+  <ol class="rail">
+
+    <li class="stepitem">
+      <div class="stepno">STEP 01</div>
+      <div class="stepbody">
+        <h3>Install and open it</h3>
+        <p>Pick the build for your machine. All of them are self-contained — no Python,
+           no dependencies, nothing else to install.</p>
+        <ul class="get-ul">
+          <li><span class="m">deb</span><span><b>Ubuntu / Debian:</b> install the .deb,
+            then launch <b>AlphaNode</b> from the applications menu.</span></li>
+          <li><span class="m">AppImage</span><span><b>Any Linux:</b> make the file executable
+            and double-click it.</span></li>
+          <li><span class="m">exe</span><span><b>Windows:</b> run the installer, launch from
+            the Start menu.</span></li>
+          <li><span class="m">docker</span><span><b>Servers:</b> skip the window entirely —
+            <span class="ui">docker-compose up -d</span> and jump to step 5.</span></li>
+        </ul>
+        <p style="margin-top:14px">A single window opens: settings on the left,
+           live status and charts on the right. It follows your OS light/dark theme.</p>
+      </div>
+    </li>
+
+    <li class="stepitem">
+      <div class="stepno">STEP 02</div>
+      <div class="stepbody">
+        <h3>Press <b>▶ Start node</b> — and only that</h3>
+        <p>Resist the settings panel on day one. The only control worth touching is the
+           <b>CPU slider</b> — how much of your machine the miner may use (it runs at low
+           priority either way, so your computer stays responsive). Then press the one
+           accented button.</p>
+        <div class="shot" role="img" aria-label="Simplified AlphaNode window: header with Settings, Stop and a highlighted Start node button">
+          <div class="whead">
+            <span class="t"><span class="dot" aria-hidden="true"></span>AlphaNode</span>
+            <span class="sp"></span>
+            <span class="uibtn">⚙&nbsp; Settings</span>
+            <span class="uibtn">■&nbsp; Stop</span>
+            <span class="uibtn accent click">▶&nbsp; Start node</span>
+            <span class="tap">← press this</span>
+          </div>
+          <div class="wbody">
+            <div class="pane dim">
+              <p class="k">settings — leave them alone today</p>
+              <div class="fakerow w1"></div><div class="fakerow w3"></div>
+              <div class="fakerow w2"></div><div class="fakerow w4"></div>
+            </div>
+            <div class="pane">
+              <p class="k">status</p>
+              <p class="statline">state: <b>mining — round 3</b></p>
+              <p class="statline">formulas explored: <b>41 208</b></p>
+              <p class="statline">library: <b>17 alphas</b> · survives restarts</p>
+              <p class="statline">12:06 ★ new best: fitness +1.84</p>
+            </div>
+          </div>
+          <p class="cap">illustration — the real window, simplified · numbers are simulated</p>
+        </div>
+        <p>That's it. The node now mines in rounds: breed a population of formula trees,
+           score every one through the fee-charging simulator, keep the champions, repeat —
+           forever, until you press <span class="ui">■ Stop</span>.</p>
+      </div>
+    </li>
+
+    <li class="stepitem">
+      <div class="stepno">STEP 03</div>
+      <div class="stepbody">
+        <h3>Read the leaderboard — two numbers matter</h3>
+        <p>Within the first rounds — minutes to an hour, depending on the CPU share —
+           rows start appearing in the leaderboard. Each row is one mined formula.
+           Two columns tell the story:</p>
+        <p><b>fitness</b> is the honest score: the formula's Sharpe on the years the
+           search was allowed to see, taking the <em>weaker</em> of two separate periods —
+           a champion has to be good in both, not lucky in one.</p>
+        <p><b>TEST</b> is the referee: the most recent slice of history the search has
+           never seen. It is read-only — good, bad, or ugly, it's the closest thing to
+           the future you can get from the past. Negative TEST rows stay on the board
+           on purpose: that's what honest results look like.</p>
+        <div class="shot" role="img" aria-label="Simplified leaderboard: columns fitness, TEST, calm, storm, formula; one row highlighted for double-click">
+          <div class="tw"><table class="lb">
+            <tr><th>fitness</th><th>test oos</th><th>calm</th><th>storm</th><th>formula</th></tr>
+            <tr class="sel"><td class="fit">+2.49</td><td class="pos">+0.69</td><td class="pos">+1.09</td><td class="neg">−0.31</td><td class="f">cs_demean(cs_rank(ts_zscore:197(dvol)))</td></tr>
+            <tr><td class="fit">+2.31</td><td class="pos">+0.49</td><td class="pos">+0.72</td><td class="pos">+0.18</td><td class="f">cs_zscore(ts_delta:12(ema:132(range)))</td></tr>
+            <tr><td class="fit">+2.12</td><td class="neg">−0.90</td><td class="neg">−0.44</td><td class="neg">−1.21</td><td class="f">cs_zscore(cs_demean(cs_scale(logret)))</td></tr>
+          </table></div>
+          <p class="cap">illustrative · simulated — double-click any row to open it (step 04)</p>
+        </div>
+        <p>Column headers sort on click. Sort by TEST and the app will warn you: that's
+           <b>cherry-picking</b> — the top of a TEST-sorted list is always inflated by luck.
+           The <b>calm / storm</b> columns split TEST into quiet and turbulent markets, so
+           you can see <em>when</em> a formula earns. Analysis, not selection.</p>
+      </div>
+    </li>
+
+    <li class="stepitem">
+      <div class="stepno">STEP 04</div>
+      <div class="stepbody">
+        <h3>Double-click a row — meet your alpha</h3>
+        <p>A window opens with the formula's equity curve: growth of $1 on a log scale,
+           split into the <b>TRAIN | VAL | TEST</b> zones, against a plain buy-&amp;-hold
+           basket. The TEST zone is the part that was never touched by the search.</p>
+        <div class="shot" role="img" aria-label="Simplified alpha window: equity curve over TRAIN, VAL and TEST zones, and a row of action buttons with Passport highlighted">
+          <div class="eq">
+            <div class="z"><span class="zl">TRAIN</span></div>
+            <div class="z"><span class="zl">VAL</span></div>
+            <div class="z test"><span class="zl">TEST</span></div>
+            <svg viewBox="0 0 600 130" preserveAspectRatio="none" aria-hidden="true">
+              <polyline points="0,112 60,104 110,108 170,92 230,96 276,78 330,84 380,66 430,72 470,58 520,64 600,44"
+                fill="none" stroke="#222121" stroke-width="2"/>
+              <polyline points="0,116 70,110 130,118 200,100 260,110 330,94 400,106 470,88 530,98 600,86"
+                fill="none" stroke="#6f6b66" stroke-width="1.4" stroke-dasharray="4 4"/>
+            </svg>
+          </div>
+          <div class="whead" style="border-bottom:none;margin:14px 0 0;padding-bottom:0">
+            <span class="uibtn">Paper Trade — build bundle</span>
+            <span class="uibtn">Download signals (CSV)</span>
+            <span class="uibtn">PDF report</span>
+            <span class="uibtn click">Passport</span>
+            <span class="tap">← start here</span>
+          </div>
+          <p class="cap">illustration — solid line: the alpha · dashed: buy &amp; hold · curves are simulated</p>
+        </div>
+        <p>Press <b>Passport</b> first. It draws the formula as a tree, explains it step
+           by step in plain English — “take dollar volume, ask how unusual it is against
+           its own history, compare across assets…” — and X-rays its behavior: which
+           inputs actually feed it, how long it holds a position, whether it's a
+           momentum or a reversal animal. A formula you can read is a formula you can
+           decide about.</p>
+        <p><b>PDF report</b> gives you the same story as a document you can save or send.</p>
+      </div>
+    </li>
+
+    <li class="stepitem">
+      <div class="stepno">STEP 05</div>
+      <div class="stepbody">
+        <h3>Put it on the forward track — then walk away</h3>
+        <p>In the same window, press <b>Forward track ➕</b>. From that moment the node
+           paper-trades the formula on <em>live</em> closed bars: a step is appended only
+           when a bar actually closes, fees are charged, and the record is never
+           rewritten. This is the only test that can't be gamed — it happens in the
+           future.</p>
+        <div class="shot">
+          <div class="whead" style="border-bottom:none;margin:0;padding-bottom:0">
+            <span class="uibtn">Serve signal (API)</span>
+            <span class="uibtn">PDF report</span>
+            <span class="uibtn">Passport</span>
+            <span class="uibtn click">Forward track ➕</span>
+            <span class="tap">← the honest step</span>
+          </div>
+          <p class="cap">enrolling takes one click · un-enrolling is one click too (Archive)</p>
+        </div>
+        <p>Now close the laptop if you want. Next time you open AlphaNode — tomorrow, next
+           week — the forward panel shows the paper equity that accumulated in the
+           meantime. <b>Give it weeks, not hours:</b> a handful of steps is noise, a month
+           is a signal.</p>
+      </div>
+    </li>
+
+    <li class="stepitem">
+      <div class="stepno">BONUS</div>
+      <div class="stepbody">
+        <h3>Watch from the browser, grow from there</h3>
+        <p>While the node runs, it serves a live status page at
+           <span class="ui">http://localhost:8787</span> — rounds, best formulas, the
+           forward track — auto-refreshing, from any browser on your machine.</p>
+        <div class="term" role="img" aria-label="Status page mock: forward track table with one positive and one negative entry">
+          <div class="head">alphanode · localhost:8787 — status</div>
+          <div class="k">forward track — append-only paper steps</div>
+          <div class="tw"><table>
+            <tr><td class="f">alpha_2b91e4</td><td>31 steps</td><td class="pos">+1.7%</td></tr>
+            <tr><td class="f">alpha_1c90f5</td><td>25 steps</td><td class="neg">−1.9%</td></tr>
+          </table></div>
+        </div>
+        <p style="margin-top:14px">When the basics feel comfortable, there's more in the box —
+           none of it required on day one:</p>
+        <ul class="get-ul">
+          <li><span class="m">data</span><span><b>Fresh universe:</b> the
+            <span class="ui">Download fresh data from Binance</span> button refetches the
+            top perps by turnover. Clear the old history after — it was mined on different data.</span></li>
+          <li><span class="m">portfolio</span><span><b>▶ Build portfolio:</b> once you have a
+            dozen decorrelated alphas, combine them — diversification is the robust part of the edge.</span></li>
+          <li><span class="m">timeframes</span><span><b>15m / 1h / 4h / 1d:</b> each timeframe
+            mines into its own library with its own honest splits.</span></li>
+          <li><span class="m">server</span><span><b>Docker &amp; CLI:</b> the same node headless —
+            <span class="ui">cli.py top --stats</span>, <span class="ui">forward list</span> —
+            with the forward track stepping itself.</span></li>
+        </ul>
+      </div>
+    </li>
+
+  </ol>
+</section>
+
+<section id="rules" class="band">
+  <div class="wrap">
+    <p class="eyebrow">Before you fall in love with a number</p>
+    <h2>Three rules that keep you honest</h2>
+    <p class="lead">The app enforces its half of these. The other half is yours.</p>
+    <div class="rules">
+      <div class="rule"><span class="tag">rule 01</span>
+        <h3>Don't shop by TEST</h3>
+        <p>The top of a TEST-sorted list is always partly luck. Choose by fitness —
+           the score the search actually optimized honestly — and treat TEST as the
+           referee's verdict, not the menu.</p></div>
+      <div class="rule"><span class="tag">rule 02</span>
+        <h3>Give forward weeks, not hours</h3>
+        <p>Three paper steps mean nothing either way. A strategy earns trust on the
+           forward track the slow way — there is no button that speeds up the future.</p></div>
+      <div class="rule"><span class="tag">rule 03</span>
+        <h3>Paper before size</h3>
+        <p>Export the paper-trading bundle, run it daily, watch it survive contact with
+           live data. Only then think about real orders — in small size, with your own
+           risk limits, on your own decision.</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="wrap" id="faq">
+  <p class="eyebrow">Plain answers</p>
+  <h2>First-day questions</h2>
+  <div class="faq">
+    <div>
+      <h3>How long until I see something?</h3>
+      <p>The first champions usually land within the first few rounds — minutes to an
+         hour depending on how much CPU you allowed. The library only grows from there;
+         overnight runs are where it gets interesting.</p>
+      <h3>Will it slow my computer down?</h3>
+      <p>You decide: the CPU slider caps how many cores it may use, and the miner runs
+         at low system priority, so the foreground stays snappy even at high shares.</p>
+    </div>
+    <div>
+      <h3>Can I close the app mid-round?</h3>
+      <p>Yes, anytime. Everything found so far is already on disk. The one thing that
+         pauses while the window is closed is mining itself — put the node in Docker
+         if you want it running around the clock.</p>
+      <h3>What if I mess up the settings?</h3>
+      <p>Press <b>Reset to defaults</b> — one click restores the configuration this
+         walkthrough assumes. The only destructive button in the app,
+         <b>Clear all history</b>, is labeled in red and asks before it acts.</p>
+    </div>
+  </div>
+</section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="disclaimer">
+      <b>Risk disclosure.</b> AlphaNode is research software, not investment advice. All
+      numbers on this page are illustrative and simulated. Hypothetical and simulated
+      performance has inherent limitations and no representation is made that any account
+      will achieve similar results. Read the full
+      <a href="index.html#disclosure">risk disclosure</a> before trading anything.
+    </div>
+    <div class="foot-row">
+      <span>© 2026 AlphaNode</span>
+      <a href="index.html">About AlphaNode</a>
+      <a href="#walk">The walkthrough</a>
+      <a href="index.html#get">Early access</a>
+      <span style="margin-left:auto" class="mono">five clicks · zero keys · paper first</span>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
