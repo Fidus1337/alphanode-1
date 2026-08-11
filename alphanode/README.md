@@ -31,6 +31,19 @@ Controlled by: `ALPHANODE_SEED_FROM_LIBRARY` (1/0), `ALPHANODE_EXPLORE_EVERY` (N
 .venv/bin/python alphanode/alphanode_gui.py
 ```
 A CustomTkinter window, light or dark (the switch is in the header; it follows the OS on first run).
+
+**Simple mode (default for new installs).** The window opens with one accented button — **▶ Start
+node** — a **Power** preset (Quiet ~25% / Balanced ~50% / Turbo ~85% of the CPU), a first-run
+reassurance card, and a leaderboard reduced to the two numbers that matter (fitness and held-out
+TEST). Everything below in this section — the full settings panel, the portfolio builder, the
+analytics columns — is one click away behind the **Advanced** button; the choice persists, and
+installs that predate Simple mode keep the full dashboard.
+
+**Unique search per install.** Every install mints a persistent **node ID** (`state/node_id`,
+shown in the window header and on the status page). With the default seed `0/auto` the base seed
+is derived from it, so every node walks its own trajectory through formula space — **no two
+installs mine the same library** (also true headless: `ALPHANODE_SEED=auto`). Set an explicit
+integer seed to reproduce a run exactly.
 On the left — the **full set of search settings** (scrollable), grouped into sections:
 - **Resources / universe** — CPU slider (5–95% → workers), the set of pairs;
 - **Search** — population, generations, seed, pause, port;

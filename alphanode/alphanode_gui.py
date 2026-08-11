@@ -101,7 +101,7 @@ DEFAULTS = {
     'cpu': 50, 'universe_all': True,
     'universe_list': 'BTCUSDT,ETHUSDT,BNBUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,LINKUSDT',
     # search
-    'pop': 200, 'gens': 25, 'seed': 1, 'pause': 5, 'port': 8787,
+    'pop': 200, 'gens': 25, 'seed': 0, 'pause': 5, 'port': 8787,   # seed 0 = auto (unique per node)
     # data
     'fetch_n': 150, 'fetch_years': 3,
     'timeframe': '1d',      # bar size for the whole pipeline: 1d | 4h | 1h | 15m
@@ -122,6 +122,8 @@ DEFAULTS = {
     # appearance
     'theme': '',            # 'light' | 'dark' | '' = follow the OS on first run
     'settings_open': False,  # settings pane hidden by default; toggled by the header button
+    'ui_mode': 'simple',    # 'simple' = one-button view (fresh installs) | 'advanced' = full dashboard
+    'welcomed': False,      # first-run reassurance banner dismissed
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
     'card_order': [],       # dashboard card order (drag a card to reorder); [] = default layout
     'log_h': 0,             # live-log height, dp; 0 = natural (7 lines)
@@ -270,9 +272,13 @@ class App:
     # ---------- settings (persist) ----------
     def _load(self):
         try:
-            self.cfg.update(json.load(open(SETTINGS)))
+            saved = json.load(open(SETTINGS))
         except Exception:
-            pass
+            return                                       # fresh install -> DEFAULTS (simple mode)
+        if 'ui_mode' not in saved:
+            saved['ui_mode'] = 'advanced'                # settings predate Simple mode: the user has
+            saved.setdefault('welcomed', True)           # seen the full dashboard — don't take it away
+        self.cfg.update(saved)
 
     @staticmethod
     def _gi(var, d):
@@ -509,12 +515,32 @@ class App:
         self._lbl(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC, bg=BG).pack(side='left')
         self._lbl(top, text='background search for trading strategies', text_color=MUT,
                      font=(self.UI, 13), bg=BG).pack(side='left', padx=(14, 0), pady=(6, 0))
+        nid_lbl = self._lbl(top, text=f'node {self._node_id()}', text_color=FAINT,
+                            font=(self.MONO, 12), bg=BG)
+        nid_lbl.pack(side='left', padx=(10, 0), pady=(7, 0))
+        self._tip(nid_lbl, 'This install\'s node ID. It mints the search seed, so every node\n'
+                           'walks its own path through formula space — no two nodes mine\n'
+                           'the same library.')
         self._build_theme_pick(top)
-        # header controls: the node is driven from here — defaults just work, the full settings
-        # panel stays hidden until the Settings button is pressed
-        self.btn_settings = self._btn(top, '⚙  Settings', self._toggle_settings, kind='soft',
-                                      height=34, width=112)
-        self.btn_settings.pack(side='right', padx=(0, 16), pady=(2, 0))
+        # header controls: the node is driven from here — defaults just work. Simple mode shows
+        # one extra button (Advanced); Advanced mode adds the settings-panel toggle back.
+        if self._simple():
+            self.btn_settings = None
+            btn_mode = self._btn(top, 'Advanced', self._toggle_mode, kind='soft',
+                                 height=34, width=104)
+            btn_mode.pack(side='right', padx=(0, 16), pady=(2, 0))
+            self._tip(btn_mode, 'Show the full dashboard: every search setting, the portfolio\n'
+                                'builder and all analytics columns. Nothing is lost by staying\n'
+                                'in Simple — the defaults are the recommended configuration.')
+        else:
+            btn_mode = self._btn(top, 'Simple view', self._toggle_mode, kind='soft',
+                                 height=34, width=104)
+            btn_mode.pack(side='right', padx=(0, 16), pady=(2, 0))
+            self._tip(btn_mode, 'Back to the one-button view. Your settings are kept.')
+            self.btn_settings = self._btn(top, '⚙  Settings', self._toggle_settings, kind='soft',
+                                          height=34, width=112)
+            self.btn_settings.pack(side='right', padx=(0, 8), pady=(2, 0))
+            self._tip(self.btn_settings, 'Show / hide the search settings panel.')
         self.btn_stop = self._btn(top, '■  Stop', self.stop, kind='soft', height=34, width=88)
         self.btn_stop.configure(state='disabled')
         self.btn_stop.pack(side='right', padx=(0, 8), pady=(2, 0))
@@ -523,8 +549,9 @@ class App:
         self.btn_start.pack(side='right', padx=(0, 8), pady=(2, 0))
         self._tip(self.btn_start, 'Start the background search with the current settings.')
         self._tip(self.btn_stop, 'Gently stop the search (the current round will finish).')
-        self._tip(self.btn_settings, 'Show / hide the search settings panel.')
         self._box(self._shell, bg=BORDER, height=1).pack(fill='x')       # hairline
+        if self._simple() and not self.cfg.get('welcomed'):
+            self._build_welcome(self._shell)             # first-run reassurance, above the dashboard
 
         # settings | dashboard live in a PanedWindow so the split is mouse-draggable; the sash
         # position (and the chart height below) persist in gui_settings.json in raw 100%-DPI units
@@ -581,6 +608,104 @@ class App:
         if self._pf_doc:
             self._render_portfolio(self._pf_doc)
 
+    # ---------- Simple <-> Advanced mode ----------
+    def _simple(self):
+        return (self.cfg.get('ui_mode') or 'simple') == 'simple'
+
+    def _toggle_mode(self):
+        """Switch Simple <-> Advanced. A full rebuild, like a theme switch — that's what keeps
+        the ttk table, the Canvas chart and the card layout consistent in the new mode."""
+        self.cfg['ui_mode'] = 'advanced' if self._simple() else 'simple'
+        if self.cfg['ui_mode'] == 'simple':
+            self.cfg['settings_open'] = False            # the pane has no toggle in Simple
+        self._save()
+        self._tip_hide()
+        if self._pf_resize_after:
+            self.root.after_cancel(self._pf_resize_after)
+            self._pf_resize_after = None
+        self._shell.destroy()
+        self._pf_last_w = 0
+        self._treesig = None
+        self._sig_shown = None
+        self._build()
+        self._set_running(bool(self.proc and self.proc.poll() is None))
+        self._draw_chart()
+        self._render_signal_rows()
+        if self._pf_doc and not self._simple():
+            self._render_portfolio(self._pf_doc)
+
+    def _node_id(self):
+        """This install's persistent node ID (state/node_id) — minted here on the very first
+        run, or by node.py, whichever comes first; both write the same format. It derives the
+        auto seed, which is what makes every install's search trajectory unique."""
+        path = os.path.join(STATE_DIR, 'node_id')
+        try:
+            nid = open(path).read().strip().lower()
+        except OSError:
+            nid = ''
+        if not (len(nid) == 8 and all(c in '0123456789abcdef' for c in nid)):
+            import secrets
+            nid = secrets.token_hex(4)
+            try:
+                os.makedirs(STATE_DIR, exist_ok=True)
+                with open(path, 'w') as f:
+                    f.write(nid + '\n')
+            except OSError:
+                pass
+        return nid
+
+    # ---------- first-run welcome (Simple mode only) ----------
+    def _build_welcome(self, parent):
+        card = ctk.CTkFrame(parent, fg_color=CARD, corner_radius=14,
+                            border_width=CARD_BW, border_color=BORDER)
+        card.pack(fill='x', padx=20, pady=(16, 0))
+        self._welcome_card = card
+        pad = self._box(card)
+        pad.pack(fill='x', padx=18, pady=14)
+        self._lbl(pad, text='Welcome. Nothing here can touch real money.',
+                  font=(self.UI, 16, 'bold')).pack(anchor='w')
+        for t in ('•  No exchange keys — the node mines on public market data.',
+                  '•  Everything is simulation and paper tracking; real orders are never sent.',
+                  '•  Stop anytime — found formulas live on disk and survive every restart.'):
+            self._lbl(pad, text=t, text_color=MUT, font=(self.UI, 13),
+                      anchor='w', justify='left').pack(anchor='w', pady=(4, 0))
+        row = self._box(pad)
+        row.pack(fill='x', pady=(12, 0))
+        self._btn(row, '▶  Start mining', self._welcome_start, kind='accent',
+                  height=32, width=150).pack(side='left')
+        self._btn(row, 'Got it', self._welcome_dismiss, height=32, width=90).pack(
+            side='left', padx=(8, 0))
+
+    def _welcome_dismiss(self):
+        if not self.cfg.get('welcomed'):
+            self.cfg['welcomed'] = True
+            self._save()
+        w = getattr(self, '_welcome_card', None)
+        if w is not None:
+            try:
+                w.destroy()
+            except tk.TclError:
+                pass
+            self._welcome_card = None
+
+    def _welcome_start(self):
+        self._welcome_dismiss()
+        self.start()
+
+    # ---------- power presets (Simple mode's only knob) ----------
+    def _set_power(self, pct):
+        self.v_cpu.set(pct)
+        self.cfg['cpu'] = pct
+        self._cpu_lbl()
+        self._paint_power()
+        self._save()
+
+    def _paint_power(self):
+        cur = self._gi(self.v_cpu, DEFAULTS['cpu'])
+        for pct, b in getattr(self, '_pw_btns', {}).items():
+            fill, hover, fg = self._BTN['accent' if pct == cur else 'soft']()
+            b.configure(fg_color=fill, hover_color=hover, text_color=fg)
+
     # ---------- left panel: ALL settings (scrollable, hidden by default) ----------
     def _toggle_settings(self):
         if self.cfg.get('settings_open'):
@@ -591,16 +716,18 @@ class App:
 
     def _apply_settings_vis(self):
         """Show/hide the settings pane (tk paned '-hide': the pane and its sash vanish together).
-        The default view is just the dashboard; the choice persists across restarts."""
-        shown = bool(self.cfg.get('settings_open'))
+        The default view is just the dashboard; the choice persists across restarts. Simple mode
+        has no pane toggle at all — the panel stays hidden until the user goes Advanced."""
+        shown = bool(self.cfg.get('settings_open')) and not self._simple()
         try:
             self._paned.paneconfigure(self._settings_outer, hide=not shown)
         except tk.TclError:
             pass
         if shown and self.cfg.get('split_w'):
             self.root.after(120, self._sash_restore)
-        self.btn_settings.configure(border_color=(ACC if shown else BORDER),
-                                    text_color=(ACC if shown else TXT))
+        if self.btn_settings is not None:
+            self.btn_settings.configure(border_color=(ACC if shown else BORDER),
+                                        text_color=(ACC if shown else TXT))
 
     # ---------- draggable split (settings | dashboard) ----------
     def _sash_restore(self):
@@ -732,8 +859,10 @@ class App:
                                tip='How many candidate formulas per generation. More — broader coverage, but slower.')
         self.v_gens = self._num(g, 'Generations', self.cfg['gens'], 1, 1, 500, 1,
                                 tip='How many generations of evolution per round.')
-        self.v_seed = self._num(g, 'Seed (base)', self.cfg['seed'], 2, 0, 999999, 1,
-                                tip='Random seed. The same seed → a reproducible run.')
+        self.v_seed = self._num(g, 'Seed (0 = auto)', self.cfg['seed'], 2, 0, 999999, 1,
+                                tip='0 / auto — a unique per-install seed minted from this node\'s ID:\n'
+                                    'every node walks its own path through formula space, so no two\n'
+                                    'installs mine the same library. Set an integer to reproduce a run.')
         self.v_pause = self._num(g, 'Pause, sec', self.cfg['pause'], 3, 0, 3600, 1,
                                  tip='Pause between rounds so the machine gets a breather.')
         self.v_port = self._num(g, 'Status port', self.cfg['port'], 4, 1024, 65535, 1,
@@ -1094,6 +1223,22 @@ class App:
         self.s_rounds = self._stat(stats, 'rounds', 0)
         self.s_trials = self._stat(stats, 'formulas tried', 1)
         self.s_found = self._stat(stats, 'alphas found', 2)
+        if self._simple():                               # the one knob Simple mode keeps
+            prow = self._box(pad)
+            prow.pack(fill='x', pady=(12, 0))
+            self._lbl(prow, text='Power', text_color=MUT, font=(self.UI, 13)).pack(side='left')
+            self._pw_btns = {}
+            for lbl, pct, tip in (
+                    ('Quiet', 25, '~25% of the CPU — mines quietly in the background.'),
+                    ('Balanced', 50, '~50% of the CPU — the default: fast, still polite.'),
+                    ('Turbo', 85, '~85% of the CPU — full speed; the fans will know.')):
+                b = self._btn(prow, lbl, lambda p=pct: self._set_power(p), height=26, width=92)
+                b.pack(side='left', padx=(8, 0))
+                self._tip(b, tip + '\nApplies from the next start of the node.')
+                self._pw_btns[pct] = b
+            self._paint_power()
+        else:
+            self._pw_btns = {}
         self.lbl_cur = self._lbl(pad, text='', text_color=MUT, font=(self.MONO, 12),
                                     anchor='w', justify='left')
         self.lbl_cur.pack(anchor='w', fill='x', pady=(12, 0))
@@ -1186,6 +1331,13 @@ class App:
             w = int(w * self.SCALE)
             self.tree.heading(c, text=txt, **kw)
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
+        # Simple mode shows the two numbers that matter (plus the formula); the full stat
+        # columns are an Advanced-mode affair. The data underneath is identical.
+        self._lb_cols_fixed = [c for c in cols if c != 'formula']
+        if self._simple():
+            disp = ('rank', 'fit', 'test', 'formula')
+            self.tree.configure(displaycolumns=disp)
+            self._lb_cols_fixed = [c for c in disp if c != 'formula']
         self._update_headings()                          # show the sort arrow on the active column
         self._tip(self.lbl_lb_head, 'maxDD = worst peak-to-trough drawdown; CAGR = annualized growth;\n'
                                     'sortino = like Sharpe but only downside vol counts (upside is free);\n'
@@ -1314,6 +1466,8 @@ class App:
                                'pan, reset. The card itself keeps the auto-fitted image.')
         card3.bind('<Configure>', self._on_pf_resize)         # re-render equity to the panel width
         self.root.after(500, self._load_portfolio_on_start)   # show last build, if any
+        if self._simple():                               # portfolio is an Advanced-mode tool;
+            card3.grid_remove()                          # _regrid_cards keeps hidden cards hidden
 
         # ---- FORWARD TRACK (append-only paper stepping of enrolled strategies) ----
         card4 = self._card(right)
@@ -1394,9 +1548,12 @@ class App:
         row, after_grip = 0, False
         for i, name in enumerate(self._card_order()):
             if name == 'portfolio':                      # its plot-height grip is the gap ABOVE
-                self._pf_grip.grid(row=row, column=0, sticky='ew')
-                row += 1
-                after_grip = True
+                if name in hidden:
+                    self._pf_grip.grid_remove()          # a grip for a hidden card is a stray gap
+                else:
+                    self._pf_grip.grid(row=row, column=0, sticky='ew')
+                    row += 1
+                    after_grip = True
             w = self._cards[name]
             w.grid(row=row, column=0, sticky=('nsew' if name == 'leaderboard' else 'ew'),
                    pady=((0 if (i == 0 or after_grip) else 16), 0))
@@ -1498,7 +1655,8 @@ class App:
         self.e_uni.configure(state='disabled' if self.v_uniall.get() else 'normal')
 
     def _reset(self):
-        keep = {k: self.cfg.get(k) for k in ('theme', 'settings_open')}   # appearance, not search
+        keep = {k: self.cfg.get(k) for k in ('theme', 'settings_open',
+                                             'ui_mode', 'welcomed')}      # appearance, not search
         self.cfg = dict(DEFAULTS)
         self.cfg.update(keep)
         try:
@@ -1699,6 +1857,7 @@ class App:
         self.v_fitblocks.set(c.get('fit_blocks', 5))
         self.v_train.set(c['train_start']); self.v_val.set(c['val_start'])
         self.v_test.set(c['test_start']); self.v_end.set(c['test_end'])
+        self._paint_power()                              # Simple mode's preset highlight follows cpu
 
     def _set_running(self, running):
         self.btn_start.configure(state='disabled' if running else 'normal')
@@ -1770,6 +1929,7 @@ class App:
     def start(self):
         if self.proc and self.proc.poll() is None:
             return
+        self._welcome_dismiss()                          # starting IS the first-run onboarding
         self._save()
         c = self.cfg
         os.makedirs(STATE_DIR, exist_ok=True)
@@ -1782,7 +1942,8 @@ class App:
             ALPHANODE_CPU_PERCENT=str(c['cpu']),
             ALPHANODE_UNIVERSE=('all' if c['universe_all'] else c['universe_list']),
             ALPHANODE_POP=str(c['pop']), ALPHANODE_GENS=str(c['gens']),
-            ALPHANODE_SEED=str(c['seed']), ALPHANODE_PAUSE=str(c['pause']),
+            ALPHANODE_SEED=(str(c['seed']) if c['seed'] else 'auto'),   # 0 -> per-install node-ID seed
+            ALPHANODE_PAUSE=str(c['pause']),
             ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_STATUS_PORT=str(c['port']),
             ALPHANODE_TF=self._tf(),
             ALPHANODE_DATA=self._data_file(),      # per-timeframe snapshot (fresh/bundled)
@@ -2584,9 +2745,7 @@ class App:
         the visible area -> the horizontal scrollbar takes over; narrower -> the column still
         stretches to fill the card. Re-run on every render and on tree resize."""
         try:
-            fixed = sum(int(self.tree.column(c, 'width'))
-                        for c in ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
-                                  'ls', 'act', 'win', 'id'))
+            fixed = sum(int(self.tree.column(c, 'width')) for c in self._lb_cols_fixed)
         except tk.TclError:                              # theme rebuild mid-flight
             return
         avail = self.tree.winfo_width() - fixed - int(4 * self.SCALE)
