@@ -46,7 +46,6 @@ CPU_PERCENT = max(5, min(95, int(env('CPU_PERCENT', '50'))))
 UNIVERSE = env('UNIVERSE', 'all')
 POP = int(env('POP', '200'))
 GENS = int(env('GENS', '25'))
-BASE_SEED = int(env('SEED', '1'))
 PAUSE = float(env('PAUSE', '5'))
 MAX_ROUNDS = int(env('MAX_ROUNDS', '0'))               # 0 = infinite
 SEED_FROM_LIB = env('SEED_FROM_LIBRARY', '1') not in ('0', 'false', 'no', 'off')
@@ -58,6 +57,34 @@ TF = (env('TF', '') or '1d').strip().lower()           # bar size; also read by 
 FORWARD = env('FORWARD', '1').strip().lower() not in ('0', 'false', 'no', 'off')
 
 os.makedirs(STATE_DIR, exist_ok=True)
+
+
+def _resolve_seed():
+    """Base seed for the whole run. ALPHANODE_SEED unset / '' / 'auto' / '0' -> derived from a
+    persistent random node ID (state/node_id, minted on first run): every install walks its own
+    trajectory through formula space, so two nodes never mine identical libraries. An explicit
+    integer keeps the old fully reproducible behavior. Returns (seed, node_id, is_auto)."""
+    nid_path = os.path.join(STATE_DIR, 'node_id')
+    try:
+        nid = open(nid_path).read().strip().lower()
+    except OSError:
+        nid = ''
+    if not (len(nid) == 8 and all(c in '0123456789abcdef' for c in nid)):
+        import secrets
+        nid = secrets.token_hex(4)
+        try:
+            with open(nid_path, 'w') as f:
+                f.write(nid + '\n')
+        except OSError:
+            pass
+    raw = str(env('SEED', 'auto')).strip().lower()
+    if raw in ('', 'auto', '0'):
+        return int(nid, 16) % 900_000 + 1, nid, True
+    return int(raw), nid, False
+
+
+BASE_SEED, NODE_ID, SEED_AUTO = _resolve_seed()
+
 # per-timeframe library/history: alphas mined on different bar sizes are NOT comparable
 # (different annualization, different dynamics) and must never mix in one leaderboard.
 # 1d keeps the historical file names.
@@ -88,6 +115,7 @@ status = {'app': 'AlphaNode', 'state': 'starting', 'started': iso(), 'updated': 
           'rounds': 0, 'trials_total': 0, 'found': 0, 'cpu_percent': CPU_PERCENT, 'n_jobs': N_JOBS,
           'cores': CORES, 'universe': UNIVERSE, 'tf': TF, 'pop': POP, 'gens': GENS,
           'explore_every': EXPLORE_EVERY, 'seed_from_lib': SEED_FROM_LIB,
+          'node_id': NODE_ID, 'seed_base': BASE_SEED, 'seed_auto': SEED_AUTO,
           'current': '', 'gen': '', 'best': []}
 
 
@@ -306,7 +334,7 @@ white-space:pre-wrap;word-break:break-word;color:var(--mut)}}
 .e span{{color:var(--accsoft);margin-right:10px}} .e.best{{color:var(--green)}}
 .e.round{{color:var(--ink)}} .e.polish{{color:var(--acc)}} .e.err,.e.warn{{color:var(--orange)}}
 </style>
-<h1><span class=dot></span>AlphaNode <span style="color:var(--mut);font-weight:400;font-size:14px">— {status['state']}</span></h1>
+<h1><span class=dot></span>AlphaNode <span style="color:var(--mut);font-weight:400;font-size:14px">— {status['state']} · node {status.get('node_id', '—')}</span></h1>
 <p class=sub>background alpha-search node · page refreshes itself</p>
 <div class=grid>
   <div class=card><div class=k>rounds</div><div class=num>{status['rounds']}</div></div>
@@ -438,8 +466,15 @@ def main():
     threading.Thread(target=serve, daemon=True).start()
     if FORWARD:
         threading.Thread(target=forward_loop, daemon=True).start()
-    print(f'AlphaNode: {CPU_PERCENT}% -> {N_JOBS}/{CORES} cores | universe={UNIVERSE} tf={TF} '
-          f'pop={POP} gens={GENS} | status: http://localhost:{STATUS_PORT}')
+    print(f'AlphaNode [{NODE_ID}]: {CPU_PERCENT}% -> {N_JOBS}/{CORES} cores | universe={UNIVERSE} '
+          f'tf={TF} pop={POP} gens={GENS} | status: http://localhost:{STATUS_PORT}')
+    if SEED_AUTO:
+        log_event('i', f'node {NODE_ID}: unique search — base seed {BASE_SEED} derived from this '
+                       f'install\'s node ID; no two nodes mine the same library '
+                       f'(set ALPHANODE_SEED=<int> for a reproducible run)')
+    else:
+        log_event('i', f'node {NODE_ID}: fixed seed {BASE_SEED} — reproducible run '
+                       f'(ALPHANODE_SEED=auto for a per-install unique search)')
     if SEED_FROM_LIB and EXPLORE_EVERY == 1:
         # rnd % 1 != 0 is never true -> the refine branch below is unreachable
         print('WARNING: explore_every=1 makes EVERY round a from-scratch exploration — '

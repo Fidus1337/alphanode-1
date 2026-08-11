@@ -41,7 +41,7 @@ services:
       # ALPHANODE_MAX_DEPTH: "8"          # [genome] max_depth   ·   ALPHANODE_MAX_SIZE: "40"
       # ALPHANODE_TOURNAMENT: "5"         # [ga] tournament / elitism / random_inject / crossover_prob
       # ALPHANODE_PARSIMONY: "0.010"      # [fitness] parsimony / corr_threshold / corr_penalty / hof_capacity
-      # ALPHANODE_SEED: "7"               # RNG seed   ·   ALPHANODE_MAX_ROUNDS: "0" (0 = infinite)
+      # ALPHANODE_SEED: "auto"            # auto = unique per install   ·   ALPHANODE_MAX_ROUNDS: "0" (0 = infinite)
     command: ["run"]
 
   # optional live-signal API (bound to 0.0.0.0 so it's reachable from the host).

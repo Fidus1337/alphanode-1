@@ -19,7 +19,7 @@ services:
       ALPHANODE_UNIVERSE: "all"          # all | BTCUSDT,ETHUSDT,BNBUSDT,...
       ALPHANODE_POP: "200"
       ALPHANODE_GENS: "25"
-      ALPHANODE_SEED: "1"
+      ALPHANODE_SEED: "auto"           # unique per install; set an integer to reproduce
       ALPHANODE_PAUSE: "5"               # pause between rounds (sec)
       # ALPHANODE_MAX_ROUNDS: "0"        # 0 = run forever
     volumes:
