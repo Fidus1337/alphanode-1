@@ -28,6 +28,9 @@ np.seterr(divide='ignore', invalid='ignore')
 from strategies import Bollinger, MAverage, Donchian, RSI
 from quantpylib.simulator.alpha import Portfolio
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'alphanode'))
+import vision_klines as vk                     # noqa: E402  fapi → data.binance.vision fallback
+
 # --- конфиг ---
 START = datetime(2019, 9, 5)
 STRATS = [Bollinger, MAverage, Donchian, RSI]   # состав портфеля (как в eval_strategies.py, Sharpe 1.04)
@@ -58,18 +61,9 @@ def fetch_json(url, retries=4):
 
 
 def fetch_klines(symbol, start_ms, end_ms):
-    """Дневные свечи symbol, БЕЗ незакрытой сегодняшней (closeTime уже прошёл)."""
-    out, cur = [], start_ms
-    while cur < end_ms:
-        url = f'{KLINES}?symbol={symbol}&interval=1d&startTime={cur}&endTime={end_ms}&limit=1500'
-        data = fetch_json(url)
-        if not data:
-            break
-        out.extend(data)
-        if len(data) < 1500:
-            break
-        cur = data[-1][0] + 1
-        time.sleep(0.1)
+    """Дневные свечи symbol, БЕЗ незакрытой сегодняшней (closeTime уже прошёл).
+    fapi недоступен (гео-блок 451 в США) → архив data.binance.vision: те же бары, лаг ~10-30ч."""
+    out = vk.fetch_rows(symbol, start_ms, end_ms, '1d')
     if not out:
         return pd.DataFrame()
     df = pd.DataFrame(out, columns=['openTime', 'open', 'high', 'low', 'close', 'volume',

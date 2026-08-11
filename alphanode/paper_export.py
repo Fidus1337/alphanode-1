@@ -117,18 +117,88 @@ def fetch_json(url, retries=4):
             time.sleep(1.5 * (i + 1))
 
 
+VISION = 'https://data.binance.vision/data/futures/um'
+
+
+def _vision_zip_rows(url):
+    """Rows of the CSV inside one Vision archive zip; None if the file does not exist."""
+    import io, csv, zipfile                                    # noqa: E401 — bundle stays one file
+    try:
+        with urllib.request.urlopen(url, timeout=30) as r:
+            raw = r.read()
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return None
+        raise
+    with zipfile.ZipFile(io.BytesIO(raw)) as z:
+        with z.open(z.namelist()[0]) as f:
+            rows = list(csv.reader(io.TextIOWrapper(f, encoding='utf-8')))
+    if rows and rows[0] and not rows[0][0].strip().isdigit():
+        rows = rows[1:]                                        # header line
+    return rows
+
+
+def _vision_rows_1d(symbol, start_ms, end_ms):
+    """Fallback when fapi is unreachable (HTTP 451 in the US): Binance's own public archive
+    data.binance.vision — the SAME daily bars, ~10-30h behind live. Monthly zips for finished
+    months, daily zips for the current one (and for a just-finished month whose monthly file
+    is still being published, 1-2 days after month end — then ALL its days are fetched)."""
+    import calendar
+    out = []
+    d0 = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
+    now = datetime.now(timezone.utc)
+    y, m = d0.year, d0.month
+    while (y, m) <= (now.year, now.month):
+        cur_month = (y, m) == (now.year, now.month)
+        rows = None
+        if not cur_month:
+            rows = _vision_zip_rows(f'{VISION}/monthly/klines/{symbol}/1d/'
+                                    f'{symbol}-1d-{y:04d}-{m:02d}.zip')
+        if rows is None:
+            nxt = (y + 1, 1) if m == 12 else (y, m + 1)
+            if cur_month or nxt == (now.year, now.month):      # monthly file not published yet
+                eom = calendar.monthrange(y, m)[1]
+                last_day = min(now.day, eom) if cur_month else eom
+                rows, seen = [], False
+                for d in range(1, last_day + 1):
+                    day = _vision_zip_rows(f'{VISION}/daily/klines/{symbol}/1d/'
+                                           f'{symbol}-1d-{y:04d}-{m:02d}-{d:02d}.zip')
+                    if day is None:
+                        if seen:
+                            break                              # hole AFTER data: archive tail
+                        continue                               # leading hole: listed mid-month
+                    seen = True
+                    rows.extend(day)
+            else:
+                rows = []                                      # pre-listing month
+        out.extend(rows)
+        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
+    return [[int(c[0]), c[1], c[2], c[3], c[4], c[5], int(c[6]), c[7], c[8], c[9], c[10], '0']
+            for c in out if start_ms <= int(c[0]) <= end_ms]
+
+
+_FAPI_BLOCKED = {'flag': False}                                # remember the 451 across tickers
+
+
 def fetch_klines(symbol, start_ms, end_ms):
     out, cur = [], start_ms
-    while cur < end_ms:
-        url = f'{KLINES}?symbol={symbol}&interval=1d&startTime={cur}&endTime={end_ms}&limit=1500'
-        data = fetch_json(url)
-        if not data:
-            break
-        out.extend(data)
-        if len(data) < 1500:
-            break
-        cur = data[-1][0] + 1
-        time.sleep(0.1)
+    try:
+        while not _FAPI_BLOCKED['flag'] and cur < end_ms:
+            url = f'{KLINES}?symbol={symbol}&interval=1d&startTime={cur}&endTime={end_ms}&limit=1500'
+            data = fetch_json(url)
+            if not data:
+                break
+            out.extend(data)
+            if len(data) < 1500:
+                break
+            cur = data[-1][0] + 1
+            time.sleep(0.1)
+    except (urllib.error.URLError, TimeoutError):              # fapi blocked/down -> same bars, archived
+        _FAPI_BLOCKED['flag'] = True                           # skip the retry dance for later tickers
+        out = []
+    if _FAPI_BLOCKED['flag'] and not out:
+        print(f'  {symbol}: fapi unreachable -> data.binance.vision archive (same bars, may lag ~1 day)')
+        out = _vision_rows_1d(symbol, start_ms, end_ms)
     if not out:
         return pd.DataFrame()
     df = pd.DataFrame(out, columns=['openTime', 'open', 'high', 'low', 'close', 'volume',

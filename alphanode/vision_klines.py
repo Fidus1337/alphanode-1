@@ -43,8 +43,8 @@ def _http_get(url, timeout=30, retries=3):
                 return None
             if i == retries - 1:
                 raise
-        except (urllib.error.URLError, TimeoutError):
-            if i == retries - 1:
+        except (TimeoutError, OSError):                # URLError ⊂ OSError; also covers a
+            if i == retries - 1:                       # connection reset mid-body-read
                 raise
         time.sleep(1.2 * (i + 1))
 
@@ -93,14 +93,18 @@ def _kline_row(c):
 
 
 def vision_rows(symbol, start_ms, end_ms, interval='1d'):
-    """Klines from the Vision archive, fapi-shaped, [start_ms, end_ms). Finished months come as
-    monthly zips; the current month (and the previous one while its monthly file is still being
-    published, 1-2 days after month end) is assembled from daily zips."""
-    out = []
+    """Klines from the Vision archive, fapi-shaped. Finished months come as monthly zips
+    (downloaded in parallel — a 1h warm-up spans dozens of months); the current month (and the
+    previous one while its monthly file is still being published, 1-2 days after month end) is
+    assembled from daily zips."""
+    from concurrent.futures import ThreadPoolExecutor
     start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
-    end_dt = datetime.fromtimestamp(max(start_ms, end_ms - 1) / 1000, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(max(start_ms, end_ms) / 1000, tz=timezone.utc)
     now = _now_utc()
-    for y, m in _months(start_dt, end_dt):
+    months = list(_months(start_dt, end_dt))
+
+    def month_rows(ym):
+        y, m = ym
         cur_month = (y, m) == (now.year, now.month)
         rows = None
         if not cur_month:
@@ -109,16 +113,32 @@ def vision_rows(symbol, start_ms, end_ms, interval='1d'):
         if rows is None:
             # current month, or last month's monthly file not published yet -> daily files
             if not cur_month and (now.year, now.month) != (y + (m == 12), m % 12 + 1):
-                continue                               # a genuinely old gap: pre-listing month
-            last_day = min(now.day, calendar.monthrange(y, m)[1])
+                return []                              # a genuinely old gap: pre-listing month
+            # clamp to today ONLY for the current month — a finished month whose monthly zip
+            # is still being published (1-2 days after month end) needs ALL of its days, or
+            # early-of-month runs would leave a month-sized hole mid-series
+            eom = calendar.monthrange(y, m)[1]
+            last_day = min(now.day, eom) if cur_month else eom
+            days = list(range(1, last_day + 1))
+            with ThreadPoolExecutor(max_workers=8) as dpool:
+                daily = list(dpool.map(
+                    lambda d: _zip_csv_rows(f'{VISION}/daily/klines/{symbol}/{interval}/'
+                                            f'{symbol}-{interval}-{y:04d}-{m:02d}-{d:02d}.zip'),
+                    days))
             rows = []
-            for d in range(1, last_day + 1):
-                day = _zip_csv_rows(f'{VISION}/daily/klines/{symbol}/{interval}/'
-                                    f'{symbol}-{interval}-{y:04d}-{m:02d}-{d:02d}.zip')
+            seen = False
+            for day in daily:
                 if day is None:
-                    break                              # archive lag reached (~10h after day close)
+                    if seen:
+                        break                          # first hole AFTER data: the archive tail
+                    continue                           # leading hole: listed mid-month
+                seen = True
                 rows.extend(day)
-        out.extend(_kline_row(c) for c in rows)
+        return rows
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        per_month = list(pool.map(month_rows, months))
+    out = [_kline_row(c) for rows in per_month for c in rows]
     # inclusive end bound: /fapi/v1/klines treats endTime as inclusive on open time
     return [r for r in out if start_ms <= r[0] <= end_ms]
 
@@ -129,7 +149,7 @@ def vision_funding(symbol, start_ms, end_ms):
     callers should treat the tail as "not yet known", not as zero-funding truth."""
     out = []
     start_dt = datetime.fromtimestamp(start_ms / 1000, tz=timezone.utc)
-    end_dt = datetime.fromtimestamp(max(start_ms, end_ms - 1) / 1000, tz=timezone.utc)
+    end_dt = datetime.fromtimestamp(max(start_ms, end_ms) / 1000, tz=timezone.utc)
     for y, m in _months(start_dt, end_dt):
         rows = _zip_csv_rows(f'{VISION}/monthly/fundingRate/{symbol}/'
                              f'{symbol}-fundingRate-{y:04d}-{m:02d}.zip')
@@ -140,7 +160,7 @@ def vision_funding(symbol, start_ms, end_ms):
                 ts, rate = int(c[0]), float(c[-1])     # calc_time, last_funding_rate
             except (ValueError, IndexError):
                 continue
-            if start_ms <= ts < end_ms:
+            if start_ms <= ts <= end_ms:               # inclusive, like fapi's endTime
                 out.append((ts, rate))
     return out
 
@@ -188,6 +208,10 @@ def fetch_rows(symbol, start_ms, end_ms, interval='1d'):
             if e.code not in GEO_CODES:
                 raise
             _MODE['fapi'] = False                      # edge said "wrong region" — stop asking
+    if not _MODE.get('warned'):
+        _MODE['warned'] = True
+        print('[data] fapi.binance.com unreachable (geo-block?) → data.binance.vision archive: '
+              'same Binance bars, ~10-30h behind live', flush=True)
     return vision_rows(symbol, start_ms, end_ms, interval)
 
 

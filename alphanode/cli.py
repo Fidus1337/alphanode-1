@@ -78,6 +78,8 @@ def cmd_fetch(args):
     if args.quote:
         argv += ['--quote', args.quote]
     argv += ['--concurrency', str(args.concurrency), '--timeout', str(args.timeout)]
+    if args.source:
+        argv += ['--source', args.source]
     import fetch_data
     sys.argv = argv
     fetch_data.main()                                         # it calls os._exit() itself
@@ -369,6 +371,9 @@ def build_parser():
     f.add_argument('--quote', default='USDT')
     f.add_argument('--concurrency', type=int, default=6)
     f.add_argument('--timeout', type=float, default=120)
+    f.add_argument('--source', default=None, choices=('auto', 'api', 'vision'),
+                   help='auto (default) probes fapi and falls back to the data.binance.vision '
+                        'archive where fapi is geo-blocked (same bars, ~10-30h behind live)')
     f.set_defaults(func=cmd_fetch)
 
     t = sub.add_parser('top', help='top alphas found in the library')

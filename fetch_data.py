@@ -157,8 +157,11 @@ async def _funding_series(bn, sym, start, end):
 
 def _resolve_source(source):
     """'auto' probes fapi once: reachable → the live API exactly as before; blocked (US geo-fence,
-    DNS, firewall) → the data.binance.vision archive. Same Binance bars either way."""
-    mode = (source or os.environ.get('ALPHANODE_DATA_SOURCE') or 'auto').strip().lower()
+    DNS, firewall) → the data.binance.vision archive. Same Binance bars either way. An explicit
+    api/vision wins; None or 'auto' defers to ALPHANODE_DATA_SOURCE, then to the probe."""
+    mode = (source or '').strip().lower()
+    if mode in ('', 'auto'):
+        mode = (os.environ.get('ALPHANODE_DATA_SOURCE') or 'auto').strip().lower()
     if mode not in ('auto', 'api', 'vision'):
         print(f'  unknown source "{mode}" → auto', flush=True)
         mode = 'auto'
@@ -201,8 +204,14 @@ def _gate_universe(top_n, min_years, end, quote='USDT'):
     data API serves US IPs), map BTC_USDT→BTCUSDT, and keep only symbols whose Binance Vision
     archive actually has klines min_years back (HEAD probe of the cutoff-month file) — that one
     check replaces both the exchangeInfo existence test and the onboardDate age filter."""
-    raw = json.load(urllib.request.urlopen(
-        'https://api.gateio.ws/api/v4/futures/usdt/tickers', timeout=30))
+    try:
+        raw = json.load(urllib.request.urlopen(
+            'https://api.gateio.ws/api/v4/futures/usdt/tickers', timeout=30))
+        if not isinstance(raw, list):
+            raise ValueError(f'unexpected Gate response: {type(raw).__name__}')
+    except Exception as e:                             # noqa: BLE001 — caller prints the --symbols hint
+        print(f'  Gate.io ranking failed: {type(e).__name__} {e}', flush=True)
+        return []
     vols = []
     for t in raw:
         c = t.get('contract', '')
@@ -408,13 +417,16 @@ async def fetch(top_n, start, end, out_path, quote, min_years, concurrency, time
     return 0
 
 
-async def add_funding(out_path, interval, concurrency=6):
+async def add_funding(out_path, interval, concurrency=6, source='auto'):
     """Upgrade an EXISTING snapshot in place: download each pair's funding history and add the
-    `funding` column, without refetching the klines. Atomic rewrite; klines stay untouched."""
+    `funding` column, without refetching the klines. Atomic rewrite; klines stay untouched.
+    Source-aware like the main fetch: under a fapi geo-block the funding comes from the Vision
+    archive instead of silently zeroing the column of every pair."""
     with open(out_path, 'rb') as f:
         tickers, ohlcvs = pickle.load(f)
+    mode = _resolve_source(source)
     print(f'· adding funding to {out_path}: {len(tickers)} pairs, klines untouched…', flush=True)
-    bn = _make_binance()
+    bn = _make_binance() if mode == 'api' else None
     freq = _bar_freq(interval)
     end = datetime.now(timezone.utc)
     sem = asyncio.Semaphore(concurrency)
@@ -423,10 +435,17 @@ async def add_funding(out_path, interval, concurrency=6):
     async def one(i):
         nonlocal done
         sym, df = tickers[i], ohlcvs[i]
+        loop = asyncio.get_event_loop()
         async with sem:
             try:
-                fser = await asyncio.wait_for(_funding_series(bn, sym, df.index.min(), end),
-                                              timeout=FUNDING_TIMEOUT)
+                if mode == 'api':
+                    fser = await asyncio.wait_for(_funding_series(bn, sym, df.index.min(), end),
+                                                  timeout=FUNDING_TIMEOUT)
+                else:
+                    fser = await asyncio.wait_for(
+                        loop.run_in_executor(None, _vision_funding_series, sym,
+                                             df.index.min(), end),
+                        timeout=FUNDING_TIMEOUT)
             except Exception as e:                             # noqa: BLE001
                 print(f'  {sym}: ! {type(e).__name__} {e} — funding column zeroed', flush=True)
                 fser = None
@@ -440,7 +459,8 @@ async def add_funding(out_path, interval, concurrency=6):
     save_pickle(tmp, (tickers, ohlcvs))
     os.replace(tmp, out_path)
     print(f'✓ upgraded {out_path}: funding column on all {len(tickers)} pairs', flush=True)
-    await _aclose(bn)
+    if bn is not None:
+        await _aclose(bn)
     return 0
 
 
@@ -507,7 +527,7 @@ def main():
         asyncio.set_event_loop(loop)
         loop.set_exception_handler(lambda _l, _c: None)
         try:
-            rc = loop.run_until_complete(add_funding(args.out, args.interval))
+            rc = loop.run_until_complete(add_funding(args.out, args.interval, source=args.source))
         except KeyboardInterrupt:
             rc = 130
         sys.stdout.flush()

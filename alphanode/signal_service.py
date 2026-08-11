@@ -32,8 +32,6 @@ import json
 import time
 import threading
 import http.server
-import urllib.request
-import urllib.error
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -47,7 +45,8 @@ import numpy as np                                       # noqa: E402
 import pandas as pd                                      # noqa: E402
 warnings.filterwarnings('ignore'); np.seterr(all='ignore')
 
-KLINES = 'https://fapi.binance.com/fapi/v1/klines'
+import vision_klines as vk                               # noqa: E402  fapi→archive fallback
+
 DUST_W = 0.0005                                          # ignore weights below this in the output
 
 # ---- shared state (the HTTP handler reads this; the refresh thread writes it) ----
@@ -60,29 +59,10 @@ def _now_ms():
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-def _fetch_json(url, retries=4):
-    for i in range(retries):
-        try:
-            with urllib.request.urlopen(url, timeout=20) as r:
-                return json.load(r)
-        except (urllib.error.URLError, TimeoutError):
-            if i == retries - 1:
-                raise
-            time.sleep(1.5 * (i + 1))
-
-
 def fetch_klines(symbol, start_ms, end_ms, interval='1d'):
-    out, cur = [], start_ms
-    while cur < end_ms:
-        url = f'{KLINES}?symbol={symbol}&interval={interval}&startTime={cur}&endTime={end_ms}&limit=1500'
-        data = _fetch_json(url)
-        if not data:
-            break
-        out.extend(data)
-        if len(data) < 1500:
-            break
-        cur = data[-1][0] + 1
-        time.sleep(0.1)
+    # fapi when reachable, the data.binance.vision archive when geo-blocked: same Binance
+    # bars either way — a blocked region serves slightly older closed bars, never other data
+    out = vk.fetch_rows(symbol, start_ms, end_ms, interval)
     if not out:
         return pd.DataFrame()
     df = pd.DataFrame(out, columns=['openTime', 'open', 'high', 'low', 'close', 'volume',

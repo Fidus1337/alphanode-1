@@ -238,9 +238,22 @@ in the search window, and the data fetcher would be crawling the pre-listing per
 ```bash
 python fetch_data.py --top 150 --min-years 3     # overwrites data.pickle (atomically)
 python fetch_data.py --top 100 --min-years 2 --start 2019-09-05
+python fetch_data.py --top 60 --source vision    # force the archive transport
 ```
 Or the **"⟳ Update data.pickle"** button in the GUI (fields "Pairs (top by turnover)" = N and
 "Min. history (years)"; the fetch log is in a popup). Public Binance endpoints, no keys needed.
+
+**Works where Binance is geo-blocked (e.g. the US).** The live API (`fapi.binance.com`) returns
+HTTP 451 to US IPs, but Binance's own public archive **data.binance.vision** serves the SAME
+bars worldwide as zipped CSVs. `--source auto` (the default, also `ALPHANODE_DATA_SOURCE`)
+probes fapi once and switches to the archive transparently: identical OHLCV and funding
+(verified bar-for-bar), one data lineage, just ~10-30h behind live — irrelevant for mining.
+The universe listing then ranks by Gate.io 24h turnover (their public data API serves US IPs)
+with an archive-existence probe replacing the listing-age filter. The **forward track, the
+signal API and paper-trade bundles** fall back to the archive the same way at run time: a
+geo-blocked region steps on slightly older closed bars — never on different data. The only
+archive-side gap: funding for the current month arrives with the monthly file (~1-2 days
+after month end); those newest bars carry `funding=0` until the next fetch.
 Each pair is fetched from its own listing date (no day-by-day crawl). After an update, `all` =
 all fetched pairs.
 

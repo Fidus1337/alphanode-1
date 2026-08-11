@@ -16,12 +16,9 @@ Daily timeframe only — the stepping engine is the real quantpylib Portfolio (s
 import os
 import sys
 import json
-import time
 import hashlib
 import argparse
 import warnings
-import urllib.request
-import urllib.error
 from datetime import datetime, timezone, timedelta
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -32,12 +29,12 @@ for _p in (os.path.join(PROJ, 'evolution'), PROJ, HERE):
 
 import numpy as np                                        # noqa: E402
 import pandas as pd                                       # noqa: E402
+import vision_klines as vk                                # noqa: E402  fapi→archive fallback
 
 warnings.filterwarnings('ignore')
 np.seterr(all='ignore')
 
 DUST = 1.0                                                # ignore rebalances under $1 notional
-KLINES = 'https://fapi.binance.com/fapi/v1/klines'
 START_CAPITAL = 10000.0
 BAR_SECS = {'15m': 900, '1h': 3600, '4h': 14400, '1d': 86400}
 BAR_FMT = {'1d': '%Y-%m-%d'}                              # intraday bars carry the time too
@@ -142,29 +139,10 @@ def _now_ms():
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-def _fetch_json(url, retries=4):
-    for i in range(retries):
-        try:
-            with urllib.request.urlopen(url, timeout=20) as r:
-                return json.load(r)
-        except (urllib.error.URLError, TimeoutError):
-            if i == retries - 1:
-                raise
-            time.sleep(1.5 * (i + 1))
-
-
 def fetch_klines(symbol, start_ms, end_ms, interval='1d'):
-    out, cur = [], start_ms
-    while cur < end_ms:
-        url = f'{KLINES}?symbol={symbol}&interval={interval}&startTime={cur}&endTime={end_ms}&limit=1500'
-        data = _fetch_json(url)
-        if not data:
-            break
-        out.extend(data)
-        if len(data) < 1500:
-            break
-        cur = data[-1][0] + 1
-        time.sleep(0.1)
+    # fapi when reachable, the data.binance.vision archive when geo-blocked (same Binance
+    # bars, just ~10-30h behind live — a blocked region steps later, never differently)
+    out = vk.fetch_rows(symbol, start_ms, end_ms, interval)
     if not out:
         return pd.DataFrame()
     df = pd.DataFrame(out, columns=['openTime', 'open', 'high', 'low', 'close', 'volume',
@@ -249,6 +227,16 @@ def step_entry(entry, kline_cache, force=False, log=print):
     last_bar = max(df.index[-1] for df in dfs.values())
     end_str = _fmt_bar(last_bar, tf)
     st = entry['state']
+    hist = entry['history']
+    # The data source may sit BEHIND the recorded track: a node that stepped on live fapi and
+    # then lost it (US geo-block → Vision archive, ~10-30h lag) would otherwise append an older
+    # bar after a newer one and re-count its P&L backwards. Append-only means forward-only —
+    # wait until the source catches up. (Same-format strings compare chronologically.)
+    prev = hist[-1]['date'] if hist else None
+    if prev is not None and end_str < prev:
+        log(f'[{entry["id"]}] data source is behind the track (last step {prev}, source has '
+            f'{end_str}) — waiting for fresher bars')
+        return False
     if not force and st.get('last_run') == end_str:
         log(f'[{entry["id"]}] up to date ({end_str})')
         return False
@@ -291,7 +279,6 @@ def step_entry(entry, kline_cache, force=False, log=print):
            'pos': {t: round(target[t] * prices[t] / equity, 4) for t in tickers
                    if equity > 0 and abs(target[t] * prices[t]) > DUST},
            'trades': {t: round(d * prices[t], 2) for t, d in trades.items()}}
-    hist = entry['history']
     if hist and hist[-1]['date'] == end_str:              # a force re-step overwrites the same bar
         hist[-1] = row
     else:
