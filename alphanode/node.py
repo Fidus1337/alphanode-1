@@ -264,35 +264,62 @@ def render_html():
     fwd_card = (f"<div class=card style='margin-bottom:16px'>"
                 f"<div class=k style='margin-bottom:8px'>forward track — append-only paper steps "
                 f"(stepped by this node; no GUI needed)</div>"
-                f"<table><thead><tr><th class=f>id</th><th>tf</th><th>steps</th><th>return</th>"
-                f"<th>sharpe</th></tr></thead><tbody>{fwd_rows}</tbody></table></div>"
-                if fwd_rows else '')
+                f"<div class=tw><table><thead><tr><th class=f>id</th><th>tf</th><th>steps</th>"
+                f"<th>return</th><th>sharpe</th></tr></thead><tbody>{fwd_rows}</tbody></table>"
+                f"</div></div>" if fwd_rows else '')
+    # Visual language modeled on nixtla.io: warm paper background, near-black ink, hairline
+    # borders, flat white cards, uppercase mono micro-labels, periwinkle + orange accents.
+    # Self-contained on purpose (system font stacks, no CDN): the node may run offline.
     return f"""<!doctype html><meta charset=utf-8><title>AlphaNode</title>
-<style>body{{font:14px system-ui;background:#0f1115;color:#d7dce3;margin:0;padding:26px;max-width:1100px}}
-h1{{margin:0 0 2px;font-size:20px}} .sub{{color:#8a93a2;margin:0 0 18px}} .k{{color:#8a93a2;font-size:12px}}
-b{{color:#fff}} .grid{{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:16px}}
-.card{{background:#171a21;border:1px solid #232833;border-radius:12px;padding:12px 16px}}
-table{{width:100%;border-collapse:collapse}} td,th{{padding:6px 8px;border-bottom:1px solid #232833;text-align:right;font-size:12px}}
-th{{color:#8a93a2}} td.f,th.f{{text-align:left;font-family:ui-monospace,monospace;color:#cbd5e1}} td.t{{color:#4ade80}}
-.dot{{width:9px;height:9px;border-radius:50%;background:#4ade80;display:inline-block;margin-right:7px;animation:p 1.1s infinite}}
-@keyframes p{{50%{{opacity:.35}}}} .gen{{font-family:ui-monospace,monospace;font-size:11px;color:#8a93a2;margin:0 0 14px}}
-.e{{font-family:ui-monospace,monospace;font-size:11.5px;padding:2px 0;white-space:pre-wrap;word-break:break-word;color:#8a93a2}}
-.e span{{color:#5b6470;margin-right:9px}} .e.best{{color:#4ade80}}
-.e.round{{color:#d7dce3}} .e.polish{{color:#7fb3ff}} .e.err,.e.warn{{color:#f87171}}</style>
-<h1><span class=dot></span>AlphaNode <span style="color:#8a93a2;font-weight:400;font-size:13px">— {status['state']}</span></h1>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<style>
+:root{{--paper:#f6f4f0;--card:#ffffff;--ink:#222121;--mut:#6f6b66;--line:#dedddd;--soft:#eae9e6;
+--acc:#7d8cff;--accsoft:#bfd1ff;--orange:#f99c00;--green:#1e7f4e;--red:#c14b36}}
+@media(prefers-color-scheme:dark){{:root{{--paper:#262421;--card:#2e2b27;--ink:#f6f4f0;--mut:#a5a09a;
+--line:#3a3733;--soft:#35322e;--accsoft:#4a5285;--green:#5abd8c;--red:#e57a63}}}}
+*{{box-sizing:border-box}}
+body{{font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--paper);
+color:var(--ink);margin:0 auto;padding:44px 30px 60px;max-width:1180px}}
+h1{{margin:0;font-size:27px;font-weight:600;letter-spacing:-.02em}}
+.sub{{color:var(--mut);margin:4px 0 26px;font-size:14px}}
+.k{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;letter-spacing:.09em;
+text-transform:uppercase;color:var(--mut)}}
+b{{color:var(--ink);font-weight:600}}
+.grid{{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:18px}}
+.grid .card{{min-width:150px}}
+.card{{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 18px}}
+.num{{font-size:20px;font-weight:600;letter-spacing:-.01em}}
+table{{width:100%;border-collapse:collapse}}
+td,th{{padding:7px 10px;border-bottom:1px solid var(--soft);text-align:right;font-size:12.5px;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace}}
+tr:last-child td{{border-bottom:none}}
+th{{font-size:10.5px;letter-spacing:.09em;text-transform:uppercase;color:var(--mut);font-weight:500}}
+td.f,th.f{{text-align:left;color:var(--ink)}} td.t{{color:var(--acc);font-weight:600}}
+.dot{{width:9px;height:9px;border-radius:50%;background:var(--acc);display:inline-block;
+margin-right:10px;animation:p 1.2s infinite}}
+@keyframes p{{50%{{opacity:.3}}}}
+.gen{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--mut);
+margin:0 0 16px;white-space:pre-wrap}}
+.tw{{overflow-x:auto}} .tw td{{white-space:nowrap}}
+.e{{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;padding:2.5px 0;
+white-space:pre-wrap;word-break:break-word;color:var(--mut)}}
+.e span{{color:var(--accsoft);margin-right:10px}} .e.best{{color:var(--green)}}
+.e.round{{color:var(--ink)}} .e.polish{{color:var(--acc)}} .e.err,.e.warn{{color:var(--orange)}}
+</style>
+<h1><span class=dot></span>AlphaNode <span style="color:var(--mut);font-weight:400;font-size:14px">— {status['state']}</span></h1>
 <p class=sub>background alpha-search node · page refreshes itself</p>
 <div class=grid>
-  <div class=card><div class=k>rounds</div><b style="font-size:18px">{status['rounds']}</b></div>
-  <div class=card><div class=k>formulas tried</div><b style="font-size:18px">{status['trials_total']:,}</b></div>
-  <div class=card><div class=k>alphas found</div><b style="font-size:18px">{len(seen)}</b></div>
-  <div class=card><div class=k>resources</div><b>{status['cpu_percent']}%</b> · {status['n_jobs']}/{status['cores']} cores</div>
-  <div class=card><div class=k>universe</div><b>{status['universe']}</b> · pop {status['pop']} gens {status['gens']}</div>
+  <div class=card><div class=k>rounds</div><div class=num>{status['rounds']}</div></div>
+  <div class=card><div class=k>formulas tried</div><div class=num>{status['trials_total']:,}</div></div>
+  <div class=card><div class=k>alphas found</div><div class=num>{len(seen)}</div></div>
+  <div class=card><div class=k>resources</div><div class=num>{status['cpu_percent']}%</div><span class=k>{status['n_jobs']}/{status['cores']} cores</span></div>
+  <div class=card><div class=k>universe</div><div class=num>{status['universe']}</div><span class=k>pop {status['pop']} · gens {status['gens']}</span></div>
 </div>
 <div class=gen>{status.get('current','')} &nbsp; {status.get('gen','')}</div>
 {adv_log}
 {fwd_card}
 <div class=card><div class=k style="margin-bottom:8px">best by fitness min(train,val) · TEST — honest held-out (read-only, does NOT enter selection)</div>
-<table><thead><tr><th>#</th><th>fitness</th><th>TEST (OOS)</th><th class=f>formula</th></tr></thead><tbody>{rows}</tbody></table></div>
+<div class=tw><table><thead><tr><th>#</th><th>fitness</th><th>TEST (OOS)</th><th class=f>formula</th></tr></thead><tbody>{rows}</tbody></table></div></div>
 <script>setTimeout(()=>location.reload(),4000)</script>"""
 
 
