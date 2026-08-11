@@ -197,6 +197,64 @@ def _fapi_rows(symbol, start_ms, end_ms, interval, timeout=20):
     return out
 
 
+def _fapi_funding(symbol, start_ms, end_ms, timeout=20):
+    """Funding events [(calc_time_ms, rate), ...] from the live API, paginated."""
+    out, cur = [], start_ms
+    while cur < end_ms:
+        url = (f'{FAPI}/fapi/v1/fundingRate?symbol={symbol}'
+               f'&startTime={cur}&endTime={end_ms}&limit=1000')
+        raw = _http_get(url, timeout=timeout, retries=4)
+        data = json.loads(raw) if raw else []
+        if not data:
+            break
+        out.extend((int(r['fundingTime']), float(r['fundingRate'])) for r in data)
+        nxt = int(data[-1]['fundingTime']) + 1
+        if nxt <= cur or len(data) < 1000:
+            break
+        cur = nxt
+    return out
+
+
+_FUND_COV = {}                                         # (symbol, y, m) -> prev monthly file exists?
+
+
+def _vision_funding_coverage_ms(symbol):
+    """Through when the archive's funding is COMPLETE for this symbol: the start of the current
+    month, or of the previous one while its monthly file is still unpublished (1-2 day lag,
+    probed once per process). Beyond this point absence of events means "not published yet",
+    never "no funding happened"."""
+    now = _now_utc()
+    py, pm = (now.year - 1, 12) if now.month == 1 else (now.year, now.month - 1)
+    key = (symbol, py, pm)
+    if key not in _FUND_COV:
+        url = f'{VISION}/monthly/fundingRate/{symbol}/{symbol}-fundingRate-{py:04d}-{pm:02d}.zip'
+        try:
+            req = urllib.request.Request(url, method='HEAD')
+            with urllib.request.urlopen(req, timeout=15) as r:
+                _FUND_COV[key] = (r.status == 200)
+        except Exception:                              # noqa: BLE001 — unknown -> not covered
+            _FUND_COV[key] = False
+    y, m = (now.year, now.month) if _FUND_COV[key] else (py, pm)
+    return int(datetime(y, m, 1, tzinfo=timezone.utc).timestamp() * 1000)
+
+
+def fetch_funding(symbol, start_ms, end_ms):
+    """Funding events with the same fapi→Vision fallback as fetch_rows — or **None** when the
+    source cannot cover the WHOLE window. The archive has monthly files only, so under a
+    geo-block the current month is uncovered: unknown is not zero, and a caller must never
+    book an empty-because-unpublished window as zero-funding truth."""
+    if fapi_reachable():
+        try:
+            return _fapi_funding(symbol, start_ms, end_ms)
+        except urllib.error.HTTPError as e:
+            if e.code not in GEO_CODES:
+                raise
+            _MODE['fapi'] = False
+    if end_ms > _vision_funding_coverage_ms(symbol):
+        return None                                    # window reaches beyond the archive
+    return vision_funding(symbol, start_ms, end_ms)
+
+
 def fetch_rows(symbol, start_ms, end_ms, interval='1d'):
     """Klines rows in /fapi/v1/klines shape: fapi when reachable, the Vision archive otherwise.
     Same Binance bars either way — the fallback only trades freshness (archive lag), never the

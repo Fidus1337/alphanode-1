@@ -203,6 +203,29 @@ def _compute_targets_fast(entry, tickers, dfs, tf):
     return {tk: float(last[i]) for i, tk in enumerate(tickers)}, 1.0
 
 
+def _funding_events(t, from_ms, to_ms, cache):
+    """Funding events of `t` in [from_ms, to_ms), via the shared per-run cache (one fetch per
+    ticker per run; re-fetched when an entry needs an earlier start OR a later end — entries
+    on different timeframes share the ticker but not the window). None = rates unavailable
+    right now (e.g. current month under a geo-block) — the caller must treat that as
+    "unknown", never as zero. Half-open [from, to): an event stamped exactly on a bar close
+    belongs to the NEXT step and is charged on the post-rebalance book, matching how fastsim
+    floors events into the bar that OPENS at that instant — so which book pays no longer
+    depends on millisecond jitter in fundingTime."""
+    key = (t, '_funding')
+    got = cache.get(key)
+    if got is None or got[0] > from_ms or got[1] < to_ms:
+        fetched_to = _now_ms()
+        try:
+            cache[key] = (from_ms, fetched_to, vk.fetch_funding(t, from_ms, fetched_to))
+        except Exception:                                 # noqa: BLE001 — no rates this cycle
+            cache[key] = (from_ms, fetched_to, None)
+    _f, _t, ev = cache[key]
+    if ev is None:
+        return None
+    return [(ts, r) for ts, r in ev if from_ms <= ts < to_ms]
+
+
 def step_entry(entry, kline_cache, force=False, log=print):
     """One trading step for one entry. Returns True if the entry advanced (needs saving)."""
     tf = entry.get('tf', '1d')
@@ -225,6 +248,17 @@ def step_entry(entry, kline_cache, force=False, log=print):
         return False
     tickers = ok
     last_bar = max(df.index[-1] for df in dfs.values())
+    # Complete-universe guard: a ticker whose feed is missing or ends BEFORE the common bar
+    # would silently leave the book (its position teleports to zero with no trade booked) and
+    # get re-bought next bar — phantom churn and double fees. A transient gap just delays the
+    # step; the loop retries in minutes. (A permanently dead symbol freezes the entry — that
+    # is the honest outcome; archive the entry if the perp was delisted.)
+    stale = [t for t in entry['tickers'] if t not in dfs or dfs[t].index[-1] < last_bar]
+    if stale:
+        log(f'[{entry["id"]}] incomplete universe at {_fmt_bar(last_bar, tf)} — '
+            f'{len(stale)}/{len(entry["tickers"])} without fresh data ({", ".join(stale[:4])}'
+            f'{"…" if len(stale) > 4 else ""}) — waiting')
+        return False
     end_str = _fmt_bar(last_bar, tf)
     st = entry['state']
     hist = entry['history']
@@ -255,6 +289,41 @@ def step_entry(entry, kline_cache, force=False, log=print):
     pnl = sum(positions.get(t, 0.0) * (prices[t] - float(prev_prices.get(t, prices[t])))
               for t in tickers)
     equity += pnl
+    # Perp funding accrual — the same economics fastsim charges during mining: every funding
+    # event inside the gap costs units × price × rate (longs pay a positive rate, shorts
+    # receive it), priced at the last close BEFORE the event (fastsim's units×C[i-1]×F[i]).
+    # ALL-OR-NOTHING: if any held ticker's rates are unavailable (archive lag under a
+    # geo-block, a transient fetch error), the step accrues NOTHING and records funding as
+    # null — unknown is not zero, a partial sum posing as a total is worse, and append-only
+    # means a wrong number could never be corrected later.
+    funding = 0.0                                         # known-zero: flat book / no gap
+    fund_note = ''
+    prev_str = hist[-1]['date'] if hist else None
+    if prev_str and positions:
+        bar_ms = BAR_SECS[tf] * 1000
+        w_from = int(pd.Timestamp(prev_str, tz='UTC').timestamp() * 1000) + bar_ms
+        w_to = int(last_bar.timestamp() * 1000) + bar_ms
+        if w_to > w_from:
+            acc, complete = 0.0, True
+            for t, units in positions.items():
+                if not units:
+                    continue
+                ev = _funding_events(t, w_from, w_to, kline_cache) if t in dfs else None
+                if ev is None:
+                    complete = False
+                    break
+                closes = dfs[t]['close']
+                for ts, rate in ev:
+                    px = float(closes.asof(pd.Timestamp(ts - 1, unit='ms', tz='UTC')))
+                    if px == px:                          # NaN-safe: skip pre-history events
+                        acc -= units * px * rate
+            if complete:
+                funding = acc
+            else:
+                funding = None                            # recorded as unknown, shown as —
+                fund_note = (' · funding rates unavailable — NOT accrued, recorded as '
+                             'unknown (never as zero)')
+    equity += funding or 0.0
     target = {t: (weights.get(t, 0.0) * lev * equity / prices[t]) if prices[t] > 0 else 0.0
               for t in tickers}
     trades = {}
@@ -273,6 +342,7 @@ def step_entry(entry, kline_cache, force=False, log=print):
     # intraday weights are already weight×leverage (lev returned as 1.0) — log the real gross
     lev_disp = lev if tf == '1d' else sum(abs(w) for w in weights.values())
     row = {'date': end_str, 'equity': round(equity, 2), 'pnl': round(pnl, 2),
+           'funding': (None if funding is None else round(funding, 2)),
            'fees': round(fees, 2), 'turnover': round(turnover, 2), 'leverage': round(lev_disp, 3),
            # the SIGNALS of this step: the held book (signed fraction of equity per asset)
            # and the executed rebalance (signed $ notional per asset)
@@ -280,10 +350,15 @@ def step_entry(entry, kline_cache, force=False, log=print):
                    if equity > 0 and abs(target[t] * prices[t]) > DUST},
            'trades': {t: round(d * prices[t], 2) for t, d in trades.items()}}
     if hist and hist[-1]['date'] == end_str:              # a force re-step overwrites the same bar
+        # the bar's funding was accrued by the ORIGINAL step (this re-step's window is empty
+        # and would show 0.00 while st.equity correctly keeps the amount) — carry it over
+        row['funding'] = hist[-1].get('funding')
         hist[-1] = row
     else:
         hist.append(row)
-    log(f'  equity ${equity:,.2f} · P&L ${pnl:+,.2f} · fees ${fees:,.2f} · lev {lev_disp:.2f}')
+    fund_disp = 'n/a' if funding is None else f'${funding:+,.2f}'
+    log(f'  equity ${equity:,.2f} · P&L ${pnl:+,.2f} · funding {fund_disp} · '
+        f'fees ${fees:,.2f} · lev {lev_disp:.2f}{fund_note}')
     return True
 
 

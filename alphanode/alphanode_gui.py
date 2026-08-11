@@ -3814,11 +3814,12 @@ class App:
         hist_note.pack(side='left')
         wrap = self._box(frm)
         wrap.pack(fill='both', expand=True)
-        cols = ('date', 'book', 'trades', 'pnl', 'fees')
+        cols = ('date', 'book', 'trades', 'pnl', 'funding', 'fees')
         tv = ttk.Treeview(wrap, columns=cols, show='headings', height=12)
         for c, txt, w, anc in (('date', 'BAR', 130, 'center'), ('book', 'BOOK HELD', 330, 'w'),
                                ('trades', 'REBALANCE ($)', 300, 'w'),
-                               ('pnl', 'P&L $', 90, 'e'), ('fees', 'FEES $', 80, 'e')):
+                               ('pnl', 'P&L $', 90, 'e'), ('funding', 'FUND $', 76, 'e'),
+                               ('fees', 'FEES $', 80, 'e')):
             tv.heading(c, text=txt)
             tv.column(c, width=int(w * self.SCALE), anchor=anc, stretch=(c in ('book', 'trades')))
         shown = hist[-400:]                               # a 1h track grows long — cap the widget
@@ -3828,9 +3829,11 @@ class App:
                    (' · '.join(f'{t.replace("USDT", "")} {v:+,.0f}'
                                for t, v in sorted(tr.items(), key=lambda kv: -abs(kv[1]))[:8])
                     or 'no trades'))
+            fund = h.get('funding')                       # pre-feature rows have no key: show —
             tv.insert('', 'end', tags=('odd' if i % 2 else 'even',), values=(
                 h['date'], self._fwd_book_str(h.get('pos')) if h.get('pos') is not None else '—',
-                trs, f'{h.get("pnl", 0):+,.2f}', f'{h.get("fees", 0):,.2f}'))
+                trs, f'{h.get("pnl", 0):+,.2f}',
+                ('—' if fund is None else f'{fund:+,.2f}'), f'{h.get("fees", 0):,.2f}'))
         tv.tag_configure('odd', background=STRIPE)
         tv.tag_configure('even', background=CARD)
         vs = ctk.CTkScrollbar(wrap, orientation='vertical', command=tv.yview, fg_color=CARD,
@@ -3852,14 +3855,16 @@ class App:
         rows = []
         for h in e.get('history') or []:
             pos, tr = h.get('pos') or {}, h.get('trades') or {}
+            fund = h.get('funding')                       # '' = pre-feature row OR unknown (null)
+            fund = '' if fund is None else fund
             for t in sorted(set(pos) | set(tr), key=lambda x: -abs(pos.get(x, 0.0))):
                 rows.append([h['date'], t, pos.get(t, ''), tr.get(t, ''),
-                             h.get('pnl', ''), h.get('fees', ''), h.get('equity', '')])
+                             h.get('pnl', ''), fund, h.get('fees', ''), h.get('equity', '')])
             if not pos and not tr:                        # pre-feature rows / flat bars stay visible
-                rows.append([h['date'], '', '', '', h.get('pnl', ''), h.get('fees', ''),
+                rows.append([h['date'], '', '', '', h.get('pnl', ''), fund, h.get('fees', ''),
                              h.get('equity', '')])
         self._save_csv(path, ('bar', 'ticker', 'book_frac', 'trade_usd', 'step_pnl',
-                              'step_fees', 'equity'), rows, 'signal rows')
+                              'step_funding', 'step_fees', 'equity'), rows, 'signal rows')
 
     def _fwd_chart(self):
         e = self._fwd_selected()
