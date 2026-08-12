@@ -1999,6 +1999,8 @@ class App:
                         self.btn_fetch.configure(state='normal')
                         self._fetching = False
                         self._lib_cache['mtime'] = None
+                        self._metrics_cache = {}         # fresh data: stats measured on the old
+                        #                                  snapshot must not survive the swap
                         if code == 0 and on_success is not None:
                             win.after(700, on_success)
                         return
@@ -2840,6 +2842,9 @@ class App:
 
     def _start_lb_compute(self, force=False):
         lib = self._lib_file()
+        if getattr(self, '_metrics_lib', None) != lib:   # another timeframe's library: its trade
+            self._metrics_lib = lib                      # stats were computed in a different world
+            self._metrics_cache = {}                     # (in-flight batches write to the old dict)
         try:
             mt = os.path.getmtime(lib)
         except OSError:
@@ -3093,9 +3098,11 @@ class App:
         return doc.get('metrics') or {}
 
     def _apply_metrics(self, seq):
-        """Set the computed metric cells into the already shown rows (main thread)."""
-        if seq != self._metrics_seq:
-            return
+        """Set the computed metric cells into the already shown rows (main thread). The paint is
+        UNCONDITIONAL — values come from the cache and repainting is idempotent — because batches
+        finish out of order around rebuilds/scrolls: gate the paint on seq and a stale batch's
+        results are dropped with no later batch coming, freezing the columns at '…' until the
+        user pokes one. Only the follow-up work belongs to the newest batch."""
         for formula, item in list(self._row_items.items()):
             if not self.tree.exists(item):
                 continue
@@ -3111,9 +3118,15 @@ class App:
                 for col in ('dd', 'cagr'):
                     if self.tree.set(item, col) in ('…', '—'):
                         self.tree.set(item, col, self._fmt_ratio(m.get(col), pct=True))
+        if seq != self._metrics_seq:
+            return
         if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm', 'dd', 'cagr'):
             self._treesig = None
             self._render_lb(self._lb_rows() or self._shown)
+        elif any(c.get('formula') and c['formula'] not in self._metrics_cache
+                 for c in self._visible_champs()):
+            self.root.after_idle(self._pump_metrics)     # a stale batch skipped its slice while we
+        #                                                  scrolled past — pick the viewport back up
 
     # ---------- equity chart on click (TRAIN|VAL|TEST + B&H) ----------
     def _on_row_open(self, event):
