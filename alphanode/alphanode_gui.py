@@ -837,6 +837,8 @@ class App:
         if self._lib_cache.get('computed'):              # the fresh (empty) table repaints from the
             self._render_lb(self._lb_rows())             # cache NOW — its dirty flag is long spent,
         #                                                  and mtime won't budge until the next round
+        elif self._shown:                                # no library file yet (fresh timeframe):
+            self._fill_tree(list(self._shown))           # keep the status-fed rows, don't go blank
         if self._pf_doc:
             self._render_portfolio(self._pf_doc)
 
@@ -866,6 +868,8 @@ class App:
         self._render_signal_rows()
         if self._lib_cache.get('computed'):              # same as _set_theme: repaint the rebuilt
             self._render_lb(self._lb_rows())             # table from cache, don't wait for mtime
+        elif self._shown:
+            self._fill_tree(list(self._shown))
         if self._pf_doc and not self._simple():
             self._render_portfolio(self._pf_doc)
 
@@ -948,8 +952,9 @@ class App:
 
     # ---------- left panel: ALL settings (scrollable, hidden by default) ----------
     def _toggle_settings(self):
-        if self.cfg.get('settings_open'):
-            self._sash_save()                            # remember the width the user chose
+        # NB: no _sash_save here — saving on close recorded whatever the sash had drifted to
+        # (window resizes, CTk relayout) and silently shrank the pane open after open. The width
+        # is remembered only when the user actually drags the sash (<ButtonRelease> on the paned).
         self.cfg['settings_open'] = not self.cfg.get('settings_open')
         self._apply_settings_vis()
         self._save()
@@ -963,16 +968,25 @@ class App:
             self._paned.paneconfigure(self._settings_outer, hide=not shown)
         except tk.TclError:
             pass
-        if shown and self.cfg.get('split_w'):
-            self.root.after(120, self._sash_restore)
+        if shown:
+            self._sash_restore()                         # place NOW — the old 120ms delay made the
+            self.root.after_idle(self._sash_restore)     # pane visibly stretch a beat after opening
+            self.root.after(150, self._sash_restore)     # once more after CTk's late relayout
         if self.btn_settings is not None:
             self.btn_settings.configure(border_color=(ACC if shown else BORDER),
                                         text_color=(ACC if shown else TXT))
 
     # ---------- draggable split (settings | dashboard) ----------
     def _sash_restore(self):
+        """Every open lands on the SAME width: the user's saved split, or (never dragged) the
+        content's natural width. Idempotent — safe to call again after late relayouts."""
+        w = self.cfg.get('split_w')
+        nat = self._settings_inner.winfo_reqwidth()
+        if not w and nat <= 1:
+            return                                       # pre-layout: let the pane's own request rule
+        x = int(w * self.SCALE) if w else nat + int(48 * self.SCALE)
         try:
-            self._paned.sash_place(0, int(self.cfg['split_w'] * self.SCALE), 1)
+            self._paned.sash_place(0, x, 1)
         except tk.TclError:
             pass
 
