@@ -3742,29 +3742,61 @@ class App:
             self._panel_cache = {key: cached}            # keep only the last one (memory)
         return cached
 
-    # ---------- vault (prototype): the locked card + the Unlock flow ----------
-    def _vault_reveal(self, token, license_key):
-        """Hand the sealed token to the vault server; the subscription check happens THERE.
-        Returns the plaintext formula, raises RuntimeError with a human message otherwise."""
+    # ---------- vault: the locked card + the Unlock flow (talks to AlphaHub) ----------
+    def _device_id(self):
+        """A stable per-install id — one of this account's seats. Minted once and kept next to
+        the state; the hub counts distinct device_ids against the plan's node limit."""
+        path = os.path.join(STATE_DIR, 'device_id')
+        try:
+            did = open(path, encoding='utf-8').read().strip()
+            if did:
+                return did
+        except OSError:
+            pass
+        import secrets
+        did = secrets.token_hex(8)
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(did + '\n')
+        except OSError:
+            pass
+        return did
+
+    def _hub_request(self, path, payload):
+        """POST JSON to the hub; return the parsed body. AlphaHub answers success as {ok:true,…}
+        and errors as FastAPI's {detail:…} with a 4xx — both are JSON, so callers check 'ok' and
+        fall back to 'detail' for the message. Raises RuntimeError only on transport/format faults."""
         import urllib.error
         import urllib.request
-        url = VAULT_URL.rstrip('/')                      # the vendor's server (ALPHANODE_VAULT_URL)
-        body = json.dumps({'token': token, 'license': license_key}).encode()
-        req = urllib.request.Request(url + '/reveal', data=body,
+        url = VAULT_URL.rstrip('/')                      # the vendor's hub (ALPHANODE_VAULT_URL)
+        req = urllib.request.Request(url + path, data=json.dumps(payload).encode(),
                                      headers={'Content-Type': 'application/json'})
         try:
-            with urllib.request.urlopen(req, timeout=4) as resp:
+            with urllib.request.urlopen(req, timeout=5) as resp:
                 raw = resp.read().decode()
-        except urllib.error.HTTPError as e:              # 4xx still carries a JSON error body
+        except urllib.error.HTTPError as e:              # 4xx still carries a JSON {detail} body
             raw = e.read().decode(errors='replace')
         except (urllib.error.URLError, OSError) as e:
-            raise RuntimeError(f'vault server unreachable at {url} — is it running?') from e
-        try:                                             # a 200 from a captive portal / wrong host
-            out = json.loads(raw)                        # is NOT JSON — must not hang the dialog
+            raise RuntimeError(f'hub unreachable at {url} — is it running?') from e
+        try:                                             # a 200 from a captive portal isn't JSON
+            return json.loads(raw)
         except (ValueError, json.JSONDecodeError) as e:
-            raise RuntimeError(f'{url} did not answer like a vault server') from e
+            raise RuntimeError(f'{url} did not answer like the AlphaHub server') from e
+
+    def _vault_reveal(self, formula_enc, account_token):
+        """Claim a seat for this machine (activate), then reveal — the hub checks the subscription
+        and the node limit and does the unseal. Returns the plaintext formula or raises with a
+        human message (limit reached / subscription needed / server down)."""
+        if not account_token:
+            raise RuntimeError('enter your subscription key first')
+        device_id = self._device_id()
+        act = self._hub_request('/activate', {'token': account_token, 'device_id': device_id})
+        if not act.get('ok'):                            # seat / subscription problem
+            raise RuntimeError(str(act.get('detail') or 'activation denied'))
+        out = self._hub_request('/reveal', {'token': account_token, 'device_id': device_id,
+                                            'formula_enc': formula_enc})
         if not out.get('ok'):
-            raise RuntimeError(str(out.get('error', 'unlock denied')))
+            raise RuntimeError(str(out.get('detail') or 'unlock denied'))
         return str(out.get('formula', ''))
 
     def _open_locked(self, champ):
@@ -3829,13 +3861,13 @@ class App:
 
         def unlock():
             btn.configure(state='disabled')
-            st.configure(text='asking the vault server…', fg=MUT)
-            tok, lic = str(champ.get('formula_enc', '')), v_lic.get().strip()
+            st.configure(text='checking your subscription…', fg=MUT)
+            box, account = str(champ.get('formula_enc', '')), v_lic.get().strip()
             res = {}                                     # thread -> main-loop handoff: the worker
 
             def work():                                  # writes ONE key ('out') as a single store,
                 try:                                     # so the ticker never sees a half-written
-                    res['out'] = (self._vault_reveal(tok, lic), None)   # result (no f-without-e race)
+                    res['out'] = (self._vault_reveal(box, account), None)   # result (no f/e race)
                 except Exception as ex:                  # noqa: BLE001 — any failure reaches the card
                     res['out'] = ('', str(ex) or type(ex).__name__)
 

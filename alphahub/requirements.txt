@@ -1,0 +1,5 @@
+# AlphaHub licence + vault server. Deploy this behind a TLS-terminating reverse proxy.
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6
+cryptography>=42        # the sealed-box crypto (shared with the node's vault.py)

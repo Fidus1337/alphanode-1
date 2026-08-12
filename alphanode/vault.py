@@ -38,13 +38,15 @@ def formula_id(formula):
 
 def generate_keys(priv_path):
     """New server keypair: raw-hex private key at priv_path (0600), public at priv_path.pub.
-    Returns the public key hex."""
+    Returns the public key hex. O_EXCL (not O_TRUNC): this is the ONE key that opens every sealed
+    formula — refuse to overwrite an existing one rather than silently orphan the whole corpus.
+    Raises FileExistsError if priv_path already exists; callers create only when absent."""
     priv = X25519PrivateKey.generate()
     raw = priv.private_bytes(serialization.Encoding.Raw, serialization.PrivateFormat.Raw,
                              serialization.NoEncryption())
     pub = priv.public_key().public_bytes(serialization.Encoding.Raw,
                                          serialization.PublicFormat.Raw)
-    fd = os.open(priv_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    fd = os.open(priv_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)   # refuse to clobber
     with os.fdopen(fd, 'w') as f:
         f.write(raw.hex() + '\n')
     with open(priv_path + '.pub', 'w', encoding='utf-8') as f:
