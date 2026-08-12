@@ -76,6 +76,20 @@ CORES = os.cpu_count() or 4
 VAULT_URL = os.environ.get('ALPHANODE_VAULT_URL', 'http://127.0.0.1:8790')
 
 
+def _vault_pub_path():
+    """The vault is always on — the node seals every mined formula to the VENDOR's public key,
+    and a subscription (checked by the vault server) is what unlocks the formula text + signals.
+    There is no user setting for this. In a shipped build the key ships with the app; for the
+    prototype it's the local server key. ALPHANODE_VAULT_PUB overrides (self-host / dev). An
+    empty result (the vendor's server has never created a key yet) means the node runs unsealed
+    until one exists."""
+    p = os.environ.get('ALPHANODE_VAULT_PUB')
+    if p:
+        return p
+    cand = os.path.join(PROJ, 'alphanode', 'vault_server_key.pub')
+    return cand if os.path.isfile(cand) else ''
+
+
 TF_CHOICES = ('1d', '4h', '1h', '15m')
 
 def _tf_suffix(tf):
@@ -112,10 +126,9 @@ DEFAULTS = {
     'timeframe': '1d',      # bar size for the whole pipeline: 1d | 4h | 1h | 15m
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
-    # vault (prototype): seal mined formulas so a subscription is needed to reveal them
-    'vault_seal': False,                            # OFF = classic behaviour (plaintext library)
-    'vault_pub': 'alphanode/vault_server_key.pub',  # server public key the node seals to
-    'vault_url': VAULT_URL,                         # reveal server; honours ALPHANODE_VAULT_URL
+    # vault (prototype): sealing is always on (no user setting). The subscription key the customer
+    # entered to unlock is remembered here, so unlocking is one click after the first time.
+    'vault_license': '',
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -322,9 +335,6 @@ class App:
             seed_from_lib=bool(self.v_seedlib.get()),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
-            vault_seal=bool(self.v_vault.get()),
-            vault_pub=self.v_vaultpub.get().strip(),
-            vault_url=self.v_vaulturl.get().strip(),
             target_vol=self._gf(self.v_vol, d['target_vol']),
             exec_cost=self._gf(self.v_exec, d['exec_cost']),
             max_depth=self._gi(self.v_depth, d['max_depth']),
@@ -1121,20 +1131,6 @@ class App:
                                   tip='How many best alphas to keep in the top list.')
         self.v_seedlib = self._chk(g, 'Warm-start from library', self.cfg['seed_from_lib'], 3,
                                    tip='Seed the new generation with the best found alphas (fine-tuning). Off — always from scratch.')
-
-        # --- vault (prototype) ---
-        g = self._section(inner, 'VAULT (seal mined formulas)')
-        self.v_vault = self._chk(g, 'Seal mined formulas', self.cfg.get('vault_seal', False), 0,
-                                 tip='When ON, the node encrypts every formula it mines BEFORE it\n'
-                                     'touches the library — you keep the metrics and the chart, but\n'
-                                     'the formula text and live signals need the vault server to\n'
-                                     'unlock. Off — the classic plaintext library.')
-        self.v_vaultpub = self._txt(g, 'Server public key', self.cfg.get('vault_pub', ''), 1,
-                                    tip='Path to the vault server\'s public key (…/vault_server_key.pub).\n'
-                                        'The server prints/creates this on first run. The node seals to it.')
-        self.v_vaulturl = self._txt(g, 'Reveal server URL', self.cfg.get('vault_url', ''), 2,
-                                    tip='Where the Unlock button asks to reveal a locked formula\n'
-                                        '(the vault server, default http://127.0.0.1:8790).')
 
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
@@ -2151,8 +2147,6 @@ class App:
         self.v_tf.set(_tf_clean(c.get('timeframe', '1d'))); self._tf_note()
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
-        self.v_vault.set(c.get('vault_seal', False))
-        self.v_vaultpub.set(c.get('vault_pub', '')); self.v_vaulturl.set(c.get('vault_url', ''))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -2239,30 +2233,18 @@ class App:
         self._save()
         c = self.cfg
         os.makedirs(STATE_DIR, exist_ok=True)
-        vault_pub = ''
-        if c.get('vault_seal'):
-            # resolve a relative key against the SAME dir the node runs in (dev: PROJ; frozen:
-            # the writable user dir) — must be an existing FILE (isfile: a bare/empty path that
-            # os.path.join turns into a directory must NOT slip through as "found")
-            p = (c.get('vault_pub', '') or '').strip()
-            base = apppaths.USER_DIR if apppaths.FROZEN else PROJ
-            vault_pub = p if os.path.isabs(p) else os.path.join(base, p)
-            if not p or not os.path.isfile(vault_pub):
-                messagebox.showerror(
-                    'Vault', 'Seal mined formulas is ON, but the server public key '
-                    + (f'was not found:\n{vault_pub}' if p else 'path is empty')
-                    + '.\n\nStart the vault server first (it creates the key), or set the path '
-                    'in Settings → VAULT, or turn sealing off.', parent=self.root)
-                return
         if not os.path.exists(self._data_file()):
             # first run without a snapshot: fetch the starter universe, then continue START
             self._bootstrap_data(on_success=self.start)
             return
         env = dict(os.environ)
+        # the vault is always on: seal every mined formula to the vendor's key. No user toggle —
+        # the subscription decides what the customer can unlock, not whether the library is sealed.
+        vault_pub = _vault_pub_path()
         if vault_pub:
-            env['ALPHANODE_VAULT_PUB'] = vault_pub       # node seals every mined formula to it
+            env['ALPHANODE_VAULT_PUB'] = vault_pub
         else:
-            env.pop('ALPHANODE_VAULT_PUB', None)         # sealing off — never inherit a stray value
+            env.pop('ALPHANODE_VAULT_PUB', None)         # no key available yet -> mine unsealed
         env.update(
             ALPHANODE_CPU_PERCENT=str(c['cpu']),
             ALPHANODE_UNIVERSE=('all' if c['universe_all'] else c['universe_list']),
@@ -3766,7 +3748,7 @@ class App:
         Returns the plaintext formula, raises RuntimeError with a human message otherwise."""
         import urllib.error
         import urllib.request
-        url = (self.cfg.get('vault_url') or VAULT_URL).rstrip('/')   # Settings → VAULT wins
+        url = VAULT_URL.rstrip('/')                      # the vendor's server (ALPHANODE_VAULT_URL)
         body = json.dumps({'token': token, 'license': license_key}).encode()
         req = urllib.request.Request(url + '/reveal', data=body,
                                      headers={'Content-Type': 'application/json'})
@@ -3817,8 +3799,8 @@ class App:
                   text_color=MUT, justify='left', anchor='w', font=(self.UI, 11)).pack(anchor='w')
         row = self._box(head)
         row.pack(anchor='w', pady=(12, 4))
-        self._lbl(row, text='license key', text_color=MUT, font=(self.UI, 11)).pack(side='left')
-        v_lic = tk.StringVar(value='demo')
+        self._lbl(row, text='subscription key', text_color=MUT, font=(self.UI, 11)).pack(side='left')
+        v_lic = tk.StringVar(value=(self.cfg.get('vault_license') or 'demo'))   # remembered after 1st
         self._entry(row, v_lic, width=180).pack(side='left', padx=(8, 10))
         st = self._lbl(head, text='', text_color=MUT, anchor='w', font=(self.UI, 11))
 
@@ -3837,6 +3819,9 @@ class App:
                 return                                   # the id pins the reveal to what was mined
             champ['formula'] = formula
             champ['locked'] = False
+            if v_lic.get().strip():                      # subscription accepted — remember it so
+                self.cfg['vault_license'] = v_lic.get().strip()   # the next unlock is one click
+                self._save()
             win.destroy()
             self._treesig = None                         # session-only: the row now shows its text
             self._fill_tree(list(self._shown))
