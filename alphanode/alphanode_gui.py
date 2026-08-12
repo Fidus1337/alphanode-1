@@ -678,6 +678,25 @@ class App:
         """A plain layout container (what CTkFrame(fg_color='transparent') was for)."""
         return tk.Frame(parent, bg=(bg or CARD), **kw)
 
+    def _hide_when_tight(self, container, widget, pad=24):
+        """Show `widget` only while `container` fits ALL its children at natural width — a tk
+        label clips per-pixel, and a half-word of metadata ('n' from 'node …', 'Ctrl+' from a
+        shortcut list) is worse than no metadata. The widget must be packed LAST in its row so
+        re-showing restores the original order."""
+        info = {}
+
+        def fit(_e=None):
+            shown = widget.winfo_manager()
+            need = sum(w.winfo_reqwidth() for w in container.winfo_children()
+                       if w is widget or w.winfo_manager()) + int(pad * self.SCALE)
+            if container.winfo_width() < need:
+                if shown:
+                    info.update({k: v for k, v in widget.pack_info().items() if k != 'in'})
+                    widget.pack_forget()
+            elif not shown and info:
+                widget.pack(**info)
+        container.bind('<Configure>', fit, add='+')
+
     def _card(self, parent, **kw):
         """A card: the surface every panel sits on. Stays CTk — the rounded corner is the point.
         Dark theme drops the border entirely (CARD_BW=0): depth comes from surface tones."""
@@ -718,14 +737,6 @@ class App:
         mark.pack(side='left', padx=(0, 10), pady=(2, 0))
         self._lbl(brand, text='Alpha', font=(self.UI, 24, 'bold'), text_color=TXT, bg=BG).pack(side='left')
         self._lbl(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC, bg=BG).pack(side='left')
-        self._lbl(top, text='background search for trading strategies', text_color=MUT,
-                     font=(self.UI, 13), bg=BG).pack(side='left', padx=(14, 0), pady=(6, 0))
-        nid_lbl = self._lbl(top, text=f'node {self._node_id()}', text_color=FAINT,
-                            font=(self.MONO, 12), bg=BG)
-        nid_lbl.pack(side='left', padx=(10, 0), pady=(7, 0))
-        self._tip(nid_lbl, 'This install\'s node ID. It mints the search seed, so every node\n'
-                           'walks its own path through formula space — no two nodes mine\n'
-                           'the same library.')
         self._build_theme_pick(top)
         # header controls: the node is driven from here — defaults just work. Simple mode shows
         # one extra button (Advanced); Advanced mode adds the settings-panel toggle back.
@@ -754,6 +765,17 @@ class App:
         self.btn_start.pack(side='right', padx=(0, 8), pady=(2, 0))
         self._tip(self.btn_start, 'Start the background search with the current settings.')
         self._tip(self.btn_stop, 'Gently stop the search (the current round will finish).')
+        # metadata packs LAST: on a narrow window pack squeezes the latest widgets first, and the
+        # subtitle/node-id must lose that fight — never the Start button (it clipped to 'tart n')
+        self._lbl(top, text='background search for trading strategies', text_color=MUT,
+                     font=(self.UI, 13), bg=BG).pack(side='left', padx=(14, 0), pady=(6, 0))
+        nid_lbl = self._lbl(top, text=f'node {self._node_id()}', text_color=FAINT,
+                            font=(self.MONO, 12), bg=BG)
+        nid_lbl.pack(side='left', padx=(10, 0), pady=(7, 0))
+        self._tip(nid_lbl, 'This install\'s node ID. It mints the search seed, so every node\n'
+                           'walks its own path through formula space — no two nodes mine\n'
+                           'the same library.')
+        self._hide_when_tight(top, nid_lbl)
         self._box(self._shell, bg=BORDER, height=1).pack(fill='x')       # hairline
         if self._simple() and not self.cfg.get('welcomed'):
             self._build_welcome(self._shell)             # first-run reassurance, above the dashboard
@@ -1461,9 +1483,11 @@ class App:
         self.logbox = tk.Text(logwrap, height=7, bg=STRIPE, fg=MUT, bd=0, highlightthickness=0,
                               font=(self.MONO, 11), wrap='word', state='disabled',
                               cursor='arrow', padx=6, pady=4)
+        gut = self._font(self.MONO, 11).measure('13:42:44  ')   # wrapped lines align under the
         for tag, col in (('round', TXT), ('llm', ACC), ('best', POS), ('polish', ACC_HI),
                          ('warn', NEG), ('err', NEG), ('ts', FAINT), ('i', MUT)):
-            self.logbox.tag_configure(tag, foreground=col)
+            self.logbox.tag_configure(tag, foreground=col,       # message, not under the timestamp
+                                      **({} if tag == 'ts' else {'lmargin2': gut}))
         self.logbox.pack(fill='both', expand=True, padx=8, pady=6)
         self._logwrap = logwrap
         if self.cfg.get('log_h'):                        # user-dragged log height (dp), 0 = natural
@@ -1499,6 +1523,14 @@ class App:
                                       switch_height=16)
         self.sw_lbfam.pack(side='right', padx=(0, 4))
         self.lbl_lb_head.pack(side='left', anchor='w')
+        # interaction hints pack AFTER everything and hide as a whole when the row gets tight —
+        # the heading used to clip mid-shortcut ('right-click / Ctrl+') and read as the switch's
+        # label. The full hints stay in the heading tooltip either way.
+        hints = self._lbl(hrow, text='·  click column: sort  ·  double-click: equity  ·  '
+                                     'Ctrl+C: copy',
+                          text_color=FAINT, font=(self.UI, 12), bg=CARD)
+        hints.pack(side='left', anchor='w', padx=(10, 0))
+        self._hide_when_tight(hrow, hints)
         self._tip(self.btn_lb_csv, 'Download EVERY alpha the node has mined — the whole library,\n'
                                    'no dedup, no TEST filter, with all TRAIN/VAL/TEST numbers.')
         self._tip(self.sw_lbfam, 'OFF: show every alpha in the library (scroll the full list).\n'
@@ -2570,14 +2602,26 @@ class App:
             state = st.get('state', '—')
             color = {'running': POS, 'starting': ACC}.get(state, MUT)
             self._state_pill(f'● {"running" if state == "running" else state}', color)
+            live = running or state in ('running', 'starting')
             vol = st.get('target_vol')
-            vol_s = f' · vol {vol:g}' if isinstance(vol, (int, float)) else ''
-            self.lbl_res.configure(text=f'{st.get("cpu_percent","?")}% · {st.get("n_jobs","?")}/{st.get("cores","?")} cores '
-                                     f'· {st.get("universe","")}{vol_s}')
+            vol_s = f' · target vol {vol:g}' if isinstance(vol, (int, float)) else ''
+            res = (f'CPU budget {st.get("cpu_percent", "?")}% '
+                   f'({st.get("n_jobs", "?")}/{st.get("cores", "?")} cores) '
+                   f'· universe {st.get("universe", "")}{vol_s}')
             self.s_rounds.configure(text=str(st.get('rounds', 0)))
             self.s_trials.configure(text=f'{st.get("trials_total", 0):,}')
             self.s_found.configure(text=str(st.get('found', len(st.get('best', [])))))
-            self.lbl_cur.configure(text=(st.get('current', '') + '   ' + st.get('gen', ''))[:120])
+            # the round ticker: the 'best fit | HoF' tail duplicates (and, mid-round, contradicts)
+            # the BEST FITNESS tile — drop it; elide long lines at a word, never mid-token
+            gen = (st.get('gen', '') or '').split('| best fit')[0].rstrip(' |')
+            line = (st.get('current', '') + '   ' + gen).strip()
+            if len(line) > 140:
+                line = line[:140].rsplit(' ', 1)[0] + ' …'
+            if not live:                                 # stale config/round text must not read as
+                res = 'last run — ' + res                # live telemetry next to a 'stopped' pill
+                line = ('last run — ' + line) if line else line
+            self.lbl_res.configure(text=res, fg=MUT if live else FAINT)
+            self.lbl_cur.configure(text=line, fg=MUT if live else FAINT)
             evs = st.get('events') or []
             if evs and evs != self._events_last:
                 self._events_last = evs
@@ -2666,8 +2710,7 @@ class App:
         scope = 'every alpha' if self._lb_mode == 'all' else 'best alpha per family'
         src = ('by TEST OOS — held-out, cherry-picked ⚠' if select == 'test'
                else 'by fitness min(train,val)')
-        return (f'LEADERBOARD — {scope}, {src}  ·  '
-                'click a column to sort  ·  double-click: equity  ·  right-click / Ctrl+C: copy')
+        return f'LEADERBOARD — {scope}, {src}'
 
     def _sort_by(self, col):
         """Click a column header. 'fitness' and 'TEST OOS' also RE-SELECT the population from the

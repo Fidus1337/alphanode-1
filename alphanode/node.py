@@ -495,7 +495,7 @@ def main():
         if refine:
             log_event('round', f'▶ round {rnd}: REFINE — population warm-started from '
                                f'{len(seeds)} library champions; evolution mutates around what '
-                               f'already works (every {EXPLORE_EVERY}th round explores from scratch)')
+                               f'already works (1 round in {EXPLORE_EVERY} explores from scratch)')
         else:
             log_event('round', f'▶ round {rnd}: EXPLORE — a fresh random population, no '
                                f'warm-start; hunting for new formula families')
