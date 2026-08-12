@@ -179,10 +179,10 @@ def _polish_windows(hof, runner, cache, cfg, origins, log, top_k=5, max_passes=3
             polished += 1
             if src_origin:                       # a polished LLM champion is still LLM-born
                 origins[cur_canon] = src_origin
-            log(f'  window polish: base {h["base"]:+.3f} -> {cur_base:+.3f}  {cur_canon}')
+            log(f'  fine-tune: {h["base"]:+.3f} -> {cur_base:+.3f}  {cur_canon}')
             hof = hof_update(hof, cache[cur_canon], cfg)
     if polished:
-        log(f'window polish: {polished}/{min(top_k, len(hof))} champions improved')
+        log(f'fine-tune: {polished}/{min(top_k, len(hof))} champions improved')
     return hof
 
 

@@ -483,6 +483,7 @@ def main():
     save_status()
 
     rnd = status['rounds']
+    refine_explained = False                             # the warm-start lesson is logged once
     while not STOP and (MAX_ROUNDS == 0 or rnd < MAX_ROUNDS):
         rnd += 1
         seed = BASE_SEED + rnd
@@ -493,12 +494,15 @@ def main():
         status['mode'] = mode
         status['current'] = f'round {rnd}: {mode} (seed {seed})…'
         if refine:
-            log_event('round', f'▶ round {rnd}: REFINE — population warm-started from '
-                               f'{len(seeds)} library champions; evolution mutates around what '
-                               f'already works (1 round in {EXPLORE_EVERY} explores from scratch)')
+            extra = ('; evolution mutates around what already works '
+                     f'(1 round in {EXPLORE_EVERY} explores from scratch)'
+                     if not refine_explained else '')
+            refine_explained = True                     # the lesson once — not every 2nd round
+            log_event('round', f'▶ round {rnd}: refine — improving {len(seeds)} champions '
+                               f'from the library{extra}')
         else:
-            log_event('round', f'▶ round {rnd}: EXPLORE — a fresh random population, no '
-                               f'warm-start; hunting for new formula families')
+            log_event('round', f'▶ round {rnd}: explore — a fresh random population, '
+                               f'hunting new formula families')
         save_status()
         t0 = time.time()
         cfg = build_cfg(seed, seeds)
@@ -545,11 +549,10 @@ def main():
                       history=history[-300:],
                       current=f'round {rnd} done [{mode}]: +{new} new · fitness {bb_s} · '
                               f'TEST(OOS) {bt_s} · {time.time()-t0:.0f}s')
-        champs_s = (f'{new} new champion{"s" if new != 1 else ""} entered the library'
-                    if new else 'no new champions — the library kept its bar')
-        log_event('round', f'✓ round {rnd} done in {time.time() - t0:.0f}s — {len(cache):,} '
-                           f'formulas simulated; {champs_s}. Best fitness {bb_s}, '
-                           f'its held-out TEST {bt_s}')
+        champs_s = (f'+{new} champion{"s" if new != 1 else ""} kept'
+                    if new else 'none kept — the library held its bar')
+        log_event('round', f'✓ round {rnd} · {time.time() - t0:.0f}s · {len(cache):,} formulas '
+                           f'tried · {champs_s} · best fitness {bb_s} · held-out TEST {bt_s}')
         save_status()
         print(status['current'])
 

@@ -262,6 +262,8 @@ class App:
         self.cfg = dict(DEFAULTS)
         self._load()
         self._lb_mode = self.cfg.get('lb_mode') or 'all'   # remembered across restarts
+        if self._simple():
+            self._lb_mode = 'families'                   # Simple promises the compact view
         self.cfg['theme'] = _apply_palette(self.cfg.get('theme') or _system_theme())
         self._init_window()
         self._style()
@@ -848,6 +850,8 @@ class App:
         self.cfg['ui_mode'] = 'advanced' if self._simple() else 'simple'
         if self.cfg['ui_mode'] == 'simple':
             self.cfg['settings_open'] = False            # the pane has no toggle in Simple
+        self._lb_mode = ('families' if self.cfg['ui_mode'] == 'simple'
+                         else (self.cfg.get('lb_mode') or 'all'))
         self._save()
         self._tip_hide()
         if self._pf_resize_after:
@@ -936,6 +940,11 @@ class App:
         for pct, b in getattr(self, '_pw_btns', {}).items():
             fill, hover, fg = self._BTN['accent' if pct == cur else 'soft']()
             b.configure(fg_color=fill, hover_color=hover, text_color=fg)
+        lbl = getattr(self, '_pw_lbl', None)             # an off-preset CPU% (set in Advanced)
+        if lbl is not None and getattr(self, '_pw_btns', None):   # used to leave the whole group
+            onpreset = cur in self._pw_btns              # unselected with no explanation
+            lbl.configure(text='Power' if onpreset else f'Power · custom {cur}%',
+                          fg=MUT if onpreset else ACC)
 
     # ---------- left panel: ALL settings (scrollable, hidden by default) ----------
     def _toggle_settings(self):
@@ -1453,16 +1462,21 @@ class App:
         stats.pack(fill='x', pady=(14, 0))
         self.s_rounds = self._stat(stats, 'rounds', 0)
         self.s_trials = self._stat(stats, 'formulas tried', 1)
-        self.s_found = self._stat(stats, 'alphas found', 2)
-        self.s_fit = self._stat(stats, 'best fitness', 3)   # the old PROGRESS chart, as one number
+        self.s_found = self._stat(stats, 'formulas kept' if self._simple() else 'alphas found', 2)
+        self.s_fit = self._stat(stats, 'best fitness', 3,   # the old PROGRESS chart, as one number
+                                accent=True)             # — and the row's anchor, not a fourth twin
         self.s_fit.configure(text='—')
+        for i in range(4):
+            stats.columnconfigure(i, weight=1)           # share the card width: half of the
+        #                                                  flagship card was dead space
         self._tip(self.s_fit, 'Best fitness so far — min(TRAIN, VAL) Sharpe of the top alpha.\n'
                               'Grows round by round as the search improves; TEST stays held-out\n'
                               '(see the TEST OOS column in the leaderboard).')
         if self._simple():                               # the one knob Simple mode keeps
             prow = self._box(pad)
             prow.pack(fill='x', pady=(12, 0))
-            self._lbl(prow, text='Power', text_color=MUT, font=(self.UI, 13)).pack(side='left')
+            self._pw_lbl = self._lbl(prow, text='Power', text_color=MUT, font=(self.UI, 13))
+            self._pw_lbl.pack(side='left')
             self._pw_btns = {}
             for lbl, pct, tip in (
                     ('Quiet', 25, '~25% of the CPU — mines quietly in the background.'),
@@ -1475,6 +1489,7 @@ class App:
             self._paint_power()
         else:
             self._pw_btns = {}
+            self._pw_lbl = None
         self.lbl_cur = self._lbl(pad, text='', text_color=MUT, font=(self.MONO, 12),
                                     anchor='w', justify='left')
         self.lbl_cur.pack(anchor='w', fill='x', pady=(12, 0))
@@ -1485,10 +1500,12 @@ class App:
                               font=(self.MONO, 11), wrap='word', state='disabled',
                               cursor='arrow', padx=6, pady=4)
         gut = self._font(self.MONO, 11).measure('13:42:44  ')   # wrapped lines align under the
-        for tag, col in (('round', TXT), ('llm', ACC), ('best', POS), ('polish', ACC_HI),
-                         ('warn', NEG), ('err', NEG), ('ts', FAINT), ('i', MUT)):
+        for tag, col in (('round', TXT), ('roundsum', TXT), ('llm', ACC), ('best', POS),
+                         ('polish', ACC_HI), ('warn', NEG), ('err', NEG), ('ts', FAINT),
+                         ('i', MUT)):
             self.logbox.tag_configure(tag, foreground=col,       # message, not under the timestamp
                                       **({} if tag == 'ts' else {'lmargin2': gut}))
+        self.logbox.tag_configure('roundsum', font=self._font(self.MONO, 11, 'bold'))
         self.logbox.pack(fill='both', expand=True, padx=8, pady=6)
         self._logwrap = logwrap
         if self.cfg.get('log_h'):                        # user-dragged log height (dp), 0 = natural
@@ -1522,7 +1539,8 @@ class App:
                                       font=(self.UI, 11), text_color=MUT, progress_color=ACC,
                                       button_color=TXT, fg_color=HEAD_BG, switch_width=34,
                                       switch_height=16)
-        self.sw_lbfam.pack(side='right', padx=(0, 4))
+        if not self._simple():                           # Simple IS the compact families view —
+            self.sw_lbfam.pack(side='right', padx=(0, 4))   # the toggle is an Advanced affair
         self.lbl_lb_head.pack(side='left', anchor='w')
         # interaction hints pack AFTER everything and hide as a whole when the row gets tight —
         # the heading used to clip mid-shortcut ('right-click / Ctrl+') and read as the switch's
@@ -1537,6 +1555,12 @@ class App:
         self._tip(self.sw_lbfam, 'OFF: show every alpha in the library (scroll the full list).\n'
                                  'ON: collapse to the best alpha per family (distinct formulas),\n'
                                  'the old compact view. Sorting by any column works in both.')
+        if self._simple():                               # the one persistent plain-language line:
+            self._lbl(p2, text='fitness — score on data the search may tune to · TEST — the exam '
+                               'on data it never saw (minus = not proven yet) · ranking never '
+                               'uses TEST, on purpose',
+                      text_color=FAINT, font=(self.UI, 12), bg=CARD,
+                      ).pack(anchor='w', pady=(0, 8))    # tooltips exist, but nobody hovers them
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         cols = ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
@@ -1563,6 +1587,9 @@ class App:
         # Simple mode shows the two numbers that matter (plus the formula). Advanced defaults to
         # a focused set — the heavy analysis columns are one right-click away ('Columns…' on any
         # header). The data, sorting and CSV export always carry every column.
+        if self._simple():
+            self._HEAD['test'] = 'TEST (unseen)'         # 'OOS' is quant shorthand — not here
+            self.tree.column('test', width=int(120 * self.SCALE))
         disp = ('rank', 'fit', 'test', 'formula') if self._simple() else self._adv_cols()
         self.tree.configure(displaycolumns=disp)
         self._lb_cols_fixed = [c for c in disp if c != 'formula']
@@ -1890,14 +1917,17 @@ class App:
         for b in (self.btn_pf_csv, self.btn_pf_paper, self.btn_pf_sig, self.btn_pf_track):
             b.configure(state='disabled')
 
-    def _stat(self, parent, label, col):
-        """A stat tile: big number + caption on its own soft rounded surface."""
-        tile = ctk.CTkFrame(parent, fg_color=HEAD_BG, corner_radius=12, border_width=0)
-        tile.grid(row=0, column=col, sticky='w', padx=(0, 12))
+    def _stat(self, parent, label, col, accent=False):
+        """A stat tile: big number + caption on its own soft rounded surface. `accent` marks the
+        one tile the eye should land on (value in the accent colour, hairline accent border)."""
+        tile = ctk.CTkFrame(parent, fg_color=HEAD_BG, corner_radius=12,
+                            border_width=(1 if accent else 0),
+                            border_color=_mix(HEAD_BG, ACC, 0.55))
+        tile.grid(row=0, column=col, sticky='ew', padx=(0, 12))
         f = self._box(tile, bg=HEAD_BG)
-        f.pack(padx=int(16 * self.SCALE), pady=int(9 * self.SCALE))
-        val = self._lbl(f, text='0', text_color=TXT, font=(self.UI, 28, 'bold'),
-                        bg=HEAD_BG, anchor='w')
+        f.pack(anchor='w', padx=int(16 * self.SCALE), pady=int(9 * self.SCALE))
+        val = self._lbl(f, text='0', text_color=(ACC if accent else TXT),
+                        font=(self.UI, 28, 'bold'), bg=HEAD_BG, anchor='w')
         val.pack(anchor='w')
         self._lbl(f, text=label.upper(), text_color=FAINT, font=(self.UI, 10, 'bold'),
                   bg=HEAD_BG, anchor='w').pack(anchor='w')
@@ -2618,8 +2648,14 @@ class App:
         self.logbox.configure(state='normal')
         self.logbox.delete('1.0', 'end')
         for e in evs[-80:]:
+            txt = e.get('t', '')
+            kind = e.get('k', 'i')
+            if txt.startswith('▶') and self.logbox.index('end-1c') != '1.0':
+                self.logbox.insert('end', '\n')          # a breath between rounds
+            if kind == 'round' and txt.startswith('✓'):
+                kind = 'roundsum'                        # the round verdict pops in bold
             self.logbox.insert('end', f"{e.get('ts', '')}  ", 'ts')
-            self.logbox.insert('end', f"{e.get('t', '')}\n", e.get('k', 'i'))
+            self.logbox.insert('end', f"{txt}\n", kind)
         if at_end:
             self.logbox.see('end')
         self.logbox.configure(state='disabled')
@@ -2642,6 +2678,9 @@ class App:
             res = (f'CPU budget {st.get("cpu_percent", "?")}% '
                    f'({st.get("n_jobs", "?")}/{st.get("cores", "?")} cores) '
                    f'· universe {st.get("universe", "")}{vol_s}')
+            if self._simple():                           # Simple's only knob is Power — universe
+                res = (f'using {st.get("n_jobs", "?")} of '   # and target-vol tokens are noise there
+                       f'{st.get("cores", "?")} CPU cores')
             self.s_rounds.configure(text=str(st.get('rounds', 0)))
             self.s_trials.configure(text=f'{st.get("trials_total", 0):,}')
             self.s_found.configure(text=str(st.get('found', len(st.get('best', [])))))
@@ -2905,8 +2944,9 @@ class App:
             stripe = 'odd' if i % 2 else 'even'
             tags = ('pos',) if (ts is not None and ts >= 0) else (stripe,)
             formula = c.get('formula', '')
-            f = formula                                  # full length — the column fits the widest row
-            need = max(need, self._tree_font.measure(f))
+            f = '  ' + formula                           # full length — the column fits the widest
+            need = max(need, self._tree_font.measure(f))   # row; the two spaces are the gutter to
+            #                                                the neighbour cell's right-flush value
             m = self._metrics_cache.get(formula)
             ls, act, win, srt, calm, storm = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
