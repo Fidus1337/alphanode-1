@@ -810,6 +810,9 @@ class App:
         self._set_running(bool(self.proc and self.proc.poll() is None))
         self._draw_chart()
         self._render_signal_rows()
+        if self._lib_cache.get('computed'):              # the fresh (empty) table repaints from the
+            self._render_lb(self._lb_rows())             # cache NOW — its dirty flag is long spent,
+        #                                                  and mtime won't budge until the next round
         if self._pf_doc:
             self._render_portfolio(self._pf_doc)
 
@@ -836,6 +839,8 @@ class App:
         self._set_running(bool(self.proc and self.proc.poll() is None))
         self._draw_chart()
         self._render_signal_rows()
+        if self._lib_cache.get('computed'):              # same as _set_theme: repaint the rebuilt
+            self._render_lb(self._lb_rows())             # table from cache, don't wait for mtime
         if self._pf_doc and not self._simple():
             self._render_portfolio(self._pf_doc)
 
