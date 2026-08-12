@@ -131,6 +131,7 @@ DEFAULTS = {
     'card_order': [],       # dashboard card order (drag a card to reorder); [] = default layout
     'log_h': 0,             # live-log height, dp; 0 = natural (7 lines)
     'lb_rows': 12,          # leaderboard rows on screen (its in-card grip)
+    'lb_cols': None,        # Advanced leaderboard: enabled OPTIONAL columns; None = default set
     'fwd_rows': 4,          # forward-track rows on screen (its in-card grip)
     'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
     'pf_h': 0,              # portfolio equity-plot height, px; 0 = automatic (from width)
@@ -155,7 +156,7 @@ PALETTE = {
         NEG='#e11d48',       # loss (rose-600)
         HEAD_BG='#f3f5f9',   # tonal surfaces: tiles, buttons, fields
         HEAD_HI='#eaedf4',   # their hover
-        STRIPE='#f9fafd',    # row zebra striping
+        STRIPE='#f4f6fb',    # row zebra striping (one visible step below white)
         GRID='#eef1f6',      # chart gridlines
         CARD_BW=1,           # cards on white need a hairline to separate
         TIP_BG='#111a2e', TIP_FG='#e5e7eb', TIP_BD='#334155',    # tooltips (dark on light)
@@ -175,7 +176,7 @@ PALETTE = {
         NEG='#fb7185',
         HEAD_BG='#1d2233',
         HEAD_HI='#262c40',
-        STRIPE='#1a1f2d',
+        STRIPE='#1d2233',    # was #1a1f2d — indistinguishable from CARD on real panels
         GRID='#212637',
         CARD_BW=0,           # borderless cards: depth comes from the surface tones alone
         TIP_BG='#2b313f', TIP_FG='#e8ebf2', TIP_BD='#3d4557',    # lighter than the card, not darker
@@ -1552,21 +1553,39 @@ class App:
                                ('calm', 'calm', 68, 'e'), ('storm', 'storm', 74, 'e'),
                                ('ls', 'trades L/S', 100, 'center'),
                                ('act', 'tr/yr·a', 72, 'e'),
-                               ('win', 'win%', 62, 'e'), ('id', 'ID', 116, 'w'),
+                               ('win', 'win%', 62, 'e'), ('id', 'ID', 72, 'center'),
                                ('formula', 'formula', 260, 'w')):
             self._HEAD[c] = txt
             kw = {} if c in ('rank', 'id') else {'command': (lambda c=c: self._sort_by(c))}
             w = int(w * self.SCALE)
-            self.tree.heading(c, text=txt, **kw)
+            self.tree.heading(c, text=txt, anchor=anc, **kw)   # headings share the values' edge
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
-        # Simple mode shows the two numbers that matter (plus the formula); the full stat
-        # columns are an Advanced-mode affair. The data underneath is identical.
-        self._lb_cols_fixed = [c for c in cols if c != 'formula']
-        if self._simple():
-            disp = ('rank', 'fit', 'test', 'formula')
-            self.tree.configure(displaycolumns=disp)
-            self._lb_cols_fixed = [c for c in disp if c != 'formula']
+        # Simple mode shows the two numbers that matter (plus the formula). Advanced defaults to
+        # a focused set — the heavy analysis columns are one right-click away ('Columns…' on any
+        # header). The data, sorting and CSV export always carry every column.
+        disp = ('rank', 'fit', 'test', 'formula') if self._simple() else self._adv_cols()
+        self.tree.configure(displaycolumns=disp)
+        self._lb_cols_fixed = [c for c in disp if c != 'formula']
         self._update_headings()                          # show the sort arrow on the active column
+        # one-line definitions per column header (the card-title tooltip nobody hovered is gone)
+        self._HEAD_TIP = {
+            'rank': 'position in the current sort',
+            'fit': 'fitness = min(TRAIN, VAL) Sharpe — the number the search optimizes',
+            'test': 'held-out TEST Sharpe (out-of-sample) — never optimized;\n'
+                    'picking rows by it is peeking',
+            'dd': 'worst peak-to-trough drawdown on TEST',
+            'cagr': 'annualized growth on TEST',
+            'srt': 'Sortino on TEST — like Sharpe, but only downside vol counts',
+            'calm': 'Sharpe on the QUIET half of TEST (vol regime) — analysis, not selection',
+            'storm': 'Sharpe on the TURBULENT half of TEST (vol regime) — analysis, not selection',
+            'ls': 'positions OPENED over TEST: long / short',
+            'act': 'trades per asset per year — relative activity',
+            'win': 'share of profitable days on TEST',
+            'id': 'stable ID — the md5 tail of the formula; forward-track names start with it',
+            'formula': 'the alpha itself — right-click: copy / choose columns',
+        }
+        self.tree.bind('<Motion>', self._on_tree_motion, add='+')
+        self.tree.bind('<Leave>', lambda e: self._head_tip_hide(), add='+')
         self._tip(self.lbl_lb_head, 'maxDD = worst peak-to-trough drawdown; CAGR = annualized growth;\n'
                                     'sortino = like Sharpe but only downside vol counts (upside is free);\n'
                                     'calm / storm = the alpha\'s Sharpe on the quiet vs turbulent halves\n'
@@ -1578,8 +1597,10 @@ class App:
                                     'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
                                     'filter drops barely-trading alphas); win% = share of days with profit.\n'
                                     'All on TEST (OOS), on target weights (daily rebalance).')
-        self.tree.tag_configure('pos', foreground=POS)
-        self.tree.tag_configure('neg', foreground=NEG)
+        # colour economy: green tint marks ONLY rows whose held-out TEST survived (>= 0) — the
+        # minority. Ink stays neutral everywhere: whole-row red carried one bit per row, painted
+        # positive fitness in 'loss' red, and made the rare green rows the strongest focal point.
+        self.tree.tag_configure('pos', background=_mix(CARD, POS, 0.12))
         self.tree.tag_configure('odd', background=STRIPE)
         self.tree.tag_configure('even', background=CARD)
         vsb = ctk.CTkScrollbar(wrap, orientation='vertical', command=self.tree.yview, fg_color=CARD,
@@ -1613,6 +1634,19 @@ class App:
         self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
         self._menu.add_separator()
         self._menu.add_command(label='Show equity', command=self._open_selected_plot)
+        # right-click on a column HEADER (Advanced): pick which analysis columns are visible
+        self._cols_menu = None
+        if not self._simple():
+            self._cols_menu = tk.Menu(self.root, tearoff=0, bg=CARD, fg=TXT,
+                                      activebackground=ACC_SOFT, activeforeground=TXT,
+                                      borderwidth=0, font=(self.UI, 13))
+            self._cols_vars = {}
+            shown = set(self._lb_cols_fixed)
+            for c in self._LB_OPT_ORDER:
+                v = tk.BooleanVar(value=(c in shown))
+                self._cols_vars[c] = v                   # keep refs: Tk vars die with their menu
+                self._cols_menu.add_checkbutton(label=self._HEAD[c], variable=v,
+                                                command=lambda c=c: self._lb_toggle_col(c))
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
         self._pf_grip = self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
@@ -2706,6 +2740,53 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt.upper() + arrow)
 
+    _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt', 'calm', 'storm', 'ls', 'act', 'win')
+    _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win')
+
+    def _adv_cols(self):
+        """Advanced display columns: the honest core (#/fitness/TEST/formula) plus the user's
+        optional picks, in a fixed order that keeps ID ahead of the lazily computed block —
+        a '…' placeholder next to the ID used to read as a truncated ID."""
+        saved = self.cfg.get('lb_cols')
+        on = set(saved) if isinstance(saved, list) else set(self._LB_OPT_DEFAULT)
+        return ('rank', 'fit', 'test', *[c for c in self._LB_OPT_ORDER if c in on], 'formula')
+
+    def _lb_toggle_col(self, c):
+        """Header right-click menu: show/hide an optional column. Data, sorting and the CSV
+        exports always carry every column — this flips displaycolumns only."""
+        saved = self.cfg.get('lb_cols')
+        on = set(saved) if isinstance(saved, list) else set(self._LB_OPT_DEFAULT)
+        on.symmetric_difference_update({c})
+        self.cfg['lb_cols'] = sorted(on)
+        self._save()
+        disp = self._adv_cols()
+        self.tree.configure(displaycolumns=disp)
+        self._lb_cols_fixed = [x for x in disp if x != 'formula']
+        self._fit_formula_col()
+
+    def _head_tip_hide(self):
+        self._head_tip_col = None
+        self._tip_hide()
+
+    def _on_tree_motion(self, e):
+        """One-line definition tooltips on column HEADERS — the old card-title tooltip sat where
+        nobody hovers. Rows are left alone."""
+        col = None
+        if self.tree.identify_region(e.x, e.y) == 'heading':
+            cid = self.tree.identify_column(e.x)
+            try:
+                col = self.tree['displaycolumns'][int(cid[1:]) - 1]
+            except (ValueError, IndexError, tk.TclError):
+                col = None
+        if col == getattr(self, '_head_tip_col', None):
+            return
+        self._tip_hide()
+        self._head_tip_col = col
+        txt = self._HEAD_TIP.get(col) if col else None
+        if txt:
+            self._tip_xy = (e.x_root + 16, e.y_root + 18)
+            self._tip_after = self.root.after(400, lambda: self._tip_show(txt))
+
     def _lb_head_text_for(self, select):
         scope = 'every alpha' if self._lb_mode == 'all' else 'best alpha per family'
         src = ('by TEST OOS — held-out, cherry-picked ⚠' if select == 'test'
@@ -2819,10 +2900,10 @@ class App:
         need = 0
         for i, c in enumerate(best):
             t = c.get('test') if isinstance(c.get('test'), dict) else {}
-            ts = t.get('sharpe')                         # honest held-out OOS — colored by it
+            ts = t.get('sharpe')                         # honest held-out OOS — tints the survivors
             base = c.get('base')
-            sign = 'pos' if (ts is not None and ts >= 0) else ('neg' if ts is not None else 'even')
             stripe = 'odd' if i % 2 else 'even'
+            tags = ('pos',) if (ts is not None and ts >= 0) else (stripe,)
             formula = c.get('formula', '')
             f = formula                                  # full length — the column fits the widest row
             need = max(need, self._tree_font.measure(f))
@@ -2830,12 +2911,13 @@ class App:
             ls, act, win, srt, calm, storm = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
-            aid = 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
+            aid = hashlib.md5(formula.encode()).hexdigest()[:6]   # cell shows the tail only: the
+            #                                                       'alpha_' prefix was 7 dead chars/row
             item = self.tree.insert('', 'end', values=(
                 i + 1, f'{base:+.2f}' if base is not None else '—',
                 f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt, calm, storm,
                 ls, act, win, aid, f),
-                tags=(sign, stripe))
+                tags=tags)
             self._row_items[formula] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
         self._fit_formula_col()
@@ -2915,15 +2997,15 @@ class App:
         if not isinstance(v, (int, float)) and isinstance(m, dict):
             v = m.get(key)
         if not isinstance(v, (int, float)) and m is None:
-            return '…'
-        return self._fmt_ratio(v, pct=pct)
+            return '·'                                   # still computing — quieter than '…',
+        return self._fmt_ratio(v, pct=pct)               # which read as truncated content
 
     @staticmethod
     def _fmt_metrics(m):
         """('L/S', 'tr/yr·a', 'win%', 'sortino', 'calm', 'storm') strings from the cache:
         None=still computing, 'err'=failed."""
         if m is None:
-            return ('…',) * 6
+            return ('·',) * 6                            # still computing (quiet placeholder)
         if m == 'err':
             return ('—',) * 6
         a = m.get('act', 0.0)
@@ -3009,7 +3091,7 @@ class App:
             self.tree.set(item, 'storm', storm)
             if isinstance(m, dict):                      # dd/cagr fallback for legacy library rows
                 for col in ('dd', 'cagr'):
-                    if self.tree.set(item, col) in ('…', '—'):
+                    if self.tree.set(item, col) in ('·', '—'):
                         self.tree.set(item, col, self._fmt_ratio(m.get(col), pct=True))
         if seq != self._metrics_seq:
             return
@@ -3039,6 +3121,13 @@ class App:
         return self._shown[idx] if 0 <= idx < len(self._shown) else None
 
     def _on_row_menu(self, event):
+        if (self._cols_menu is not None
+                and self.tree.identify_region(event.x, event.y) == 'heading'):
+            try:                                         # header right-click: the Columns picker
+                self._cols_menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                self._cols_menu.grab_release()
+            return
         item = self.tree.identify_row(event.y)
         if item:
             self.tree.selection_set(item)
