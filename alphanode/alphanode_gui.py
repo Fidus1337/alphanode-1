@@ -3,8 +3,9 @@
 Control panel for the background node. On the left — the FULL set of search settings (resources,
 universe, population/generations, node mode, simulation/target-vol, genome, GA selection, fitness,
 date segments) — everything the engine understands is tunable by hand and passed to the node via
-ALPHANODE_* variables. On the right — live status, a progress chart and a leaderboard of found
-alphas. Launches the node as a subprocess (node.py) and reads its state/status.json.
+ALPHANODE_* variables. On the right — live status (with the best fitness as a stat tile) and a
+leaderboard of found alphas. Launches the node as a subprocess (node.py) and reads its
+state/status.json.
 
 Theming: every colour comes from PALETTE[light|dark] and is published as the module-level constants
 below (BG, CARD, TXT, …). Switching the theme re-applies the palette and rebuilds the window — the
@@ -132,7 +133,6 @@ DEFAULTS = {
     'lb_rows': 12,          # leaderboard rows on screen (its in-card grip)
     'fwd_rows': 4,          # forward-track rows on screen (its in-card grip)
     'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
-    'chart_h': 0,           # progress-chart height, 100%-DPI px; 0 = default (170)
     'pf_h': 0,              # portfolio equity-plot height, px; 0 = automatic (from width)
 }
 
@@ -783,7 +783,7 @@ class App:
             progress_color=ACC, button_color=CARD, button_hover_color=CARD,
             fg_color=HEAD_BG, border_color=BORDER, switch_width=40, switch_height=20)
         self.sw_theme.pack(side='right', pady=(5, 0))
-        self._tip(self.sw_theme, 'Light / dark appearance. The chart and the equity images\n'
+        self._tip(self.sw_theme, 'Light / dark appearance. The tables and the equity images\n'
                                  'are redrawn to match.')
 
     def _on_theme_pick(self):
@@ -808,7 +808,6 @@ class App:
         self._sig_shown = None
         self._build()
         self._set_running(bool(self.proc and self.proc.poll() is None))
-        self._draw_chart()
         self._render_signal_rows()
         if self._lib_cache.get('computed'):              # the fresh (empty) table repaints from the
             self._render_lb(self._lb_rows())             # cache NOW — its dirty flag is long spent,
@@ -837,7 +836,6 @@ class App:
         self._sig_shown = None
         self._build()
         self._set_running(bool(self.proc and self.proc.poll() is None))
-        self._draw_chart()
         self._render_signal_rows()
         if self._lib_cache.get('computed'):              # same as _set_theme: repaint the rebuilt
             self._render_lb(self._lb_rows())             # table from cache, don't wait for mtime
@@ -1312,7 +1310,7 @@ class App:
         canvas.bind('<Enter>', _on)
         canvas.bind('<Leave>', _off)
 
-    # ---------- right panel: status / chart / leaderboard ----------
+    # ---------- right panel: status / leaderboard ----------
     def _vgrip(self, parent, row, on_drag, on_reset, tip):
         """A full-width draggable gap between two cards: the ENTIRE space between the blocks is
         the handle (a thin accent bar lights up on hover), not a hairline you have to hunt for."""
@@ -1433,6 +1431,11 @@ class App:
         self.s_rounds = self._stat(stats, 'rounds', 0)
         self.s_trials = self._stat(stats, 'formulas tried', 1)
         self.s_found = self._stat(stats, 'alphas found', 2)
+        self.s_fit = self._stat(stats, 'best fitness', 3)   # the old PROGRESS chart, as one number
+        self.s_fit.configure(text='—')
+        self._tip(self.s_fit, 'Best fitness so far — min(TRAIN, VAL) Sharpe of the top alpha.\n'
+                              'Grows round by round as the search improves; TEST stays held-out\n'
+                              '(see the TEST OOS column in the leaderboard).')
         if self._simple():                               # the one knob Simple mode keeps
             prow = self._box(pad)
             prow.pack(fill='x', pady=(12, 0))
@@ -1473,23 +1476,6 @@ class App:
 
         self._build_signals_card(right)                  # row 1 — hidden while nothing is served
 
-        chart_card = self._card(right)
-        chart_card.grid(row=2, column=0, sticky='ew', pady=(16, 0))
-        cpad = self._pad(chart_card)
-        self._head(cpad, 'PROGRESS — FITNESS min(train,val) BY ROUND  ·  TEST kept held-out').pack(
-            anchor='w', pady=(0, 8))
-        ch = int((self.cfg.get('chart_h') or 170) * self.SCALE)
-        self.chart = tk.Canvas(cpad, height=ch, bg=CARD, highlightthickness=0, cursor='hand2')
-        self.chart.pack(fill='x')
-        self.chart.bind('<Configure>', lambda e: self._draw_chart())
-        self.chart.bind('<Double-1>', self._progress_interactive)  # live zoomable copy
-        self._tip(self.chart, 'Double-click — interactive chart: zoom with the mouse wheel,\n'
-                              'pan with the toolbar; adds the TEST curve and library growth.')
-        # the whole gap below this card is the drag handle (see _vgrip in the row layout)
-
-        self._chart_grip = self._vgrip(right, 3, self._on_chart_drag, self._chart_reset,
-                                       'Drag: the chart above grows/shrinks, the leaderboard '
-                                       'absorbs it.\nDouble-click — default chart height.')
         card2 = self._card(right)
         card2.grid(row=4, column=0, sticky='nsew')
         p2 = self._pad(card2)
@@ -1731,26 +1717,25 @@ class App:
             self.root.after(20_000, self._fwd_tick)
 
         # ---- the dashboard cards are REORDERABLE: drag one by its padding / header strip ----
-        self._cards = {'status': card, 'signals': self.sig_card, 'chart': chart_card,
+        self._cards = {'status': card, 'signals': self.sig_card,
                        'leaderboard': card2, 'portfolio': card3, 'forward': card4}
         self._wire_card_drag('status', pad, head, stats)
-        self._wire_card_drag('chart', cpad)
         self._wire_card_drag('leaderboard', p2, hrow)
         self._wire_card_drag('portfolio', p3, hp)
         self._wire_card_drag('forward', p4, hf)
         self._regrid_cards()
 
     # ---------- reorderable dashboard cards ----------
-    DASH_CARDS = ('status', 'signals', 'chart', 'leaderboard', 'portfolio', 'forward')
+    DASH_CARDS = ('status', 'signals', 'leaderboard', 'portfolio', 'forward')
 
     def _card_order(self):
         saved = [k for k in (self.cfg.get('card_order') or []) if k in self.DASH_CARDS]
         return saved + [k for k in self.DASH_CARDS if k not in saved]
 
     def _regrid_cards(self):
-        """Grid the dashboard cards in the user's order. The chart's resize grip always rides
-        right below the chart card; the leaderboard's row soaks up the window slack wherever
-        it lands; a card hidden via grid_remove (signals while idle) keeps its slot hidden."""
+        """Grid the dashboard cards in the user's order. The leaderboard's row soaks up the
+        window slack wherever it lands; a card hidden via grid_remove (signals while idle)
+        keeps its slot hidden."""
         right = self._dash_right
         hidden = {n for n, w in self._cards.items() if not w.winfo_manager()}
         for r in range(3 * len(self._cards)):
@@ -1773,10 +1758,6 @@ class App:
                 right.rowconfigure(row, weight=1)
             after_grip = False
             row += 1
-            if name == 'chart':
-                self._chart_grip.grid(row=row, column=0, sticky='ew')
-                row += 1
-                after_grip = True                        # the grip itself is the 16px gap
 
     def _wire_card_drag(self, name, *widgets):
         for w in widgets:
@@ -1895,7 +1876,7 @@ class App:
             return
         msg = ('Delete ALL run history? This action is irreversible.\n\n'
                f'• {n_alphas} found alphas  (library.jsonl)\n'
-               f'• {n_rounds} rounds and the chart  (history.jsonl)\n'
+               f'• {n_rounds} rounds of history  (history.jsonl)\n'
                '• current status  (status.json)\n'
                '• the built portfolio  (portfolio.json)\n\n'
                'Search settings (the parameters on the left) will remain.')
@@ -2041,8 +2022,7 @@ class App:
         self._fit_formula_col()
         self._lib_cache = {'mtime': None, 'all': [], 'families': [], 'computing': False,
                            'dirty': False, 'ts': 0.0, 'computed': False, 'select': None}
-        self._history = []
-        self._draw_chart()
+        self.s_fit.configure(text='—')
         self.s_rounds.configure(text='0')
         self.s_trials.configure(text='0')
         self.s_found.configure(text='0')
@@ -2603,8 +2583,10 @@ class App:
                 self._events_last = evs
                 self._render_events(evs)
             self._refresh_leaderboard(st.get('best', []))
-            self._history = st.get('history', [])
-            self._draw_chart()
+            hist = st.get('history') or []               # the retired PROGRESS chart, as one number
+            fit = next((p.get('best_base', p.get('best_test')) for p in reversed(hist)
+                        if p.get('best_base', p.get('best_test')) is not None), None)
+            self.s_fit.configure(text=f'{fit:+.2f}' if fit is not None else '—')
         if not running and (not st or st.get('state') != 'running'):
             if not (self.proc and self.proc.poll() is None):
                 self._state_pill('● stopped', MUT)
@@ -2614,138 +2596,6 @@ class App:
         except queue.Empty:
             pass
         self.root.after(1500, self._poll)
-
-    def _on_chart_drag(self, e):
-        h = e.y_root - self.chart.winfo_rooty()
-        h = max(int(90 * self.SCALE), min(int(560 * self.SCALE), h))
-        self.chart.configure(height=h)                   # <Configure> redraws the plot itself
-        self.cfg['chart_h'] = round(h / self.SCALE)
-
-    def _chart_reset(self, _e=None):
-        self.cfg['chart_h'] = 0
-        self.chart.configure(height=int(170 * self.SCALE))
-        self._save()
-
-    def _draw_chart(self):
-        cv = getattr(self, 'chart', None)
-        if cv is None:
-            return
-        hist = getattr(self, '_history', []) or []
-        cv.configure(bg=CARD)
-        cv.delete('all')
-        w = max(cv.winfo_width(), 300)
-        h = int(cv['height'])
-
-        def _v(p):                                       # optimized fitness (old log — fallback to best_test)
-            return p.get('best_base', p.get('best_test'))
-        pts = [(p['round'], _v(p)) for p in hist if _v(p) is not None]
-        last_test = next((p.get('best_test') for p in reversed(hist) if p.get('best_test') is not None), None)
-        if len(pts) < 2:
-            cv.create_text(w / 2, h / 2, text='chart will appear after a couple of rounds',
-                           fill=MUT, font=self._font(self.UI, 12))
-            return
-        ys = [v for _, v in pts]
-        lo, hi = min(ys), max(ys)
-        if hi - lo < 0.3:                                  # keep the line from flattening out
-            m = (hi + lo) / 2
-            lo, hi = m - 0.15, m + 0.15
-        S = self.SCALE
-        padL, padR, padT, padB = (int(v * S) for v in (56, 18, 32, 24))
-        n = len(pts)
-        plotw, ploth = w - padL - padR, h - padT - padB
-        base_y = padT + ploth
-
-        def X(i):
-            return padL + plotw * (i / (n - 1))
-
-        def Y(v):
-            return padT + ploth * (1 - (v - lo) / (hi - lo))
-
-        k = max(2, min(4, int(ploth / (26 * S)) + 1))      # each Y label needs ~26px of air
-        for frac in (i / (k - 1) for i in range(k)):       # dashed grid + Y labels
-            val = lo + (hi - lo) * frac
-            y = Y(val)
-            cv.create_line(padL, y, w - padR, y, fill=GRID, dash=(2, 5))
-            cv.create_text(padL - 9 * S, y, text=f'{val:+.2f}', anchor='e', fill=FAINT,
-                           font=self._font(self.UI, 10))
-
-        line = []
-        for i, (_, v) in enumerate(pts):
-            line += [X(i), Y(v)]
-        # fake gradient (canvas has no alpha): a faint full fill, then a stronger ribbon that
-        # hugs the line — reads as a glow fading toward the baseline
-        cv.create_polygon(padL, base_y, *line, X(n - 1), base_y,
-                          fill=_mix(ACC_SOFT, CARD, 0.45), outline='')
-        ribbon = list(line)
-        for i in range(n - 1, -1, -1):
-            ribbon += [X(i), min(Y(pts[i][1]) + 14 * S, base_y)]
-        cv.create_polygon(*ribbon, fill=ACC_SOFT, outline='')
-        cv.create_line(*line, fill=ACC, width=2.5, capstyle='round', joinstyle='round')
-        lx, ly = X(n - 1), Y(ys[-1])
-        cv.create_oval(lx - 7 * S, ly - 7 * S, lx + 7 * S, ly + 7 * S,
-                       fill=_mix(ACC, CARD, 0.72), outline='')
-        cv.create_oval(lx - 4 * S, ly - 4 * S, lx + 4 * S, ly + 4 * S,
-                       fill=ACC, outline=CARD, width=2)
-        txt = f'fitness {ys[-1]:+.2f}'
-        f12 = self._font(self.UI, 12, 'bold')
-        bx1, by0 = w - padR, 3 * S
-        bx0, by1 = bx1 - f12.measure(txt) - int(20 * S), by0 + int(23 * S)
-        _rrect(cv, bx0, by0, bx1, by1, int(11 * S), fill=ACC_SOFT, outline='')
-        cv.create_text((bx0 + bx1) / 2, (by0 + by1) / 2 + 1, text=txt, fill=ACC_HI, font=f12)
-        cv.create_text(padL, h - 6 * S, text=f'round {pts[0][0]}', anchor='w', fill=FAINT,
-                       font=self._font(self.UI, 10))
-        cv.create_text(w - padR, h - 6 * S, text=f'round {pts[-1][0]}', anchor='e', fill=FAINT,
-                       font=self._font(self.UI, 10))
-        if last_test is not None:                        # honest held-out — bottom center, no collisions
-            cv.create_text((padL + w - padR) / 2, h - 6 * S, text=f'champion TEST {last_test:+.2f} · held-out',
-                           anchor='s', fill=FAINT, font=self._font(self.UI, 10))
-
-    def _progress_interactive(self, _e=None):
-        """The dashboard progress chart as a LIVE matplotlib window (wheel zoom / pan / reset),
-        with the extras the compact card has no room for: the champion's held-out TEST curve
-        over time and the library growth on a twin axis."""
-        hist = getattr(self, '_history', []) or []
-
-        def _v(p):
-            return p.get('best_base', p.get('best_test'))
-        base = [(p['round'], _v(p)) for p in hist if _v(p) is not None]
-        if len(base) < 2:
-            messagebox.showinfo('Progress', 'The chart appears after a couple of rounds.',
-                                parent=self.root)
-            return
-        test = [(p['round'], p['best_test']) for p in hist if p.get('best_test') is not None]
-        found = [(p['round'], p['found']) for p in hist if p.get('found') is not None]
-        import matplotlib
-        from matplotlib.figure import Figure
-        win = self._dialog('Progress — fitness by round  (wheel: zoom · double-click: reset)',
-                           f'{int(1040 / self.SCALE)}x{int(580 / self.SCALE)}')
-        body = self._box(win)
-        body.pack(fill='both', expand=True, padx=14, pady=12)
-        with self._plot_lock, matplotlib.rc_context(self._mpl_rc()):
-            fig = Figure(figsize=(9.9, 4.5), dpi=100, facecolor=CARD)
-            ax = fig.add_subplot(111)
-            ax.plot([r for r, _ in base], [v for _, v in base], lw=2.0, color=ACC,
-                    label='fitness min(train,val) — optimized')
-            if test:
-                ax.plot([r for r, _ in test], [v for _, v in test], lw=1.4, color='#f9a825',
-                        label='champion TEST — held-out, never optimized')
-            ax.set_xlabel('round', fontsize=9)
-            ax.set_ylabel('Sharpe', fontsize=9)
-            ax.grid(True, alpha=0.3)
-            ax.tick_params(labelsize=8)
-            hnd, lab = ax.get_legend_handles_labels()
-            if len(found) >= 2:
-                ax2 = ax.twinx()
-                ax2.plot([r for r, _ in found], [v for _, v in found], lw=1.0, ls='--',
-                         color=MUT, label='library size')
-                ax2.set_ylabel('champions in the library', fontsize=8, color=MUT)
-                ax2.tick_params(labelsize=8, colors=MUT)
-                ax2.grid(False)
-                h2, l2 = ax2.get_legend_handles_labels()
-                hnd, lab = hnd + h2, lab + l2
-            ax.legend(hnd, lab, loc='upper left', fontsize=8)
-            fig.tight_layout()
-        self._embed_fig(body, fig)
 
     def _families(self, rows, target):
         """The best alpha per family: walk `rows` (already best-first) and keep one representative
