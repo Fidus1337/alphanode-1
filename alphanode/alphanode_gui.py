@@ -133,7 +133,6 @@ DEFAULTS = {
     'lb_rows': 12,          # leaderboard rows on screen (its in-card grip)
     'lb_cols': None,        # Advanced leaderboard: enabled OPTIONAL columns; None = default set
     'fwd_rows': 4,          # forward-track rows on screen (its in-card grip)
-    'split_w': 0,           # settings|dashboard sash, 100%-DPI px; 0 = size by content
     'pf_h': 0,              # portfolio equity-plot height, px; 0 = automatic (from width)
 }
 
@@ -783,8 +782,8 @@ class App:
         if self._simple() and not self.cfg.get('welcomed'):
             self._build_welcome(self._shell)             # first-run reassurance, above the dashboard
 
-        # settings | dashboard live in a PanedWindow so the split is mouse-draggable; the sash
-        # position (and the chart height below) persist in gui_settings.json in raw 100%-DPI units
+        # settings | dashboard live in a PanedWindow for the hide/show plumbing; the split itself
+        # is fixed — always the settings content's natural width (see _sash_restore)
         body = tk.PanedWindow(self._shell, orient='horizontal', bg=BG, bd=0,
                               sashwidth=max(8, int(8 * self.SCALE)), sashpad=0, sashrelief='flat',
                               opaqueresize=True)
@@ -794,8 +793,9 @@ class App:
         self._build_settings(body)
         self._build_status(body)
         self._apply_settings_vis()
-        body.bind('<ButtonRelease-1>', self._sash_save)
-        body.bind('<Double-1>', self._sash_reset)
+        # the split is NOT draggable: the settings pane is always exactly as wide as its content.
+        # A user-movable sash kept reopening the pane too narrow for its own input fields.
+        body.bind('<Button-1>', lambda e: 'break' if body.identify(e.x, e.y) else None)
 
     # ---------- theme ----------
     def _build_theme_pick(self, top):
@@ -952,9 +952,6 @@ class App:
 
     # ---------- left panel: ALL settings (scrollable, hidden by default) ----------
     def _toggle_settings(self):
-        # NB: no _sash_save here — saving on close recorded whatever the sash had drifted to
-        # (window resizes, CTk relayout) and silently shrank the pane open after open. The width
-        # is remembered only when the user actually drags the sash (<ButtonRelease> on the paned).
         self.cfg['settings_open'] = not self.cfg.get('settings_open')
         self._apply_settings_vis()
         self._save()
@@ -976,42 +973,18 @@ class App:
             self.btn_settings.configure(border_color=(ACC if shown else BORDER),
                                         text_color=(ACC if shown else TXT))
 
-    # ---------- draggable split (settings | dashboard) ----------
+    # ---------- fixed split (settings | dashboard) ----------
     def _sash_restore(self):
-        """Every open lands on the SAME width: the user's saved split, or (never dragged) the
-        content's natural width. Idempotent — safe to call again after late relayouts."""
-        w = self.cfg.get('split_w')
+        """The settings pane is EXACTLY as wide as its content — always. No user sash, no saved
+        width: the old draggable/persisted split kept drifting and reopened the pane too narrow
+        for its own input fields. Idempotent; re-run whenever the content width changes."""
         nat = self._settings_inner.winfo_reqwidth()
-        if not w and nat <= 1:
-            return                                       # pre-layout: let the pane's own request rule
-        x = int(w * self.SCALE) if w else nat + int(48 * self.SCALE)
+        if nat <= 1:
+            return                                       # pre-layout: nothing to measure yet
         try:
-            self._paned.sash_place(0, x, 1)
+            self._paned.sash_place(0, nat + int(48 * self.SCALE), 1)
         except tk.TclError:
             pass
-
-    def _sash_save(self, _e=None):
-        if not self.cfg.get('settings_open'):            # no visible sash — nothing to remember
-            return
-        try:
-            x = self._paned.sash_coord(0)[0]
-        except tk.TclError:
-            return
-        w = round(x / self.SCALE)
-        if w != self.cfg.get('split_w'):
-            self.cfg['split_w'] = w
-            self._save()
-
-    def _sash_reset(self, e):
-        if not self._paned.identify(e.x, e.y):           # double-click somewhere else — ignore
-            return
-        self.cfg['split_w'] = 0
-        nat = self._settings_inner.winfo_reqwidth() + int(48 * self.SCALE)   # content + paddings
-        try:
-            self._paned.sash_place(0, nat, 1)
-        except tk.TclError:
-            pass
-        self._save()
 
     def _build_settings(self, body):
         # Always built (every tk variable must exist for _collect/start), but shown only while
@@ -1030,12 +1003,14 @@ class App:
         vsb.pack(side='right', fill='y', padx=(0, 6), pady=14)
         canvas.pack(side='left', fill='both', expand=True, padx=(14, 0), pady=14)
         inner = self._box(canvas)
-        self._settings_inner = inner                     # natural width for the sash double-click reset
+        self._settings_inner = inner                     # its reqwidth IS the pane width
         canvas.create_window((0, 0), window=inner, anchor='nw')
 
         def _sync(_e=None):     # width is set by the content ITSELF — correct even with HiDPI font scaling
             canvas.configure(width=inner.winfo_reqwidth(), scrollregion=canvas.bbox('all'))
-        inner.bind('<Configure>', _sync)
+            if self.cfg.get('settings_open') and not self._simple():
+                self._sash_restore()                     # content width changed (e.g. the timeframe
+        inner.bind('<Configure>', _sync)                 # note) — the pane follows, fields never clip
         self._bind_wheel(canvas)
 
         self._head(inner, 'SEARCH SETTINGS').pack(anchor='w', pady=(0, 10))
@@ -1100,7 +1075,9 @@ class App:
                           '  and pair count (intraday history is shorter and denser);\n'
                           '• portfolio build and paper-trade are daily-only for now.')
         self.lbl_tf_note = self._lbl(inner, text='', text_color=MUT, font=(self.UI, 11),
-                                     anchor='w', justify='left')
+                                     anchor='w', justify='left', wraplength=330)
+        # wraplength: the intraday note is the widest line in the pane — unwrapped it would
+        # change the pane's width on every timeframe pick
         self.lbl_tf_note.pack(anchor='w', pady=(3, 0))
         self.btn_fetch = self._btn(inner, 'Download fresh data from Binance', self._fetch_data)
         self.btn_fetch.pack(fill='x', pady=(10, 0))
