@@ -1018,18 +1018,10 @@ class App:
         # cfg['settings_open'] — see _apply_settings_vis().
         outer = self._card(body)
         self._settings_outer = outer
-        # sticky='new', NOT 'news': the card must not run the full window length. Its height is
-        # FIXED (the canvas below), the same on every open regardless of monitor/window height —
-        # on a tall display the old full-height pane read as an endless column of settings.
-        body.add(outer, minsize=int(230 * self.SCALE), stretch='never', sticky='new')
+        body.add(outer, minsize=int(230 * self.SCALE), stretch='never')
         # hand-rolled scroller rather than CTkScrollableFrame: the width has to come from the content
         # itself (_sync), which stays correct under HiDPI font scaling — a fixed width would clip.
-        SET_H = int(640 * self.SCALE)                    # the card's one size; scrolls inside
-        canvas = tk.Canvas(outer, bg=CARD, highlightthickness=0, height=SET_H)
-        # shorter window than the card: shrink to fit (never grow past SET_H — one size otherwise)
-        body.bind('<Configure>', lambda e: canvas.configure(
-            height=min(SET_H, max(int(200 * self.SCALE), e.height - int(34 * self.SCALE)))),
-            add='+')
+        canvas = tk.Canvas(outer, bg=CARD, highlightthickness=0)
         vsb = ctk.CTkScrollbar(outer, orientation='vertical', command=canvas.yview,
                                fg_color=CARD, button_color=BORDER, button_hover_color=FAINT, width=14)
         canvas.configure(yscrollcommand=vsb.set)
