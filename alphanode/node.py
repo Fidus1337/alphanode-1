@@ -8,10 +8,12 @@ Config — via ALPHANODE_* environment variables (see alphanode.env), layered ov
 evolution/config.ini (which provides the TRAIN/VAL/TEST segments, vol, penalties, etc.).
 """
 import os
+import re
 import sys
 import json
 import math
 import time
+import hashlib
 import signal
 import threading
 import http.server
@@ -92,6 +94,35 @@ _SUF = '' if TF == '1d' else f'_{TF}'
 LIB = os.path.join(STATE_DIR, f'library{_SUF}.jsonl')
 HIST = os.path.join(STATE_DIR, f'history{_SUF}.jsonl')  # one line per round (for the progress chart)
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
+
+# vault mode (prototype): ALPHANODE_VAULT_PUB = server public key (path or hex). When set,
+# every formula is SEALED before it reaches disk or status.json — plaintext stays only in
+# this process's memory (refine seeding needs it). Off by default: no env var, no sealing.
+# vault (and its `cryptography` dependency) is imported ONLY when the user opts in, so a
+# vault-off node has exactly its previous imports.
+VAULT_PUB = None
+if os.environ.get('ALPHANODE_VAULT_PUB'):
+    import vault
+    VAULT_PUB = vault.load_pub(os.environ['ALPHANODE_VAULT_PUB'])
+
+
+def _id_key(formula):
+    """The dedup key a locked doc is stored under ('id:<md5-tail>'), computed the same way as
+    vault.formula_id but WITHOUT importing vault — so a library that mixes sealed and plaintext
+    rows dedups correctly even with sealing off and cryptography absent."""
+    return 'id:' + hashlib.md5(formula.encode()).hexdigest()[:12]
+
+
+def _disk_doc(c):
+    """What a champion looks like on disk / in status.json. Vault mode strips the plaintext
+    formula and stores a sealed token + a public id; otherwise the doc passes verbatim."""
+    if VAULT_PUB is None or 'formula' not in c:
+        return c
+    d = {k: v for k, v in c.items() if k != 'formula'}
+    d['locked'] = True
+    d['id'] = vault.formula_id(c['formula'])
+    d['formula_enc'] = vault.seal(c['formula'], VAULT_PUB)
+    return d
 CORES = os.cpu_count() or 4
 N_JOBS = max(1, round(CPU_PERCENT / 100 * CORES))      # resources -> number of parallel workers
 
@@ -167,7 +198,11 @@ def load_existing():
                 continue
             try:
                 c = json.loads(line)
-                seen.add(c['formula'])
+                # one dedup key per doc (so status['found'] = len(seen) stays the doc count):
+                # plaintext rows key by formula, locked rows by their public id. The mining loop
+                # checks BOTH forms of a new champion, so a sealed twin of a plaintext row (or the
+                # reverse) is still caught without a second key here.
+                seen.add(c['formula'] if c.get('formula') else 'id:' + str(c.get('id', '')))
                 leaderboard.append(c)
             except json.JSONDecodeError:
                 pass
@@ -192,7 +227,7 @@ def load_existing():
     except (OSError, ValueError, json.JSONDecodeError):
         pass
     status['found'] = len(seen)
-    status['best'] = leaderboard[:KEEP]
+    status['best'] = [_disk_doc(c) for c in leaderboard[:KEEP]]   # mask any plaintext docs too
     if leaderboard:                                    # honest champion metrics right at startup
         ch = leaderboard[0]
         bb, bt = _basesh(ch), _testsh(ch)
@@ -269,12 +304,21 @@ def build_cfg(seed, seeds=None):
 
 
 # ---- minimal status server (stdlib) ----
+def _html_formula(c):
+    """The formula cell on the :8787 page. Vault mode (or a locked doc loaded after a restart)
+    shows the public id, never plaintext; the in-memory leaderboard keeps plaintext for refine
+    seeding, so masking has to happen at render time, not just on the file write."""
+    if VAULT_PUB is not None or c.get('locked') or not c.get('formula'):
+        return '🔒 locked · ' + str(c.get('id', ''))[:12]
+    return c['formula']
+
+
 def render_html():
     rows = ''.join(
         f"<tr><td>{i + 1}</td>"
         f"<td class=t>{('%+.2f' % _basesh(c)) if _basesh(c) > -1e8 else '—'}</td>"
         f"<td>{('%+.2f' % _testsh(c)) if _testsh(c) > -1e8 else '—'}</td>"
-        f"<td class=f>{c['formula']}</td></tr>"
+        f"<td class=f>{_html_formula(c)}</td></tr>"
         for i, c in enumerate(leaderboard[:KEEP]))
     evs = status.get('events') or []
     ev_lines = ''.join(
@@ -420,8 +464,22 @@ def forward_loop():
 _last_save = [0.0]
 
 
+def _vault_scrub(m):
+    """Vault mode: the engine logs formula text on two lines — '★ … — <canon>' and
+    '  fine-tune: <a> -> <b>  <canon>'. Both flow through _cb into status/log/HTTP, so the
+    formula must be cut off HERE (a no-op when the vault is off). Keeps the numbers, drops
+    the canon tail."""
+    if VAULT_PUB is None:
+        return m
+    if ' — ' in m:                                       # ★ new-best line
+        m = m.split(' — ')[0]
+    if 'fine-tune:' in m and '->' in m:                  # per-champion polish line (not the summary)
+        m = re.sub(r'(->\s*[-+][\d.]+).*$', r'\1', m)    # keep up to the improved base, drop the canon
+    return m
+
+
 def _cb(msg):
-    m = str(msg).rstrip()
+    m = _vault_scrub(str(msg).rstrip())
     ms = m.strip()
     if ms.startswith('★'):
         log_event('best', ms)
@@ -487,9 +545,12 @@ def main():
     while not STOP and (MAX_ROUNDS == 0 or rnd < MAX_ROUNDS):
         rnd += 1
         seed = BASE_SEED + rnd
-        # refine on the best from the library (warm-start); periodically — pure exploration
-        refine = SEED_FROM_LIB and bool(leaderboard) and (rnd % EXPLORE_EVERY != 0)
-        seeds = [c['formula'] for c in leaderboard] if refine else None
+        # refine on the best from the library (warm-start); periodically — pure exploration.
+        # Vault docs loaded from disk carry no plaintext, so only this session's finds can
+        # seed a warm start — with none available the round honestly falls back to explore.
+        seed_pool = [c['formula'] for c in leaderboard if c.get('formula')]
+        refine = SEED_FROM_LIB and bool(seed_pool) and (rnd % EXPLORE_EVERY != 0)
+        seeds = seed_pool if refine else None
         mode = 'refining best' if refine else 'exploring new'
         status['mode'] = mode
         status['current'] = f'round {rnd}: {mode} (seed {seed})…'
@@ -520,12 +581,12 @@ def main():
         new = 0
         with open(LIB, 'a', encoding='utf-8') as f:
             for c in champions_from_hof(hof):
-                if c['formula'] in seen:
-                    continue
+                if c['formula'] in seen or _id_key(c['formula']) in seen:
+                    continue                             # already mined (plaintext OR a locked doc)
                 seen.add(c['formula'])
                 c['round'], c['ts'] = rnd, iso()
-                f.write(json.dumps(c, ensure_ascii=False) + '\n')
-                leaderboard.append(c)
+                f.write(json.dumps(_disk_doc(c), ensure_ascii=False) + '\n')
+                leaderboard.append(c)                    # memory keeps plaintext (refine seeding)
                 new += 1
         leaderboard.sort(key=_basesh, reverse=True)    # champion = best by min(train,val); TEST closed
         del leaderboard[KEEP:]
@@ -545,7 +606,10 @@ def main():
         except OSError:
             pass
         status.update(rounds=rnd, trials_total=status['trials_total'] + len(cache),
-                      found=len(seen), best=leaderboard[:KEEP], best_base=bb_val, best_test=bt_val,
+                      # status.json reaches disk AND the :8787 status HTTP — vault mode must
+                      # seal here too, or the library lock would leak through the side door
+                      found=len(seen), best=[_disk_doc(c) for c in leaderboard[:KEEP]],
+                      best_base=bb_val, best_test=bt_val,
                       history=history[-300:],
                       current=f'round {rnd} done [{mode}]: +{new} new · fitness {bb_s} · '
                               f'TEST(OOS) {bt_s} · {time.time()-t0:.0f}s')

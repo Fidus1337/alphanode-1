@@ -72,6 +72,8 @@ PORTFOLIO_JSON = os.path.join(STATE_DIR, 'portfolio.json')
 PORTFOLIO_PNG = os.path.join(STATE_DIR, 'portfolio_equity.png')
 SETTINGS = apppaths.settings_file()
 CORES = os.cpu_count() or 4
+# vault prototype: where locked formulas get revealed (subscription check lives server-side)
+VAULT_URL = os.environ.get('ALPHANODE_VAULT_URL', 'http://127.0.0.1:8790')
 
 
 TF_CHOICES = ('1d', '4h', '1h', '15m')
@@ -2710,9 +2712,13 @@ class App:
         per formula shape (SequenceMatcher < 0.80), until `target` distinct families. The scan is
         capped so the O(N²) similarity can't freeze the GUI on a huge library."""
         kept = []
+
+        def _shape(c):                                   # vault docs have no text — the id stands in,
+            return c.get('formula') or 'id:' + str(c.get('id', ''))   # so each stays its own family
+
         for c in rows[:500]:
-            f = c.get('formula', '')
-            if all(difflib.SequenceMatcher(None, f, k.get('formula', '')).ratio() < 0.80 for k in kept):
+            f = _shape(c)
+            if all(difflib.SequenceMatcher(None, f, _shape(k)).ratio() < 0.80 for k in kept):
                 kept.append(c)
             if len(kept) >= target:
                 break
@@ -2918,7 +2924,7 @@ class App:
     def _fill_tree(self, best):
         best = self._sorted(best)                        # order by the clicked column (no dedup — see the toggle)
         sig = (self._lb_mode, self._sort_col, self._sort_desc, len(best),
-               best[0]['formula'] if best else '')
+               (best[0].get('formula') or best[0].get('id', '')) if best else '')
         if getattr(self, '_treesig', None) == sig:
             return
         self._treesig = sig
@@ -2935,21 +2941,27 @@ class App:
             stripe = 'odd' if i % 2 else 'even'
             tags = ('pos',) if (ts is not None and ts >= 0) else (stripe,)
             formula = c.get('formula', '')
-            f = '  ' + formula                           # full length — the column fits the widest
+            locked = bool(c.get('locked')) and not formula   # vault doc: metrics visible, text sealed
+            if locked:
+                aid = str(c.get('id', ''))[:6]
+                f = '  locked — a subscription reveals the formula'
+                m = 'err'                                # the worker can't simulate a sealed formula
+            else:
+                aid = hashlib.md5(formula.encode()).hexdigest()[:6]   # cell shows the tail only: the
+                #                                                       'alpha_' prefix was 7 dead chars/row
+                f = '  ' + formula                       # full length — the column fits the widest
+                m = self._metrics_cache.get(formula)
             need = max(need, self._tree_font.measure(f))   # row; the two spaces are the gutter to
             #                                                the neighbour cell's right-flush value
-            m = self._metrics_cache.get(formula)
             ls, act, win, srt, calm, storm = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
-            aid = hashlib.md5(formula.encode()).hexdigest()[:6]   # cell shows the tail only: the
-            #                                                       'alpha_' prefix was 7 dead chars/row
             item = self.tree.insert('', 'end', values=(
                 i + 1, f'{base:+.2f}' if base is not None else '—',
                 f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt, calm, storm,
                 ls, act, win, aid, f),
                 tags=tags)
-            self._row_items[formula] = item
+            self._row_items[formula or ('id:' + aid)] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
         self._fit_formula_col()
         if top:
@@ -3112,6 +3124,8 @@ class App:
         for formula, item in list(self._row_items.items()):
             if not self.tree.exists(item):
                 continue
+            if formula.startswith('id:'):                # locked row: no plaintext to simulate —
+                continue                                 # leave its '—' cells, don't repaint to '·'
             m = self._metrics_cache.get(formula)
             ls, act, win, srt, calm, storm = self._fmt_metrics(m)
             self.tree.set(item, 'ls', ls)
@@ -3238,6 +3252,11 @@ class App:
         out = []
         for i, c in enumerate(rows):
             formula = c.get('formula', '')
+            locked = bool(c.get('locked')) and not formula
+            # locked rows: the doc's real public id, a '🔒 locked' formula cell — never the
+            # empty-string md5 that would collide every locked row onto one bogus id
+            aid = str(c.get('id', '')) if locked else 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
+            fcell = '🔒 locked (subscription reveals)' if locked else formula
             m = self._metrics_cache.get(formula)
             m = m if isinstance(m, dict) else {}          # None = still computing, 'err' = failed -> blanks
             base = c.get('base')
@@ -3252,7 +3271,7 @@ class App:
                         m.get('long', ''), m.get('short', ''),
                         round(m['act'], 2) if 'act' in m else '',
                         round(m['win'] * 100, 1) if 'win' in m else '',
-                        'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6], formula])
+                        aid, fcell])
         self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
                               'test_dd', 'test_cagr', 'test_sortino', 'test_sh_calm',
                               'test_sh_storm', 'long', 'short', 'tr_yr_a',
@@ -3286,13 +3305,17 @@ class App:
             return
         rows.sort(key=lambda c: c.get('base') if isinstance(c.get('base'), (int, float)) else -1e9,
                   reverse=True)
-        header = ['formula', 'size', 'fitness', 'round', 'found_at', 'origin']
+        header = ['id', 'formula', 'size', 'fitness', 'round', 'found_at', 'origin']
         for seg in ('train', 'val', 'test'):
             header += [f'{seg}_{k}' for k in ('sharpe', 'dd', 'cagr', 'n')]
         out = []
         for c in rows:
             base = c.get('base')
-            r = [c.get('formula', ''), c.get('size', ''),
+            f = c.get('formula', '')
+            # locked docs (vault mode) have no plaintext — export the public id, mark the cell
+            aid = c.get('id') or hashlib.md5(f.encode()).hexdigest()[:12]
+            fcell = f if f else '🔒 locked (subscription reveals)'
+            r = [aid, fcell, c.get('size', ''),
                  round(base, 4) if isinstance(base, (int, float)) else '',
                  c.get('round', ''), c.get('ts', ''), c.get('origin', 'ga')]
             for seg in ('train', 'val', 'test'):
@@ -3694,7 +3717,114 @@ class App:
             self._panel_cache = {key: cached}            # keep only the last one (memory)
         return cached
 
+    # ---------- vault (prototype): the locked card + the Unlock flow ----------
+    def _vault_reveal(self, token, license_key):
+        """Hand the sealed token to the vault server; the subscription check happens THERE.
+        Returns the plaintext formula, raises RuntimeError with a human message otherwise."""
+        import urllib.error
+        import urllib.request
+        body = json.dumps({'token': token, 'license': license_key}).encode()
+        req = urllib.request.Request(VAULT_URL + '/reveal', data=body,
+                                     headers={'Content-Type': 'application/json'})
+        try:
+            with urllib.request.urlopen(req, timeout=4) as resp:
+                raw = resp.read().decode()
+        except urllib.error.HTTPError as e:              # 4xx still carries a JSON error body
+            raw = e.read().decode(errors='replace')
+        except (urllib.error.URLError, OSError) as e:
+            raise RuntimeError(f'vault server unreachable at {VAULT_URL} — is it running?') from e
+        try:                                             # a 200 from a captive portal / wrong host
+            out = json.loads(raw)                        # is NOT JSON — must not hang the dialog
+        except (ValueError, json.JSONDecodeError) as e:
+            raise RuntimeError(f'{VAULT_URL} did not answer like a vault server') from e
+        if not out.get('ok'):
+            raise RuntimeError(str(out.get('error', 'unlock denied')))
+        return str(out.get('formula', ''))
+
+    def _open_locked(self, champ):
+        """A vault doc opened from the leaderboard: stored metrics in full, the formula sealed.
+        Unlock asks the server to reveal; success re-opens the row as a normal equity window.
+        Prototype: the reveal lives in memory only — the library file on disk stays sealed."""
+        aid = str(champ.get('id', ''))[:6]
+        win = self._dialog(f'Locked alpha {aid}', '620x300')
+        head = self._box(win)
+        head.pack(fill='x', padx=18, pady=(16, 8))
+
+        def seg(name, m, accent=False):
+            m = m or {}
+            sh, cg, dd = m.get('sharpe'), m.get('cagr'), m.get('dd')
+            txt = f'{name}:  Sharpe {sh:+.2f}' if sh is not None else f'{name}:  —'
+            if cg is not None:
+                txt += f'   CAGR {cg*100:+.0f}%'
+            if dd is not None:
+                txt += f'   DD {dd*100:.0f}%'
+            self._lbl(head, text=txt, text_color=(NEG if accent else TXT), anchor='w',
+                      font=(self.UI, 11, 'bold' if accent else 'normal')).pack(anchor='w')
+
+        seg('TRAIN', champ.get('train'))
+        seg('VAL', champ.get('val'))
+        seg('TEST (held-out)', champ.get('test'), accent=True)
+        self._lbl(head, text=f'formula {aid} is sealed in your vault',
+                  text_color=TXT, anchor='w', font=(self.UI, 13, 'bold')).pack(anchor='w', pady=(12, 2))
+        self._lbl(head, text='It was mined on this machine and encrypted before touching the disk.\n'
+                             'A subscription unlocks live signals and the formula text — the vault\n'
+                             'server checks the license and reveals it. The metrics above are yours\n'
+                             'to inspect either way.',
+                  text_color=MUT, justify='left', anchor='w', font=(self.UI, 11)).pack(anchor='w')
+        row = self._box(head)
+        row.pack(anchor='w', pady=(12, 4))
+        self._lbl(row, text='license key', text_color=MUT, font=(self.UI, 11)).pack(side='left')
+        v_lic = tk.StringVar(value='demo')
+        self._entry(row, v_lic, width=180).pack(side='left', padx=(8, 10))
+        st = self._lbl(head, text='', text_color=MUT, anchor='w', font=(self.UI, 11))
+
+        def done(formula, err):
+            if not win.winfo_exists():
+                return
+            if err:
+                st.configure(text=err, fg=NEG)
+                btn.configure(state='normal')
+                return
+            fid = str(champ.get('id', ''))
+            import vault
+            if fid and vault.formula_id(formula)[:len(fid)] != fid:
+                st.configure(text='server returned a DIFFERENT formula — refusing it', fg=NEG)
+                btn.configure(state='normal')
+                return                                   # the id pins the reveal to what was mined
+            champ['formula'] = formula
+            champ['locked'] = False
+            win.destroy()
+            self._treesig = None                         # session-only: the row now shows its text
+            self._fill_tree(list(self._shown))
+            self._open_plot(champ)
+
+        def unlock():
+            btn.configure(state='disabled')
+            st.configure(text='asking the vault server…', fg=MUT)
+            tok, lic = str(champ.get('formula_enc', '')), v_lic.get().strip()
+            res = {}                                     # thread -> main-loop handoff: the worker
+
+            def work():                                  # writes ONE key ('out') as a single store,
+                try:                                     # so the ticker never sees a half-written
+                    res['out'] = (self._vault_reveal(tok, lic), None)   # result (no f-without-e race)
+                except Exception as ex:                  # noqa: BLE001 — any failure reaches the card
+                    res['out'] = ('', str(ex) or type(ex).__name__)
+
+            def tick():
+                if 'out' in res:
+                    done(*res['out'])
+                elif win.winfo_exists():
+                    win.after(120, tick)
+            threading.Thread(target=work, daemon=True).start()
+            win.after(120, tick)
+
+        btn = self._btn(row, 'Unlock', unlock, kind='accent', width=120)
+        btn.pack(side='left')
+        st.pack(anchor='w', pady=(4, 0))
+
     def _open_plot(self, champ):
+        if champ.get('locked') and not champ.get('formula'):
+            return self._open_locked(champ)              # vault doc: the card with the Unlock flow
         self._plot_seq += 1
         sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
         img_w = int(min(1680, max(1000, sw * 0.80)))     # large chart, but within the screen
