@@ -112,6 +112,10 @@ DEFAULTS = {
     'timeframe': '1d',      # bar size for the whole pipeline: 1d | 4h | 1h | 15m
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
+    # vault (prototype): seal mined formulas so a subscription is needed to reveal them
+    'vault_seal': False,                            # OFF = classic behaviour (plaintext library)
+    'vault_pub': 'alphanode/vault_server_key.pub',  # server public key the node seals to
+    'vault_url': VAULT_URL,                         # reveal server; honours ALPHANODE_VAULT_URL
     # simulation
     'target_vol': 0.25, 'exec_cost': 0.001,
     # genome
@@ -318,6 +322,9 @@ class App:
             seed_from_lib=bool(self.v_seedlib.get()),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
+            vault_seal=bool(self.v_vault.get()),
+            vault_pub=self.v_vaultpub.get().strip(),
+            vault_url=self.v_vaulturl.get().strip(),
             target_vol=self._gf(self.v_vol, d['target_vol']),
             exec_cost=self._gf(self.v_exec, d['exec_cost']),
             max_depth=self._gi(self.v_depth, d['max_depth']),
@@ -1000,6 +1007,7 @@ class App:
         vsb = ctk.CTkScrollbar(outer, orientation='vertical', command=canvas.yview,
                                fg_color=CARD, button_color=BORDER, button_hover_color=FAINT, width=14)
         canvas.configure(yscrollcommand=vsb.set)
+        self._settings_canvas = canvas
         # the scrollbar packs FIRST: when the pane is dragged narrower than the content, whoever
         # packed last is squeezed out first — it must be the canvas that clips, not the scrollbar
         vsb.pack(side='right', fill='y', padx=(0, 6), pady=14)
@@ -1113,6 +1121,20 @@ class App:
                                   tip='How many best alphas to keep in the top list.')
         self.v_seedlib = self._chk(g, 'Warm-start from library', self.cfg['seed_from_lib'], 3,
                                    tip='Seed the new generation with the best found alphas (fine-tuning). Off — always from scratch.')
+
+        # --- vault (prototype) ---
+        g = self._section(inner, 'VAULT (seal mined formulas)')
+        self.v_vault = self._chk(g, 'Seal mined formulas', self.cfg.get('vault_seal', False), 0,
+                                 tip='When ON, the node encrypts every formula it mines BEFORE it\n'
+                                     'touches the library — you keep the metrics and the chart, but\n'
+                                     'the formula text and live signals need the vault server to\n'
+                                     'unlock. Off — the classic plaintext library.')
+        self.v_vaultpub = self._txt(g, 'Server public key', self.cfg.get('vault_pub', ''), 1,
+                                    tip='Path to the vault server\'s public key (…/vault_server_key.pub).\n'
+                                        'The server prints/creates this on first run. The node seals to it.')
+        self.v_vaulturl = self._txt(g, 'Reveal server URL', self.cfg.get('vault_url', ''), 2,
+                                    tip='Where the Unlock button asks to reveal a locked formula\n'
+                                        '(the vault server, default http://127.0.0.1:8790).')
 
         # --- simulation ---
         g = self._section(inner, 'SIMULATION')
@@ -2129,6 +2151,8 @@ class App:
         self.v_tf.set(_tf_clean(c.get('timeframe', '1d'))); self._tf_note()
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
+        self.v_vault.set(c.get('vault_seal', False))
+        self.v_vaultpub.set(c.get('vault_pub', '')); self.v_vaulturl.set(c.get('vault_url', ''))
         self.v_vol.set(c['target_vol']); self.v_exec.set(c['exec_cost'])
         self.v_depth.set(c['max_depth']); self.v_size.set(c['max_size'])
         self.v_tourn.set(c['tournament']); self.v_elit.set(c['elitism'])
@@ -2215,11 +2239,30 @@ class App:
         self._save()
         c = self.cfg
         os.makedirs(STATE_DIR, exist_ok=True)
+        vault_pub = ''
+        if c.get('vault_seal'):
+            # resolve a relative key against the SAME dir the node runs in (dev: PROJ; frozen:
+            # the writable user dir) — must be an existing FILE (isfile: a bare/empty path that
+            # os.path.join turns into a directory must NOT slip through as "found")
+            p = (c.get('vault_pub', '') or '').strip()
+            base = apppaths.USER_DIR if apppaths.FROZEN else PROJ
+            vault_pub = p if os.path.isabs(p) else os.path.join(base, p)
+            if not p or not os.path.isfile(vault_pub):
+                messagebox.showerror(
+                    'Vault', 'Seal mined formulas is ON, but the server public key '
+                    + (f'was not found:\n{vault_pub}' if p else 'path is empty')
+                    + '.\n\nStart the vault server first (it creates the key), or set the path '
+                    'in Settings → VAULT, or turn sealing off.', parent=self.root)
+                return
         if not os.path.exists(self._data_file()):
             # first run without a snapshot: fetch the starter universe, then continue START
             self._bootstrap_data(on_success=self.start)
             return
         env = dict(os.environ)
+        if vault_pub:
+            env['ALPHANODE_VAULT_PUB'] = vault_pub       # node seals every mined formula to it
+        else:
+            env.pop('ALPHANODE_VAULT_PUB', None)         # sealing off — never inherit a stray value
         env.update(
             ALPHANODE_CPU_PERCENT=str(c['cpu']),
             ALPHANODE_UNIVERSE=('all' if c['universe_all'] else c['universe_list']),
@@ -3723,8 +3766,9 @@ class App:
         Returns the plaintext formula, raises RuntimeError with a human message otherwise."""
         import urllib.error
         import urllib.request
+        url = (self.cfg.get('vault_url') or VAULT_URL).rstrip('/')   # Settings → VAULT wins
         body = json.dumps({'token': token, 'license': license_key}).encode()
-        req = urllib.request.Request(VAULT_URL + '/reveal', data=body,
+        req = urllib.request.Request(url + '/reveal', data=body,
                                      headers={'Content-Type': 'application/json'})
         try:
             with urllib.request.urlopen(req, timeout=4) as resp:
@@ -3732,11 +3776,11 @@ class App:
         except urllib.error.HTTPError as e:              # 4xx still carries a JSON error body
             raw = e.read().decode(errors='replace')
         except (urllib.error.URLError, OSError) as e:
-            raise RuntimeError(f'vault server unreachable at {VAULT_URL} — is it running?') from e
+            raise RuntimeError(f'vault server unreachable at {url} — is it running?') from e
         try:                                             # a 200 from a captive portal / wrong host
             out = json.loads(raw)                        # is NOT JSON — must not hang the dialog
         except (ValueError, json.JSONDecodeError) as e:
-            raise RuntimeError(f'{VAULT_URL} did not answer like a vault server') from e
+            raise RuntimeError(f'{url} did not answer like a vault server') from e
         if not out.get('ok'):
             raise RuntimeError(str(out.get('error', 'unlock denied')))
         return str(out.get('formula', ''))
