@@ -277,6 +277,8 @@ class App:
         self._tip_win = None                             # tooltip window + deferred display
         self._tip_after = None
         self._fetching = False                           # a fetch_data child is running (one at a time)
+        self._activating = False                         # a vault activation is rewriting library
+        self._starting = False                           # files / a Start hub-check is in flight
         self.cfg = dict(DEFAULTS)
         self._load()
         self._lb_mode = self.cfg.get('lb_mode') or 'all'   # remembered across restarts
@@ -1212,9 +1214,16 @@ class App:
                              text_color_disabled=FAINT,
                              font=(self.UI, 11, 'bold' if kind == 'accent' else 'normal'), **kw)
 
-    def _entry(self, parent, var, width=None):
+    def _entry(self, parent, var, width=None, placeholder=None):
+        """var=None: no textvariable is bound — the ONLY mode where CTkEntry's placeholder_text
+        ever renders (a bound StringVar, even an empty one, disables the placeholder machinery
+        entirely). Callers wanting the ghost hint pass var=None and read .get() themselves."""
         kw = {'width': width} if width else {}
-        return ctk.CTkEntry(parent, textvariable=var, height=30, corner_radius=9,
+        if placeholder:
+            kw['placeholder_text'] = placeholder             # ghost hint while the field is empty
+        if var is not None:
+            kw['textvariable'] = var
+        return ctk.CTkEntry(parent, height=30, corner_radius=9,
                             fg_color=HEAD_BG, border_color=BORDER, border_width=1,
                             text_color=TXT, font=(self.UI, 13), **kw)
 
@@ -1541,6 +1550,16 @@ class App:
         # width/height are raw: CTk scales them itself (set_widget_scaling), unlike a tk pixel.
         self.btn_lb_csv = self._btn(hrow, 'CSV', self._export_library, height=24, width=52)
         self.btn_lb_csv.pack(side='right', padx=(10, 0))
+        # node activation: ONE subscription key unlocks the whole local library at once and lets
+        # the node mine in the open — the customer-facing CTA, visible in Simple and Advanced.
+        # (No emoji in the label: this Tk build segfaults drawing non-BMP glyphs in a CTkButton.)
+        self.btn_activate = self._btn(hrow, 'Activate node', self._open_activate,
+                                      height=24, width=118)
+        self.btn_activate.pack(side='right', padx=(10, 0))
+        self._tip(self.btn_activate,
+                  'Paste your subscription key once: this machine claims one of the plan\'s\n'
+                  'node seats, EVERY sealed formula in the local library is unlocked in one\n'
+                  'go, and mining continues in the open while the subscription is live.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -2229,18 +2248,65 @@ class App:
     def start(self):
         if self.proc and self.proc.poll() is None:
             return
+        if self._activating:                             # activation is rewriting library files —
+            messagebox.showwarning(                      # a miner started now would have its
+                'AlphaNode', 'Activation is unlocking your library right now.\n'
+                             'Wait for it to finish, then start the node.')   # appends clobbered
+            return
+        if self._starting:                               # a Start hub-check is already in flight
+            return
         self._welcome_dismiss()                          # starting IS the first-run onboarding
         self._save()
-        c = self.cfg
         os.makedirs(STATE_DIR, exist_ok=True)
         if not os.path.exists(self._data_file()):
             # first run without a snapshot: fetch the starter universe, then continue START
             self._bootstrap_data(on_success=self.start)
             return
-        env = dict(os.environ)
         # the vault is always on: seal every mined formula to the vendor's key. No user toggle —
         # the subscription decides what the customer can unlock, not whether the library is sealed.
         vault_pub = _vault_pub_path()
+        # …unless this node is ACTIVATED: a live subscription means the customer sees everything
+        # anyway, so an activated node mines in the open (checked against the hub at every Start —
+        # instant revocation). Hub down or subscription lapsed -> fail CLOSED, seal as before;
+        # rows mined sealed unlock later via Activate. The check runs OFF the Tk thread: urlopen's
+        # timeout doesn't bound DNS resolution, and a Start click must never freeze the GUI.
+        if vault_pub and self.cfg.get('vault_license'):
+            self._starting = True
+            res = {}                                     # worker -> Tk handoff: ONE key, polled
+
+            def check():                                 # (after() itself is NOT thread-safe, so
+                pub = vault_pub                          # the worker never touches Tk)
+                try:
+                    act = self._hub_request('/activate', {'token': self.cfg['vault_license'],
+                                                          'device_id': self._device_id()},
+                                            timeout=3)
+                    if act.get('ok'):
+                        pub = ''
+                except RuntimeError:
+                    pass                                 # hub unreachable -> fail closed: seal
+
+                res['pub'] = pub
+
+            def tick():
+                if 'pub' in res:
+                    self._start_node(res['pub'])
+                else:
+                    self.root.after(120, tick)
+            threading.Thread(target=check, daemon=True).start()
+            self.root.after(120, tick)
+            return
+        self._start_node(vault_pub)
+
+    def _start_node(self, vault_pub):
+        """The second half of Start — runs on the Tk thread after the (possibly async) vault
+        decision. vault_pub: '' = mine in the open, else the key to seal to."""
+        self._starting = False
+        if self.proc and self.proc.poll() is None:       # re-check: the world may have moved
+            return                                       # while the hub check was in flight
+        if self._activating:
+            return                                       # activation began meanwhile: no miner
+        c = self.cfg
+        env = dict(os.environ)
         if vault_pub:
             env['ALPHANODE_VAULT_PUB'] = vault_pub
         else:
@@ -3762,7 +3828,7 @@ class App:
             pass
         return did
 
-    def _hub_request(self, path, payload):
+    def _hub_request(self, path, payload, timeout=5):
         """POST JSON to the hub; return the parsed body. AlphaHub answers success as {ok:true,…}
         and errors as FastAPI's {detail:…} with a 4xx — both are JSON, so callers check 'ok' and
         fall back to 'detail' for the message. Raises RuntimeError only on transport/format faults."""
@@ -3772,7 +3838,7 @@ class App:
         req = urllib.request.Request(url + path, data=json.dumps(payload).encode(),
                                      headers={'Content-Type': 'application/json'})
         try:
-            with urllib.request.urlopen(req, timeout=5) as resp:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode()
         except urllib.error.HTTPError as e:              # 4xx still carries a JSON {detail} body
             raw = e.read().decode(errors='replace')
@@ -3798,6 +3864,183 @@ class App:
         if not out.get('ok'):
             raise RuntimeError(str(out.get('detail') or 'unlock denied'))
         return str(out.get('formula', ''))
+
+    @staticmethod
+    def _read_library(path):
+        """Lines + index-aligned parsed docs; a line that doesn't parse maps to None and is
+        preserved verbatim by every rewrite."""
+        lines = open(path, encoding='utf-8').read().splitlines()
+        docs = []
+        for ln in lines:
+            try:
+                docs.append(json.loads(ln) if ln.strip() else None)
+            except json.JSONDecodeError:
+                docs.append(None)
+        return lines, docs
+
+    def _vault_activate_all(self, account_token):
+        """Node activation: claim a seat, then unlock EVERY sealed formula in every local library
+        (all timeframes) in chunked batches, rewriting the files in the open. This is the
+        'subscription = the node works in the open' switch; the per-card Unlock stays as the
+        single-formula path. Returns a human summary; raises RuntimeError on any gate.
+
+        The rewrite is guarded against every writer we know about: the caller refuses to run
+        while the GUI's own miner is up AND holds _activating so Start refuses to launch one;
+        for writers we can't see (a headless cli.py miner, rescore) each file is swapped only if
+        a fresh stat matches the snapshot the rewrite was computed from — on a mismatch the swap
+        is retried on the fresh content and, failing that, the file is left alone (their rows
+        must never be lost, ours can be re-revealed). Revealed rows KEEP formula_enc and only
+        drop 'locked': the sealed token is the crash-proof original — anything torn mid-write is
+        re-revealable forever."""
+        if not account_token:
+            raise RuntimeError('enter your subscription key first')
+        device_id = self._device_id()
+        act = self._hub_request('/activate', {'token': account_token, 'device_id': device_id})
+        if not act.get('ok'):
+            raise RuntimeError(str(act.get('detail') or 'activation denied'))
+        n_open = n_fail = 0
+        contested = []
+        for name in sorted(os.listdir(STATE_DIR)):
+            if not (name.startswith('library') and name.endswith('.jsonl')):
+                continue
+            path = os.path.join(STATE_DIR, name)
+            try:
+                _, docs = self._read_library(path)
+            except OSError:
+                continue
+            sealed = [d for d in docs if isinstance(d, dict) and d.get('locked')
+                      and d.get('formula_enc') and not d.get('formula')]
+            revealed = {}                                # row id -> verified plaintext
+            for at in range(0, len(sealed), 500):        # chunked: the hub caps a batch at 2000
+                chunk = sealed[at:at + 500]
+                out = self._hub_request('/reveal_batch', {
+                    'token': account_token, 'device_id': device_id,
+                    'formulas': [d['formula_enc'] for d in chunk]}, timeout=30)
+                if not out.get('ok'):
+                    raise RuntimeError(str(out.get('detail') or 'unlock denied'))
+                for d, item in zip(chunk, out.get('formulas') or []):
+                    f = item.get('formula')
+                    fid = str(d.get('id', ''))
+                    # pin each reveal to its row: the id stored at mine time must match
+                    if not f or not fid or hashlib.md5(f.encode()).hexdigest()[:12][:len(fid)] != fid:
+                        n_fail += 1
+                        continue
+                    revealed[fid] = f
+            if not revealed:
+                continue
+            # apply to a FRESH read, swap only if the file did not change in between: an outside
+            # writer loses the swap (we retry on its content), never its rows
+            tmp = f'{path}.activate.{os.getpid()}.tmp'   # per-run name: two runs can't truncate
+            for _attempt in range(3):                    # each other's half-written tmp
+                st0 = os.stat(path)
+                lines, docs = self._read_library(path)
+                applied = 0
+                for i, d in enumerate(docs):
+                    if (isinstance(d, dict) and d.get('locked') and not d.get('formula')
+                            and str(d.get('id', '')) in revealed):
+                        d['formula'] = revealed[str(d['id'])]
+                        d.pop('locked', None)            # formula_enc stays: re-derivable forever
+                        lines[i] = json.dumps(d)
+                        applied += 1
+                if not applied:
+                    break
+                with open(tmp, 'w', encoding='utf-8') as fh:
+                    fh.write('\n'.join(lines) + '\n')
+                    fh.flush()
+                    os.fsync(fh.fileno())                # durable BEFORE it replaces the library
+                st1 = os.stat(path)
+                if (st1.st_mtime_ns, st1.st_size) == (st0.st_mtime_ns, st0.st_size):
+                    os.replace(tmp, path)
+                    n_open += applied
+                    break
+                try:                                     # someone appended mid-rewrite: drop the
+                    os.unlink(tmp)                       # stale tmp, retry on the fresh content
+                except OSError:
+                    pass
+            else:
+                contested.append(name)
+        plan = f"plan {act.get('plan')} · nodes {act.get('used')}/{act.get('node_limit')}"
+        if n_open or n_fail:
+            msg = f'unlocked {n_open} formulas'
+            if n_fail:
+                msg += f' ({n_fail} failed — still sealed)'
+        else:
+            msg = 'library already open — nothing left sealed'
+        if contested:
+            msg += (f' · {", ".join(contested)} kept changing (a miner is writing?) — '
+                    'left sealed, stop it and retry')
+        return msg + ' · ' + plan
+
+    def _open_activate(self):
+        """The one-key activation card: paste the subscription key once — this machine claims a
+        seat, the whole local library is revealed in place, and Start mines in the open from then
+        on (checked live against the hub each Start)."""
+        win = self._dialog('Activate node', f'{int(720 / self.SCALE)}x{int(330 / self.SCALE)}')
+        pad = self._box(win)
+        pad.pack(fill='both', expand=True, padx=18, pady=16)
+        self._lbl(pad, text='One key opens everything', text_color=TXT, anchor='w',
+                  font=(self.UI, 15, 'bold')).pack(anchor='w')
+        self._lbl(pad, text='Your subscription key activates this machine (one of the plan\'s '
+                            'node seats),\nunlocks every sealed formula already mined here, and '
+                            'lets the node mine\nin the open while the subscription is live.',
+                  text_color=MUT, justify='left', anchor='w',
+                  font=(self.UI, 12)).pack(anchor='w', pady=(6, 0))
+        row = self._box(pad)
+        row.pack(anchor='w', fill='x', pady=(14, 4))
+        self._lbl(row, text='subscription key', text_color=MUT,
+                  font=(self.UI, 11)).pack(side='left')
+        ent = self._entry(row, None, width=260, placeholder='paste your subscription key')
+        if self.cfg.get('vault_license'):
+            ent.insert(0, self.cfg['vault_license'])
+        ent.pack(side='left', padx=(8, 10))
+        st = self._lbl(pad, text='', text_color=MUT, anchor='w', font=(self.UI, 11))
+
+        def finalize(msg, err, token):
+            self._activating = False                     # ALWAYS: Start is gated on this flag
+            if not err:
+                self.cfg['vault_license'] = token        # the key the hub actually accepted —
+                self._save()                             # saved even if the dialog is gone (the
+                self._lib_cache['ts'] = 0                # seat is claimed and the files are
+                self._treesig = None                     # already rewritten either way)
+            if not win.winfo_exists():
+                return
+            if err:
+                st.configure(text=err, fg=NEG)
+                btn.configure(state='normal')
+            else:
+                st.configure(text=msg + '  —  the leaderboard shows the formulas now', fg=POS)
+
+        def activate():
+            if self._activating:
+                st.configure(text='an activation is already running', fg=NEG)
+                return
+            if self.proc and self.proc.poll() is None:   # the rewrite swaps library.jsonl —
+                st.configure(text='stop the node first — activation rewrites the library file',
+                             fg=NEG)                     # never under a running miner's append
+                return
+            btn.configure(state='disabled')
+            st.configure(text='checking your subscription…', fg=MUT)
+            token = ent.get().strip()
+            self._activating = True                      # process-wide: start() refuses while set
+            res = {}                                     # thread -> main-loop handoff, one key
+
+            def work():
+                try:
+                    res['out'] = (self._vault_activate_all(token), None)
+                except Exception as ex:                  # noqa: BLE001 — any failure reaches the card
+                    res['out'] = ('', str(ex) or type(ex).__name__)
+
+            def tick():                                  # polls on ROOT, not the dialog: closing
+                if 'out' in res:                         # the window must not orphan a finished
+                    finalize(res['out'][0], res['out'][1], token)   # activation (flag + key!)
+                else:
+                    self.root.after(120, tick)
+            threading.Thread(target=work, daemon=True).start()
+            self.root.after(120, tick)
+
+        btn = self._btn(row, 'Activate', activate, kind='accent', width=120)
+        btn.pack(side='left')
+        st.pack(anchor='w', pady=(6, 0))
 
     def _open_locked(self, champ):
         """A vault doc opened from the leaderboard: stored metrics in full, the formula sealed.
@@ -3832,11 +4075,14 @@ class App:
         row = self._box(head)
         row.pack(anchor='w', pady=(12, 4))
         self._lbl(row, text='subscription key', text_color=MUT, font=(self.UI, 11)).pack(side='left')
-        v_lic = tk.StringVar(value=(self.cfg.get('vault_license') or 'demo'))   # remembered after 1st
-        self._entry(row, v_lic, width=180).pack(side='left', padx=(8, 10))
+        ent = self._entry(row, None, width=180,          # var=None: the ghost hint only renders
+                          placeholder='paste your subscription key')   # with no textvariable bound
+        if self.cfg.get('vault_license'):                # remembered after the 1st unlock
+            ent.insert(0, self.cfg['vault_license'])
+        ent.pack(side='left', padx=(8, 10))
         st = self._lbl(head, text='', text_color=MUT, anchor='w', font=(self.UI, 11))
 
-        def done(formula, err):
+        def done(formula, err, account):
             if not win.winfo_exists():
                 return
             if err:
@@ -3851,9 +4097,9 @@ class App:
                 return                                   # the id pins the reveal to what was mined
             champ['formula'] = formula
             champ['locked'] = False
-            if v_lic.get().strip():                      # subscription accepted — remember it so
-                self.cfg['vault_license'] = v_lic.get().strip()   # the next unlock is one click
-                self._save()
+            if account:                                  # the key the hub ACCEPTED (not whatever
+                self.cfg['vault_license'] = account      # the still-editable field holds now) —
+                self._save()                             # the next unlock is one click
             win.destroy()
             self._treesig = None                         # session-only: the row now shows its text
             self._fill_tree(list(self._shown))
@@ -3862,7 +4108,7 @@ class App:
         def unlock():
             btn.configure(state='disabled')
             st.configure(text='checking your subscription…', fg=MUT)
-            box, account = str(champ.get('formula_enc', '')), v_lic.get().strip()
+            box, account = str(champ.get('formula_enc', '')), ent.get().strip()
             res = {}                                     # thread -> main-loop handoff: the worker
 
             def work():                                  # writes ONE key ('out') as a single store,
@@ -3873,7 +4119,7 @@ class App:
 
             def tick():
                 if 'out' in res:
-                    done(*res['out'])
+                    done(res['out'][0], res['out'][1], account)
                 elif win.winfo_exists():
                     win.after(120, tick)
             threading.Thread(target=work, daemon=True).start()
@@ -3882,6 +4128,9 @@ class App:
         btn = self._btn(row, 'Unlock', unlock, kind='accent', width=120)
         btn.pack(side='left')
         st.pack(anchor='w', pady=(4, 0))
+        self._btn(head, 'or activate the whole node — one key unlocks every formula at once',
+                  lambda: (win.destroy(), self._open_activate()),
+                  height=24).pack(anchor='w', pady=(12, 0))
 
     def _open_plot(self, champ):
         if champ.get('locked') and not champ.get('formula'):

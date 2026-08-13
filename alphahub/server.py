@@ -11,6 +11,8 @@ Plus /signup (free demo account), /webhook/payment (provider-agnostic; Paddle/cr
 Run:  uvicorn alphahub.server:app --host 127.0.0.1 --port 8790
 Config (env): ALPHAHUB_DB, ALPHAHUB_VAULT_KEY, ALPHAHUB_WEBHOOK_SECRET.
 NOTE: terminate TLS in front of this (a reverse proxy) — /reveal returns plaintext formulas.
+Cap request bodies at that proxy too (e.g. Caddy `request_body max_size 2MB`): FastAPI parses
+the whole JSON body before any auth check runs, so the proxy is the real pre-auth size gate.
 """
 import os
 import sys
@@ -55,6 +57,12 @@ class RevealIn(BaseModel):
     token: str
     device_id: str
     formula_enc: str
+
+
+class RevealBatchIn(BaseModel):
+    token: str
+    device_id: str
+    formulas: list[str]
 
 
 def create_app(db_path, key_path, webhook_secret):
@@ -155,6 +163,35 @@ def create_app(db_path, key_path, webhook_secret):
             raise HTTPException(status_code=400, detail=str(e))   # tampered / wrong key
         hubdb.log_reveal(conn, user['id'], body.device_id, vault.formula_id(formula))
         return {'ok': True, 'formula': formula}
+
+    @app.post('/reveal_batch')
+    def reveal_batch(body: RevealBatchIn, conn=Depends(get_db)):
+        """Node activation's workhorse: ONE subscription/seat check, many unseals — the client
+        opens its whole local library in a round-trip instead of a card-by-card crawl. Per-item
+        results (a bad box doesn't fail the batch); each success is audit-logged like /reveal."""
+        user = _account(conn, body.token)
+        st = hubdb.subscription_state(conn, user['id'])
+        if not st['active']:
+            raise HTTPException(status_code=402,
+                                detail=f'subscription not active ({st["status"]})')
+        if hubdb.get_device(conn, user['id'], body.device_id) is None:
+            raise HTTPException(status_code=409, detail='node not activated on this account')
+        if len(body.formulas) > 2000:
+            raise HTTPException(status_code=400, detail='too many formulas in one batch (max 2000)')
+        out, opened = [], 0
+        for enc in body.formulas:
+            if len(enc) > 16384:                         # a real sealed formula is ~1-2 KB; don't
+                out.append({'error': 'token too large'})  # base64-decode arbitrary megabytes
+                continue
+            try:
+                formula = vault.unseal(enc, priv)
+            except ValueError as e:
+                out.append({'error': str(e)})
+                continue
+            hubdb.log_reveal(conn, user['id'], body.device_id, vault.formula_id(formula))
+            out.append({'formula': formula})
+            opened += 1
+        return {'ok': True, 'count': opened, 'formulas': out}
 
     @app.post('/me')
     def me(body: MeIn, conn=Depends(get_db)):
