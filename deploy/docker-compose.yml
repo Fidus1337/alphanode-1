@@ -1,0 +1,45 @@
+# AlphaNode — the whole vendor side on one box: marketing site + AlphaHub + TLS.
+#
+#   cp .env.example .env        # set DOMAIN and ALPHAHUB_WEBHOOK_SECRET
+#   mkdir -p hubdata            # then COPY YOUR EXISTING vault_key here (see README)
+#   docker compose up -d --build
+#
+# Caddy answers 80/443 for both hosts and gets/renews certificates by itself:
+#   https://$DOMAIN         -> the static site        (../site, untouched)
+#   https://api.$DOMAIN     -> AlphaHub               (licences, /reveal, webhook)
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - DOMAIN=${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - site
+      - hub
+
+  site:
+    build: ../site
+    restart: unless-stopped
+
+  hub:
+    build:
+      context: ..
+      dockerfile: alphahub/Dockerfile
+    restart: unless-stopped
+    environment:
+      - ALPHAHUB_WEBHOOK_SECRET=${ALPHAHUB_WEBHOOK_SECRET}
+    volumes:
+      # bind mount (not a named volume) so the key is easy to seed and easy to back up:
+      # hubdata/hub.db + hubdata/vault_key live right here next to the compose file
+      - ./hubdata:/data
+
+volumes:
+  caddy_data:
+  caddy_config:

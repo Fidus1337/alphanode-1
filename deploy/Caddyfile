@@ -1,0 +1,16 @@
+# TLS for both hosts, automatic certificates. DOMAIN comes from .env via compose.
+{$DOMAIN} {
+	encode gzip
+	reverse_proxy site:80
+}
+
+api.{$DOMAIN} {
+	encode gzip
+	# FastAPI parses the whole JSON body BEFORE any auth check runs — the proxy is the real
+	# pre-auth size gate (a /reveal_batch of 2000 sealed boxes is ~2-3 MB, nothing else comes
+	# close).
+	request_body {
+		max_size 8MB
+	}
+	reverse_proxy hub:8790
+}
