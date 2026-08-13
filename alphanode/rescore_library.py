@@ -97,6 +97,13 @@ def main():
                 f.write(json.dumps(r, ensure_ascii=False) + '\n')
         print(f'backup: {bak}')
 
+    # sealed rows (vault: no plaintext formula) can't be re-evaluated — pass them through
+    # verbatim rather than let the evaluate() KeyError drop them from the library entirely.
+    sealed = [r for r in rows if not r.get('formula')]
+    rows = [r for r in rows if r.get('formula')]
+    if sealed:
+        print(f'{len(sealed)} sealed rows kept as-is (no plaintext to rescore)')
+
     jobs = max(1, (os.cpu_count() or 4) // 2)
     print(f'rescoring {len(rows)} alphas with honest calendar metrics ({jobs} workers)…', flush=True)
     t0 = time.time()
@@ -106,8 +113,8 @@ def main():
             scored.append(out)
             if i % 100 == 0 or i == len(rows):
                 print(f'  {i}/{len(rows)}', flush=True)
-    kept = [r for r in scored if r is not None]
-    dropped = len(scored) - len(kept)
+    kept = [r for r in scored if r is not None] + sealed
+    dropped = len(scored) + len(sealed) - len(kept)
 
     tmp = lib + '.tmp'
     with open(tmp, 'w', encoding='utf-8') as f:
@@ -120,7 +127,8 @@ def main():
     print('new top-5 by base:')
     for c in kept[:5]:
         te = (c.get('test') or {}).get('sharpe')
-        print(f"  base {c.get('base'):+.2f} · TEST {te if te is not None else '—'} · {c['formula'][:70]}")
+        f = c.get('formula') or f"locked · {c.get('id', '')}"   # sealed rows have no plaintext
+        print(f"  base {c.get('base'):+.2f} · TEST {te if te is not None else '—'} · {f[:70]}")
 
 
 if __name__ == '__main__':
