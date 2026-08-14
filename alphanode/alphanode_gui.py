@@ -232,6 +232,20 @@ def _mix(c1, c2, t):
     return '#%02x%02x%02x' % tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
+def _fix_corner_rendering():
+    """CustomTkinter draws rounded corners by stamping glyphs from a bundled shapes font, and at a
+    fractional widget scaling (any HiDPI screen: ours is 1.752) the glyph is sized up while the
+    rectangle it caps is sized down — the corners bulge OUTSIDE the widget and every accent button
+    looks like a cloud. Only saturated fills show it; on the near-white buttons the same bulge is
+    invisible, which is why it survived this long. 'polygon_shapes' draws the same corners as
+    smoothed polygons — no font, no rounding mismatch, correct at any scale."""
+    try:
+        from customtkinter.windows.widgets.core_rendering.draw_engine import DrawEngine
+        DrawEngine.preferred_drawing_method = 'polygon_shapes'
+    except Exception:                                    # noqa: BLE001 — a CTk layout change must
+        pass                                             # never stop the app from starting
+
+
 class App:
     def __init__(self, root):
         self.root = root
@@ -373,6 +387,7 @@ class App:
         self.SCALE = min(max(round(self.root.tk.call('tk', 'scaling') / 1.3333, 3), 1.0), 3.0)
         ctk.set_widget_scaling(self.SCALE)
         ctk.set_window_scaling(self.SCALE)
+        _fix_corner_rendering()                          # must precede the first CTk widget
         self.root.title('AlphaNode')
         self.root.geometry('1100x860')                   # CTk scales this by window_scaling
         self.root.minsize(980, 680)                      # raw, like geometry: CTk scales it too, and
