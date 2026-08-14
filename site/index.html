@@ -91,7 +91,10 @@ h1 .quiet{color:var(--mut);font-weight:500}
   padding:18px 20px;color:var(--darkink);min-width:0}
 .term .head{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
   letter-spacing:.11em;text-transform:uppercase;color:var(--darkmut);
-  border-bottom:1px solid var(--darkline);padding-bottom:10px;margin-bottom:4px}
+  border-bottom:1px solid var(--darkline);padding-bottom:10px;margin-bottom:4px;
+  display:flex;gap:12px;align-items:baseline}
+.term .head b{font-weight:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.term .head .st{margin-left:auto;flex:none;color:var(--darkink)}
 .term .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
   letter-spacing:.11em;text-transform:uppercase;color:var(--darkmut);margin:14px 0 6px}
 .term .tw{overflow-x:auto}
@@ -102,8 +105,18 @@ h1 .quiet{color:var(--mut);font-weight:500}
 .term .f{color:var(--darkink);overflow:hidden;text-overflow:ellipsis;max-width:230px}
 .term .warn{color:var(--orange)}
 .term .log{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--darkmut)}
+/* nowrap + ellipsis keeps the log exactly three lines tall, so the block never jumps as the
+   session advances and pushes the page around under the reader */
+.term .log p{margin:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .cursor{display:inline-block;width:7px;height:13px;background:var(--acc);vertical-align:-2px;animation:blink 1s infinite}
 @keyframes blink{50%{opacity:.2}}
+/* only the cells that actually changed flash — an unchanged row staying put is what makes the
+   thing read as a running process rather than a slideshow. Opacity only: transforms on a
+   table cell are not reliably supported. */
+@keyframes cellchg{from{opacity:.12}to{opacity:1}}
+.term td.chg{animation:cellchg .3s ease-out}
+@keyframes logline{from{opacity:0;transform:translateX(-5px)}to{opacity:1;transform:none}}
+.term .log p.new{animation:logline .3s ease-out}
 .term-note{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
   letter-spacing:.06em;color:var(--mut);margin-top:10px}
 .term-note a{color:var(--mut)}
@@ -202,23 +215,25 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   </div>
 
   <div>
-    <div class="term" role="img" aria-label="AlphaNode status page: leaderboard of mined formulas with held-out TEST scores, some positive and some negative, and a forward track">
-      <div class="head">alphanode · localhost:8787 — status</div>
+    <div class="term" id="term" role="img" aria-label="AlphaNode status page: leaderboard of mined formulas with held-out TEST scores, some positive and some negative, and a forward track">
+      <div class="head"><b>alphanode · localhost:8787 — status</b><span class="st" id="term-st">round 18 · 12:07</span></div>
       <div class="k">best by fitness min(train,val) · test — held-out, read-only</div>
-      <div class="tw"><table>
+      <div class="tw"><table><tbody id="term-lb">
         <tr><td class="fit">+2.49</td><td class="pos">+0.69</td><td class="f">cs_demean(cs_demean(cs_rank(ts_zscore:197(…))))</td></tr>
         <tr><td class="fit">+2.31</td><td class="pos">+0.49</td><td class="f">cs_zscore(cs_zscore(ts_delta:12(ema:132(range))))</td></tr>
         <tr><td class="fit">+2.12</td><td class="neg">−0.90</td><td class="f">cs_zscore(cs_demean(cs_scale(cs_scale(…))))</td></tr>
-      </table></div>
+      </tbody></table></div>
       <div class="k">forward track — append-only paper steps</div>
-      <div class="tw"><table>
+      <div class="tw"><table><tbody id="term-fw">
         <tr><td class="f">portfolio_top6</td><td>27 steps</td><td class="pos">+2.3%</td></tr>
         <tr><td class="f">alpha_1c90f5</td><td>25 steps</td><td class="neg">−1.9%</td></tr>
-      </table></div>
+      </tbody></table></div>
       <div class="k">live log</div>
-      <div class="log">12:06 ★ new best: fitness +2.49 (TEST +0.69)<br>
-        12:06 <span class="warn">⚠ sort by TEST = cherry-picking on held-out data</span><br>
-        12:07 round 18: refining best (seed 19)… <span class="cursor" aria-hidden="true"></span></div>
+      <div class="log" id="term-log">
+        <p>12:06 ★ new best: fitness +2.49 (TEST +0.69)</p>
+        <p>12:06 <span class="warn">⚠ sort by TEST = cherry-picking on held-out data</span></p>
+        <p>12:07 round 18: refining best (seed 19)… <span class="cursor" aria-hidden="true"></span></p>
+      </div>
     </div>
     <p class="term-note">illustrative · simulated results from a real mining session, wins and
       losses alike — see the <a href="#disclosure">risk disclosure</a></p>
@@ -418,6 +433,145 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
 </footer>
 
 <script>
+// The hero terminal plays a scripted mining session — eight rounds of one node. Nothing here
+// talks to a server; it is the illustration the caption underneath says it is. What it does owe
+// the reader is internal honesty, so the numbers behave the way the real thing behaves: best
+// fitness never goes backwards (elitism), the leaderboard stays sorted by fitness, held-out TEST
+// wanders independently and is sometimes negative for the top row, forward-track steps only ever
+// increase, and each "+0.7% on the last closed bar" equals the change in the line above it.
+(function () {
+  var term = document.getElementById('term');
+  if (!term) return;
+  var lb = document.getElementById('term-lb'), fw = document.getElementById('term-fw'),
+      log = document.getElementById('term-log'), st = document.getElementById('term-st');
+  if (!lb || !fw || !log || !st) return;
+
+  // formulas reused across rounds, so a row that survives keeps its identity on screen
+  var A = 'cs_demean(cs_demean(cs_rank(ts_zscore:197(…))))',
+      B = 'cs_zscore(cs_zscore(ts_delta:12(ema:132(range))))',
+      C = 'cs_zscore(cs_demean(cs_scale(cs_scale(…))))',
+      D = 'cs_rank(ts_delta:24(ema:64(volume)))',
+      E = 'cs_demean(ts_zscore:88(mul(volume,range)))',
+      F = 'cs_zscore(ts_rank:56(div(volume,ts_mean:56(volume))))',
+      G = 'cs_zscore(ts_zscore:40(sub(close,ema:200(close))))',
+      H = 'cs_rank(mul(cs_demean(volume),ts_delta:16(funding)))',
+      I = 'cs_demean(ts_rank:72(mul(volume,ts_delta:12(close))))';
+
+  // [fitness, held-out TEST, formula] · [name, steps, percent] · [time, text, isWarning]
+  var STATES = [
+    {r: 18, lb: [[2.49, .69, A], [2.31, .49, B], [2.12, -.90, C]],
+     fw: [['portfolio_top6', 27, 2.3], ['alpha_1c90f5', 25, -1.9]],
+     log: [['12:06', '★ new best: fitness +2.49 (TEST +0.69)'],
+           ['12:06', '⚠ sort by TEST = cherry-picking on held-out data', 1],
+           ['12:07', 'round 18: refining best (seed 19)…']]},
+    {r: 19, lb: [[2.49, .69, A], [2.31, .49, B], [2.18, .11, D]],
+     fw: [['portfolio_top6', 28, 2.6], ['alpha_1c90f5', 26, -2.4]],
+     log: [['12:08', 'round 18: 240 candidates, 3 cleared the gate'],
+           ['12:09', 'cs_rank(ts_delta:24(ema:64(volume))) enters at #3'],
+           ['12:09', 'round 19: mutating survivors (seed 24)…']]},
+    {r: 20, lb: [[2.63, -.14, E], [2.49, .69, A], [2.31, .49, B]],
+     fw: [['portfolio_top6', 29, 2.1], ['alpha_1c90f5', 27, -2.2]],
+     log: [['12:11', '★ new best: fitness +2.63 (TEST −0.14)'],
+           ['12:11', '⚠ top on fitness, negative on held-out — it happens', 1],
+           ['12:12', 'round 20: refining best (seed 31)…']]},
+    {r: 21, lb: [[2.63, -.14, E], [2.55, .31, F], [2.49, .69, A]],
+     fw: [['portfolio_top6', 30, 1.7], ['alpha_1c90f5', 28, -1.6]],
+     log: [['12:14', 'round 20: 1 cleared the gate, enters at #2'],
+           ['12:15', 'forward: portfolio_top6 −0.4% on the last closed bar'],
+           ['12:16', 'round 21: crossing top families (seed 37)…']]},
+    {r: 22, lb: [[2.71, .22, G], [2.63, -.14, E], [2.55, .31, F]],
+     fw: [['portfolio_top6', 31, 2.4], ['alpha_1c90f5', 29, -1.1]],
+     log: [['12:18', '★ new best: fitness +2.71 (TEST +0.22)'],
+           ['12:19', 'forward: portfolio_top6 +0.7% on the last closed bar'],
+           ['12:20', 'round 22: refining best (seed 44)…']]},
+    {r: 23, lb: [[2.71, .22, G], [2.63, -.14, E], [2.55, .31, F]],
+     fw: [['portfolio_top6', 32, 2.9], ['alpha_1c90f5', 30, -1.4]],
+     log: [['12:23', 'round 22: 260 candidates, 0 cleared the gate'],
+           ['12:24', '⚠ most rounds find nothing — that is the job', 1],
+           ['12:25', 'round 23: fresh seeds (seed 51)…']]},
+    {r: 24, lb: [[2.71, .22, G], [2.68, -.51, H], [2.63, -.14, E]],
+     fw: [['portfolio_top6', 33, 2.7], ['alpha_1c90f5', 31, -0.8]],
+     log: [['12:27', 'round 23: 1 cleared the gate, enters at #2'],
+           ['12:28', 'first funding-aware tree of the session'],
+           ['12:29', 'round 24: refining best (seed 58)…']]},
+    {r: 25, lb: [[2.84, .08, I], [2.71, .22, G], [2.68, -.51, H]],
+     fw: [['portfolio_top6', 34, 3.4], ['alpha_1c90f5', 32, -0.5]],
+     log: [['12:32', '★ new best: fitness +2.84 (TEST +0.08)'],
+           ['12:33', 'forward: alpha_1c90f5 +0.3% on the last closed bar'],
+           ['12:34', 'round 25: refining best (seed 63)…']]}
+  ];
+
+  var MINUS = '−';                                   // U+2212, as in the static markup
+  function sig(n, d, suf) {
+    return (n < 0 ? MINUS : '+') + Math.abs(n).toFixed(d) + (suf || '');
+  }
+  function el(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text != null) e.textContent = text;
+    return e;
+  }
+
+  var animate = false;                               // off for the very first paint
+  function cell(td, text, cls) {
+    if (td.getAttribute('data-v') === text && td.getAttribute('data-c') === cls) return;
+    td.setAttribute('data-v', text);
+    td.setAttribute('data-c', cls);
+    td.textContent = text;
+    td.className = cls;
+    if (animate) { void td.offsetWidth; td.className = cls + ' chg'; }  // reflow restarts it
+  }
+
+  function render(s) {
+    st.textContent = 'round ' + s.r + ' · ' + s.log[s.log.length - 1][0];
+    for (var i = 0; i < s.lb.length; i++) {
+      var row = lb.rows[i], v = s.lb[i];
+      cell(row.cells[0], sig(v[0], 2), 'fit');
+      cell(row.cells[1], sig(v[1], 2), v[1] < 0 ? 'neg' : 'pos');
+      cell(row.cells[2], v[2], 'f');
+    }
+    for (i = 0; i < s.fw.length; i++) {
+      var frow = fw.rows[i], f = s.fw[i];
+      cell(frow.cells[0], f[0], 'f');
+      cell(frow.cells[1], f[1] + ' steps', '');
+      cell(frow.cells[2], sig(f[2], 1, '%'), f[2] < 0 ? 'neg' : 'pos');
+    }
+    log.textContent = '';
+    for (i = 0; i < s.log.length; i++) {
+      var line = s.log[i], p = el('p', animate && i === s.log.length - 1 ? 'new' : null);
+      p.appendChild(document.createTextNode(line[0] + ' '));
+      p.appendChild(line[2] ? el('span', 'warn', line[1]) : document.createTextNode(line[1]));
+      if (i === s.log.length - 1) {
+        p.appendChild(document.createTextNode(' '));
+        var cur = el('span', 'cursor');
+        cur.setAttribute('aria-hidden', 'true');
+        p.appendChild(cur);
+      }
+      log.appendChild(p);
+    }
+  }
+
+  render(STATES[0]);
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  animate = true;
+
+  // One interval that skips a beat while paused, rather than juggling timers. Paused while the
+  // reader is hovering (they are trying to read it), while the block is off-screen, and while
+  // the tab is in the background — an unread animation is pure battery.
+  var at = 0, hover = false, seen = true;
+  term.addEventListener('mouseenter', function () { hover = true; });
+  term.addEventListener('mouseleave', function () { hover = false; });
+  if (window.IntersectionObserver) {
+    new IntersectionObserver(function (es) { seen = es[0].isIntersecting; },
+                             {threshold: .2}).observe(term);
+  }
+  setInterval(function () {
+    if (hover || !seen || document.hidden) return;
+    at = (at + 1) % STATES.length;
+    render(STATES[at]);
+  }, 3400);
+})();
+
 // Early-access form -> AlphaHub. Same-origin api.<host> in production; the localhost fallback
 // is for opening this file straight from disk while working on the page.
 (function () {
