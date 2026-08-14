@@ -9,12 +9,15 @@ Plus /signup (free demo account), /webhook/payment (provider-agnostic; Paddle/cr
 /me (account status for the app + web dashboard), /pub (the key the node seals to), /health.
 
 Run:  uvicorn alphahub.server:app --host 127.0.0.1 --port 8790
-Config (env): ALPHAHUB_DB, ALPHAHUB_VAULT_KEY, ALPHAHUB_WEBHOOK_SECRET.
+Config (env): ALPHAHUB_DB, ALPHAHUB_VAULT_KEY, ALPHAHUB_WEBHOOK_SECRET, ALPHAHUB_SITE_ORIGIN,
+and the optional ALPHAHUB_SMTP_* / ALPHAHUB_NOTIFY_TO block that mails early-access requests
+to the operator (off unless both HOST and NOTIFY_TO are set; `admin testmail` proves it works).
 NOTE: terminate TLS in front of this (a reverse proxy) — /reveal returns plaintext formulas.
 Cap request bodies at that proxy too (e.g. Caddy `request_body max_size 2MB`): FastAPI parses
 the whole JSON body before any auth check runs, so the proxy is the real pre-auth size gate.
 """
 import os
+import re
 import sys
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
@@ -74,32 +77,77 @@ class AccessRequestIn(BaseModel):
     website: str | None = None                           # honeypot: humans leave this empty
 
 
-def _notify(subject, body):
-    """Best-effort email to the operator. Configured entirely by env — unset means the request
-    is still stored (and listed by `admin requests`), just not announced. Never raises: a dead
-    SMTP server must not turn a visitor's request into an error page."""
-    host = os.environ.get('ALPHAHUB_SMTP_HOST')
-    to = os.environ.get('ALPHAHUB_NOTIFY_TO')
+def header_safe(value, limit=320):
+    """Fold CR/LF out of anything that becomes a mail header and cap its length. The name and
+    address here come straight off a public form, and a newline in a header value is exactly how
+    a stranger gets to write their own headers into our mail."""
+    return re.sub(r'[\r\n\t]+', ' ', str(value or '')).strip()[:limit]
+
+
+def mail_config():
+    """The SMTP settings, or None when notifications are off. One function decides what
+    'configured' means, so the startup banner, `admin testmail` and the live path can never
+    disagree about whether mail is going to work.
+
+    ALPHAHUB_SMTP_TLS picks the transport: starttls (default, port 587), ssl (implicit TLS, the
+    default when the port is 465), or none for a relay on the same host."""
+    host = (os.environ.get('ALPHAHUB_SMTP_HOST') or '').strip()
+    to = (os.environ.get('ALPHAHUB_NOTIFY_TO') or '').strip()
     if not host or not to:
-        return
+        return None
+    try:
+        port = int((os.environ.get('ALPHAHUB_SMTP_PORT') or '587').strip())
+    except ValueError:
+        port = 587
+    mode = (os.environ.get('ALPHAHUB_SMTP_TLS') or '').strip().lower()
+    if mode not in ('starttls', 'ssl', 'none'):
+        mode = 'ssl' if port == 465 else 'starttls'
+    return {'host': host, 'port': port, 'tls': mode, 'to': to,
+            'user': (os.environ.get('ALPHAHUB_SMTP_USER') or '').strip(),
+            'password': os.environ.get('ALPHAHUB_SMTP_PASS') or '',
+            # most providers reject a From they have not verified, so it defaults to the
+            # recipient (you mailing yourself) rather than to the visitor's address
+            'sender': (os.environ.get('ALPHAHUB_SMTP_FROM') or '').strip() or to}
+
+
+def send_mail(subject, body, reply_to=None, cfg=None):
+    """Best-effort email to the operator. Returns (ok, detail) and never raises: the request is
+    already committed to the database by the time this runs, and a dead SMTP server must not turn
+    a visitor's form into an error page. Failures are logged with the reason — silence would leave
+    you unable to tell 'nobody applied' from 'the mail path is broken'."""
+    cfg = cfg or mail_config()
+    if cfg is None:
+        return False, 'not configured'
     import smtplib
+    import ssl
     from email.message import EmailMessage
     msg = EmailMessage()
-    msg['From'] = os.environ.get('ALPHAHUB_SMTP_FROM', to)
-    msg['To'] = to
-    msg['Subject'] = subject
+    msg['From'] = header_safe(cfg['sender'])
+    msg['To'] = header_safe(cfg['to'])
+    msg['Subject'] = header_safe(subject, 200)
+    if reply_to:
+        msg['Reply-To'] = header_safe(reply_to)          # hit Reply, write to the person who asked
     msg.set_content(body)
-    port = int(os.environ.get('ALPHAHUB_SMTP_PORT', '587'))
-    user = os.environ.get('ALPHAHUB_SMTP_USER')
-    pwd = os.environ.get('ALPHAHUB_SMTP_PASS')
     try:
-        with smtplib.SMTP(host, port, timeout=10) as smtp:
-            smtp.starttls()
-            if user:
-                smtp.login(user, pwd or '')
+        ctx = ssl.create_default_context()
+        smtp = (smtplib.SMTP_SSL(cfg['host'], cfg['port'], timeout=20, context=ctx)
+                if cfg['tls'] == 'ssl' else
+                smtplib.SMTP(cfg['host'], cfg['port'], timeout=20))
+        with smtp:
+            smtp.ehlo()
+            if cfg['tls'] == 'starttls':
+                smtp.starttls(context=ctx)
+                smtp.ehlo()                              # capabilities change after the upgrade
+            if cfg['user']:
+                smtp.login(cfg['user'], cfg['password'])
             smtp.send_message(msg)
+        print(f'[notify] sent to {cfg["to"]}: {msg["Subject"]}', flush=True)
+        return True, f'sent to {cfg["to"]}'
     except Exception as e:                               # noqa: BLE001 — log and move on
-        print(f'notify failed: {e}', flush=True)
+        detail = f'{type(e).__name__}: {e}'
+        print(f'[notify] FAILED via {cfg["host"]}:{cfg["port"]} ({cfg["tls"]}) '
+              f'-> {cfg["to"]}: {detail}', flush=True)
+        return False, detail
 
 
 def create_app(db_path, key_path, webhook_secret, site_origins=()):
@@ -195,8 +243,10 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
             body_txt = (f'name:  {name or "(not given)"}\n'
                         f'email: {email}\n'
                         f'phone: {(body.phone or "").strip() or "(not given)"}\n\n'
-                        f'{(body.note or "").strip() or "(no note)"}\n')
-            bg.add_task(_notify, f'AlphaNode early access: {name or email}', body_txt)
+                        f'{(body.note or "").strip() or "(no note)"}\n\n'
+                        f'-- invite them with:  admin invite {email.lower()} demo\n')
+            bg.add_task(send_mail, f'AlphaNode early access: {name or email}',
+                        body_txt, reply_to=email)
         return {'ok': True}
 
     @app.post('/webhook/payment')
@@ -326,6 +376,15 @@ def _env_app():
     # CORS headers at all (fine for a node-only deployment; the desktop app is not a browser).
     origins = [o.strip() for o in (os.environ.get('ALPHAHUB_SITE_ORIGIN') or '').split(',')
                if o.strip()]
+    # say it once, at startup: an operator who never sees a request needs to know whether nobody
+    # applied or the mail path was never switched on
+    cfg = mail_config()
+    if cfg:
+        print(f'[notify] early-access requests -> {cfg["to"]} via '
+              f'{cfg["host"]}:{cfg["port"]} ({cfg["tls"]}) as {cfg["sender"]}', flush=True)
+    else:
+        print('[notify] OFF: set ALPHAHUB_SMTP_HOST and ALPHAHUB_NOTIFY_TO to get mail. '
+              'Requests are still stored — see `admin requests`.', flush=True)
     return create_app(db_path, key_path, secret, site_origins=origins)
 
 

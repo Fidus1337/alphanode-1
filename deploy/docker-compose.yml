@@ -42,6 +42,17 @@ services:
       - ALPHAHUB_WEBHOOK_SECRET=${ALPHAHUB_WEBHOOK_SECRET:?set ALPHAHUB_WEBHOOK_SECRET in deploy/.env}
       # the browser origin allowed to POST /signup and /me (the marketing site)
       - ALPHAHUB_SITE_ORIGIN=https://${DOMAIN}
+      # where early-access requests get mailed. All optional: leave them empty and requests are
+      # still stored, just not announced (`admin requests` lists them). The startup log says
+      # which of the two it is. Verify with `docker compose exec hub python -m alphahub.admin
+      # testmail` before trusting it.
+      - ALPHAHUB_SMTP_HOST=${ALPHAHUB_SMTP_HOST:-}
+      - ALPHAHUB_SMTP_PORT=${ALPHAHUB_SMTP_PORT:-587}
+      - ALPHAHUB_SMTP_TLS=${ALPHAHUB_SMTP_TLS:-}
+      - ALPHAHUB_SMTP_USER=${ALPHAHUB_SMTP_USER:-}
+      - ALPHAHUB_SMTP_PASS=${ALPHAHUB_SMTP_PASS:-}
+      - ALPHAHUB_SMTP_FROM=${ALPHAHUB_SMTP_FROM:-}
+      - ALPHAHUB_NOTIFY_TO=${ALPHAHUB_NOTIFY_TO:-}
     volumes:
       # HUBDATA lives OUTSIDE the git clone on purpose: hub.db and the vault key must survive
       # `git clean -xdf`, a re-clone, or a wiped checkout. Default /srv/alphahub.

@@ -9,6 +9,7 @@ apply_payment (exactly what the payment webhook does) so grants/cancels are cons
     python -m alphahub.admin list                               # all accounts
     python -m alphahub.admin requests [--new]                   # early-access waitlist
     python -m alphahub.admin invite <email> <plan> [--days N]   # grant + mark the request invited
+    python -m alphahub.admin testmail                           # prove the notification mail works
 
 Config: ALPHAHUB_DB (default alphahub/hub.db).
 """
@@ -101,6 +102,27 @@ def cmd_requests(a):
     print(f'\n{len(rows)} request(s)')
 
 
+def cmd_testmail(a):
+    """Send one real message through the configured SMTP server and print what happened. Worth a
+    command of its own: the live path runs in a background task after a 200, so without this the
+    only way to test a mail setting is to submit the form and wonder."""
+    from alphahub.server import mail_config, send_mail   # imported late: needs no DB, no app
+    cfg = mail_config()
+    if cfg is None:
+        sys.exit('mail is OFF — set ALPHAHUB_SMTP_HOST and ALPHAHUB_NOTIFY_TO '
+                 '(deploy/README.md, "Getting the requests by email")')
+    print(f'via {cfg["host"]}:{cfg["port"]} ({cfg["tls"]})'
+          f'{" as " + cfg["user"] if cfg["user"] else " with no login"}\n'
+          f'from {cfg["sender"]} -> {cfg["to"]}')
+    ok, detail = send_mail(
+        'AlphaNode: test notification',
+        'This is `admin testmail`.\n\nIf it reached you, early-access requests will too.\n',
+        reply_to=a.reply_to, cfg=cfg)
+    print('OK -' if ok else 'FAILED -', detail)
+    if not ok:
+        sys.exit(1)
+
+
 def cmd_invite(a):
     """Grant the plan and take the address off the waitlist in one step — the token it prints
     is what you paste into the reply."""
@@ -134,6 +156,9 @@ def main(argv=None):
     rq.set_defaults(fn=cmd_requests)
     iv = sub.add_parser('invite'); iv.add_argument('email'); iv.add_argument('plan')
     iv.add_argument('--days', type=int, default=0); iv.set_defaults(fn=cmd_invite)
+    tm = sub.add_parser('testmail')
+    tm.add_argument('--reply-to', default=None, help='set Reply-To, as a real request would')
+    tm.set_defaults(fn=cmd_testmail)
     args = ap.parse_args(argv)
     args.fn(args)
 

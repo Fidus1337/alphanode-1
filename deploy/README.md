@@ -202,9 +202,9 @@ docker compose exec hub python -m alphahub.admin rotate buyer@x.io  # revoke a l
 docker compose exec hub python -m alphahub.admin list
 ```
 
-**Not built yet:** nothing emails anything. A buyer who pays gets no key automatically — you send
-it manually until an SMTP integration exists. Signup also does not verify the email address, so a
-customer who loses their key cannot recover it themselves.
+**Not built yet:** a buyer who pays gets no key automatically — you read the `token:` line and
+send it yourself. Signup does not verify the email address either, so a customer who loses their
+key cannot recover it without you. (Early-access requests *are* mailed to you — section 9.)
 
 ---
 
@@ -246,4 +246,57 @@ If the hub does not come up, its logs say why and the previous image is still on
 ```bash
 docker compose logs --tail=50 hub
 docker compose down && git checkout <previous-commit> && docker compose up -d --build
+```
+
+---
+
+## 9. Getting the requests by email
+
+The site's early-access form always writes to the database — that is the record, and it survives
+a spam filter eating your mail. Mailing you is a convenience on top, and it is off until you
+configure it.
+
+### Pick something that can *send*
+
+You need an SMTP server that will accept a login from this VPS. A registrar's mail *forwarding*
+is not one: forwarding receives on your domain and passes mail on, it never sends for you. The
+usual choices:
+
+| | host / port | notes |
+|---|---|---|
+| **Zoho Mail** | `smtp.zoho.eu` · 465 · ssl | free mailbox on your own domain; a real `support@` inbox |
+| **Google Workspace** | `smtp.gmail.com` · 587 · starttls | needs an *app password*, not your login password |
+| **Brevo / Mailgun / Resend** | see their SMTP page · 587 · starttls | sending only — you still need an inbox to receive |
+
+Whatever you pick, `ALPHAHUB_SMTP_FROM` must be an address that provider has verified for you, or
+it will refuse the message. `ALPHAHUB_NOTIFY_TO` is just where you read mail — a plain Gmail
+address is fine.
+
+### Configure and prove it
+
+Fill the `ALPHAHUB_SMTP_*` block in `deploy/.env` (it is documented in `.env.example`), then:
+
+```bash
+docker compose up -d
+docker compose logs hub | grep notify        # says where mail goes, or that it is OFF
+docker compose exec hub python -m alphahub.admin testmail
+```
+
+`testmail` sends one real message and prints the server's answer. Do not skip it — the live path
+runs in the background after the visitor already got their "you are on the list", so a broken
+setting is invisible from the outside. `--reply-to you@x.io` makes it look like a real request.
+
+### What arrives
+
+Subject is the person's name, `Reply-To` is their address — hit Reply and you are writing to
+them. The body carries name, email, phone, their note, and the exact `admin invite` command for
+that address.
+
+A repeat submit from the same address does not mail again, and the honeypot field means bots
+never do. If the send fails the visitor still sees success (their row is saved either way) and
+the reason goes to the log:
+
+```bash
+docker compose logs hub | grep '\[notify\]'
+docker compose exec hub python -m alphahub.admin requests --new
 ```
