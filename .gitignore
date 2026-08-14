@@ -56,3 +56,4 @@ alphahub/vault_key.pub
 alphahub/hub.db
 deploy/.env
 deploy/hubdata/
+token_tokenovich

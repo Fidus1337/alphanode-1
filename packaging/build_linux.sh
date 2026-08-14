@@ -41,13 +41,22 @@ mkdir -p "$APPDIR/usr/share/applications" "$APPDIR/usr/share/icons/hicolor/256x2
 cp "$HERE/alphanode.desktop" "$APPDIR/usr/share/applications/alphanode.desktop"
 cp "$HERE/alphanode-256.png" "$APPDIR/usr/share/icons/hicolor/256x256/apps/alphanode.png"
 
-cat > "$APPDIR/AppRun" <<'EOF'
-#!/bin/sh
-HERE="$(dirname "$(readlink -f "$0")")"
-export PATH="$HERE/usr/bin:$PATH"
-exec "$HERE/usr/bin/AlphaNode" "$@"
-EOF
+# ALPHANODE_VAULT_URL is baked in at BUILD time — a shipped node must know where its licence
+# server lives, or the customer can never activate (the code default is localhost, for dev).
+#   ALPHANODE_VAULT_URL=https://api.yourdomain.com ./packaging/build_linux.sh
+{
+  echo '#!/bin/sh'
+  echo 'HERE="$(dirname "$(readlink -f "$0")")"'
+  echo 'export PATH="$HERE/usr/bin:$PATH"'
+  if [ -n "${ALPHANODE_VAULT_URL:-}" ]; then
+    echo "export ALPHANODE_VAULT_URL=\"\${ALPHANODE_VAULT_URL:-$ALPHANODE_VAULT_URL}\""
+  fi
+  echo 'exec "$HERE/usr/bin/AlphaNode" "$@"'
+} > "$APPDIR/AppRun"
 chmod +x "$APPDIR/AppRun"
+if [ -z "${ALPHANODE_VAULT_URL:-}" ]; then
+  echo "  WARNING: no ALPHANODE_VAULT_URL — this build talks to localhost, customers cannot activate"
+fi
 
 echo "== [5/6] Fetching appimagetool =="
 TOOL="$HERE/appimagetool-${ARCH}.AppImage"

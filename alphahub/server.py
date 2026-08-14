@@ -18,6 +18,7 @@ import os
 import sys
 
 from fastapi import Depends, FastAPI, HTTPException
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,9 +66,11 @@ class RevealBatchIn(BaseModel):
     formulas: list[str]
 
 
-def create_app(db_path, key_path, webhook_secret):
+def create_app(db_path, key_path, webhook_secret, site_origins=()):
     """Build an app bound to explicit config (tests pass scratch paths; the module-level `app`
-    below builds this from env). The vault keypair is created on first run if absent."""
+    below builds this from env). The vault keypair is created on first run if absent.
+    site_origins: exact origins the marketing site is served from (https://example.com) — the
+    browser needs CORS to POST /signup and /me from there."""
     if not os.path.exists(key_path):
         try:
             vault.generate_keys(key_path)                # O_EXCL inside: refuses to clobber a key
@@ -81,6 +84,12 @@ def create_app(db_path, key_path, webhook_secret):
     conn0.close()
 
     app = FastAPI(title='AlphaHub', docs_url=None, redoc_url=None)
+    if site_origins:
+        from fastapi.middleware.cors import CORSMiddleware
+        # exact origins only, never '*': /me answers with account details, and a wildcard would
+        # let any page on the internet read them from a visitor's browser.
+        app.add_middleware(CORSMiddleware, allow_origins=list(site_origins),
+                           allow_methods=['POST'], allow_headers=['Content-Type'])
 
     def get_db():
         conn = hubdb.connect(db_path)                     # a fresh connection per request (SQLite
@@ -103,6 +112,12 @@ def create_app(db_path, key_path, webhook_secret):
     def pub():
         return {'pub': pub_hex}
 
+    @app.get('/pub.txt', response_class=PlainTextResponse)
+    def pub_txt():
+        """The same key as bare hex — what vault.load_pub() reads. Packaging a client build is
+        then one line: curl -s https://api.DOMAIN/pub.txt > alphanode/vault_server_key.pub"""
+        return pub_hex + '\n'
+
     @app.post('/signup')
     def signup(body: SignupIn, conn=Depends(get_db)):
         """A free demo account (3 seats). Ties the demo tier to an identity so it can't be farmed
@@ -110,10 +125,17 @@ def create_app(db_path, key_path, webhook_secret):
         existing email, or anyone knowing a victim's address could POST /signup and walk away with
         their live credential. Token recovery for an existing account needs proof of email
         ownership (a link emailed to the address), which is out of scope for this prototype."""
-        if hubdb.get_user_by_email(conn, body.email) is not None:
-            return {'ok': True, 'exists': True,
-                    'note': 'account already exists; recover the key via email (not yet wired)'}
-        token = hubdb.apply_payment(conn, body.email, 'demo', expires_at=None)
+        email = (body.email or '').strip()
+        if len(email) < 3 or '@' not in email or len(email) > 320:
+            raise HTTPException(status_code=422, detail='enter a valid email address')
+        if hubdb.get_user_by_email(conn, email) is not None:
+            # 409, not a 200 with a note: a signup form must not mistake "you already have an
+            # account" for success and show the user an empty key box.
+            raise HTTPException(status_code=409, detail='account_exists')
+        try:
+            token = hubdb.apply_payment(conn, email, 'demo', expires_at=None)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
         return {'ok': True, 'token': token, 'plan': 'demo'}
 
     @app.post('/webhook/payment')
@@ -123,12 +145,26 @@ def create_app(db_path, key_path, webhook_secret):
         import hmac
         if not hmac.compare_digest(body.secret or '', webhook_secret):
             raise HTTPException(status_code=403, detail='bad webhook secret')
+        prior = hubdb.get_user_by_email(conn, body.email)   # BEFORE the write: was this a
+        was_paid = False                                     # paying account already?
+        if prior is not None:
+            st0 = hubdb.subscription_state(conn, prior['id'])
+            was_paid = st0['plan'] not in (None, 'demo')
         try:
             hubdb.apply_payment(conn, body.email, body.plan,
                                 expires_at=body.expires_at, status=body.status)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        return {'ok': True}
+        # /signup is unverified, so anyone can pre-register a stranger's address and sit on the
+        # demo token, waiting for the real owner to pay. Minting a FRESH key on the FIRST paid
+        # upgrade makes that squat worthless. Renewals must NOT rotate — the customer's key would
+        # die every billing cycle — so this fires only on demo/new -> paid.
+        token = None
+        if body.status == 'active' and body.plan != 'demo' and not was_paid:
+            user = hubdb.get_user_by_email(conn, body.email)
+            if user is not None:
+                token = hubdb.rotate_token(conn, user['id'])
+        return {'ok': True, 'token': token}   # deliver it to the buyer (email is not wired yet)
 
     @app.post('/activate')
     def activate(body: ActivateIn, conn=Depends(get_db)):
@@ -225,7 +261,11 @@ def _env_app():
         raise RuntimeError(                              # paid plans — never fall open to a default
             'ALPHAHUB_WEBHOOK_SECRET is required (the payment webhook grants subscriptions). '
             'Set it before starting the server.')
-    return create_app(db_path, key_path, secret)
+    # ALPHAHUB_SITE_ORIGIN: comma-separated origins the signup form is served from. Unset = no
+    # CORS headers at all (fine for a node-only deployment; the desktop app is not a browser).
+    origins = [o.strip() for o in (os.environ.get('ALPHAHUB_SITE_ORIGIN') or '').split(',')
+               if o.strip()]
+    return create_app(db_path, key_path, secret, site_origins=origins)
 
 
 def __getattr__(name):
