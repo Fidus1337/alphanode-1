@@ -227,8 +227,23 @@ Copy that off the server today, and put it on a nightly cron. The container runs
 ## 8. Updating
 
 ```bash
-git pull && docker compose up -d --build
+tar czf ~/alphahub-$(date +%F).tgz -C /srv alphahub     # 2 seconds, and you can go back
+cd ~/alphanode && git pull
+cd deploy && docker compose up -d --build
+docker compose ps                                       # all three Up
+curl -s https://api.$DOMAIN/health                      # hub answers
 ```
 
-The schema is created idempotently on start, and `/srv/alphahub` is outside the clone, so nothing
-you deploy can touch customer state.
+The hub creates its schema idempotently on start and adds any new column to a table that already
+exists, so an update never needs a manual migration step. `/srv/alphahub` is outside the clone, so
+nothing you deploy can touch customer state — the backup above is for your own peace of mind, not
+because the update writes over anything.
+
+`--build` matters: without it compose reuses the old image and you pull code that never runs.
+
+If the hub does not come up, its logs say why and the previous image is still on disk:
+
+```bash
+docker compose logs --tail=50 hub
+docker compose down && git checkout <previous-commit> && docker compose up -d --build
+```
