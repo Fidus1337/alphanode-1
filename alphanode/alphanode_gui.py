@@ -627,7 +627,18 @@ class App:
             pass
         s.configure('.', background=CARD, foreground=TXT, font=(F, self._px(13)))
 
-        # numeric spinboxes — CustomTkinter has no spinbox, so these stay ttk (tonal, like _entry)
+        # numeric spinboxes — CustomTkinter has no spinbox, so these stay ttk (tonal, like _entry).
+        # The up/down arrows are dropped from the LAYOUT rather than the widget: every setting is
+        # typed, not nudged one step at a time, and the stepper column only ate width and drew a
+        # gray smear next to each value. The widget itself stays a Spinbox — same variable types,
+        # same from_/to, same styling hooks — it just renders as a plain field.
+        try:
+            s.layout('TSpinbox', [('Spinbox.field', {
+                'side': 'top', 'sticky': 'we', 'children': [
+                    ('Spinbox.padding', {'sticky': 'nswe', 'children': [
+                        ('Spinbox.textarea', {'sticky': 'nswe'})]})]})])
+        except tk.TclError:                              # a theme without these elements: keep
+            pass                                         # the default layout, arrows and all
         s.configure('TSpinbox', fieldbackground=HEAD_BG, background=HEAD_BG, foreground=TXT,
                     arrowcolor=MUT, bordercolor=BORDER, lightcolor=HEAD_BG, darkcolor=HEAD_BG,
                     borderwidth=1, padding=int(4 * self.SCALE), insertcolor=TXT,
