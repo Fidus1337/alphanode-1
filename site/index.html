@@ -65,6 +65,27 @@ h1 .quiet{color:var(--mut);font-weight:500}
 .cta-row{display:flex;gap:12px;flex-wrap:wrap}
 .hero-note{margin-top:18px;font-size:13px;color:var(--mut)}
 
+/* ---------- early-access request form ---------- */
+.req{margin-top:28px;max-width:46ch}
+.req label{display:block;font-size:13px;color:var(--mut);margin:0 0 6px}
+.req input,.req textarea{width:100%;box-sizing:border-box;background:var(--card);
+  border:1px solid var(--line);border-radius:3px;padding:11px 13px;font:inherit;font-size:15px;
+  color:var(--ink)}
+.req input:focus,.req textarea:focus{outline:none;border-color:var(--acc);
+  box-shadow:0 0 0 3px rgba(125,140,255,.18)}
+.req textarea{resize:vertical;min-height:76px}
+.req .gap{margin-top:14px}
+.req .btn{margin-top:16px;border:0}
+.req .btn[disabled]{opacity:.55;cursor:progress}
+.req .hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+.req-msg{margin-top:14px;font-size:14px;min-height:1.2em}
+.req-msg.ok{color:var(--green)}
+.req-msg.err{color:var(--red)}
+.req-done{background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:18px 20px;
+  margin-top:28px;max-width:46ch}
+.req-done b{display:block;margin-bottom:6px}
+.req-done p{margin:0;color:var(--mut);font-size:14px}
+
 /* the product, as it actually looks: the node's status page, flat and chrome-free */
 .term{background:var(--dark);border:1px solid var(--darkline2);border-radius:4px;
   padding:18px 20px;color:var(--darkink);min-width:0}
@@ -303,18 +324,30 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
     <div>
       <p class="eyebrow">Get it</p>
       <h2>Early access</h2>
-      <p class="lead">AlphaNode is a desktop and server application. Your data,
-         your hardware, your strategies — nothing leaves your machine.</p>
+      <p class="lead">AlphaNode is a desktop and server application. The search runs on your
+         hardware and the formulas it finds are yours; the only thing that leaves the machine
+         is a licence check.</p>
       <ul>
         <li><span class="m">deb</span><span><b>Ubuntu / Debian:</b> native installer — menu entry, terminal CLI, no Python needed.</span></li>
         <li><span class="m">AppImage</span><span><b>Any Linux:</b> a single portable file.</span></li>
         <li><span class="m">exe</span><span><b>Windows:</b> installer + portable build.</span></li>
         <li><span class="m">docker</span><span><b>Servers:</b> compose file with a status page and a resource cap.</span></li>
-        <li><span class="m">license</span><span><b>Licensing (planned):</b> an offline-friendly signed license file; payment options will be announced at launch.</span></li>
+        <li><span class="m">license</span><span><b>Licensing:</b> one subscription key per account, entered once in the app. It activates a set number of machines and unlocks the formulas your node mined; the search itself runs locally either way.</span></li>
       </ul>
-      <div class="cta-row" style="margin-top:28px">
-        <a class="btn" href="mailto:yurbusht@gmail.com?subject=AlphaNode%20early%20access">Request early access</a>
-      </div>
+
+      <form class="req" id="req-form" novalidate>
+        <label for="req-email">Your email</label>
+        <input id="req-email" name="email" type="email" autocomplete="email"
+               placeholder="you@example.com" required>
+        <div class="gap">
+          <label for="req-note">What would you point it at? <span style="opacity:.7">(optional)</span></label>
+          <textarea id="req-note" name="note" rows="3"
+                    placeholder="Timeframe, pairs, the machine you'd run it on — anything that helps us prioritise."></textarea>
+        </div>
+        <input class="hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+        <button class="btn" type="submit" id="req-btn">Request early access</button>
+        <p class="req-msg" id="req-msg" role="status" aria-live="polite"></p>
+      </form>
       <p class="hero-note">Already have it? Follow the
         <a href="start.html">getting-started walkthrough</a> — five clicks from install
         to your first formula on the forward track.</p>
@@ -333,8 +366,11 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
       <p>No. Each install mints a unique node ID that seeds its own search trajectory,
          so no two nodes mine the same library. What your node finds is yours.</p>
       <h3>Is my data sent anywhere?</h3>
-      <p>No. The node downloads public candles from the exchange and everything else
-         stays local: library, settings, forward track, signals.</p>
+      <p>Your library, settings, forward track and signals stay on your disk. The node
+         downloads public candles from the exchange, and a licensed node asks our licence
+         server whether the subscription is live — that call carries your key and a random
+         per-install ID, never your formulas or your data. Unlocking a formula is the one
+         exception: the sealed text goes to the server to be opened, and comes straight back.</p>
       <h3>What does it run on?</h3>
       <p>Linux (deb / AppImage), Windows, or any Docker host. The headless Docker
          node runs on just NumPy and pandas; a laptop core or two is enough to mine
@@ -371,5 +407,46 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   </div>
 </footer>
 
+<script>
+// Early-access form -> AlphaHub. Same-origin api.<host> in production; the localhost fallback
+// is for opening this file straight from disk while working on the page.
+(function () {
+  var form = document.getElementById('req-form');
+  if (!form) return;
+  var msg = document.getElementById('req-msg');
+  var btn = document.getElementById('req-btn');
+  var API = (location.protocol === 'https:')
+    ? location.protocol + '//api.' + location.host.replace(/^www\./, '')
+    : 'http://127.0.0.1:8790';
+
+  function say(text, kind) { msg.textContent = text; msg.className = 'req-msg' + (kind ? ' ' + kind : ''); }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var email = form.email.value.trim();
+    if (!email || email.indexOf('@') < 1) { say('Enter a valid email address.', 'err'); return; }
+    btn.disabled = true;
+    say('Sending…');
+    fetch(API + '/request-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, note: form.note.value, website: form.website.value })
+    }).then(function (r) {
+      if (!r.ok) throw new Error(r.status === 422 ? 'Enter a valid email address.' : 'HTTP ' + r.status);
+      // Replace the form outright: a still-editable form after success invites a second submit.
+      var done = document.createElement('div');
+      done.className = 'req-done';
+      done.innerHTML = '<b>You are on the list.</b><p>We read every request and reply from ' +
+                       'support@alphanode.tech with a key and the download. Check your spam folder ' +
+                       'if nothing arrives in a couple of days.</p>';
+      form.replaceWith(done);
+    }).catch(function (err) {
+      btn.disabled = false;
+      say(String(err.message || err).indexOf('valid email') >= 0 ? err.message
+          : 'Could not reach the server. Email support@alphanode.tech and we will sort it out.', 'err');
+    });
+  });
+})();
+</script>
 </body>
 </html>
