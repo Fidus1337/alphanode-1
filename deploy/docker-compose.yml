@@ -1,0 +1,52 @@
+# AlphaNode — the whole vendor side on one box: marketing site + AlphaHub + TLS.
+#
+#   cp .env.example .env && chmod 600 .env    # fill in DOMAIN + ALPHAHUB_WEBHOOK_SECRET
+#   sudo mkdir -p /srv/alphahub && sudo chown $(id -u):$(id -g) /srv/alphahub && chmod 700 /srv/alphahub
+#   docker compose up -d --build
+#
+# Caddy answers 80/443 for both hosts and gets/renews certificates by itself:
+#   https://$DOMAIN         -> the static site        (../site)
+#   https://api.$DOMAIN     -> AlphaHub               (licences, /reveal, webhook)
+services:
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # :? — compose refuses to start with a clear message instead of leaving Caddy to
+      # crash-loop on an unparseable config
+      - DOMAIN=${DOMAIN:?set DOMAIN in deploy/.env (e.g. alphanode.example.com)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - site
+      - hub
+
+  site:
+    build: ../site
+    restart: unless-stopped
+
+  hub:
+    build:
+      context: ..
+      dockerfile: alphahub/Dockerfile
+    restart: unless-stopped
+    # run as the deploying user, not root: the state files below (including the irreplaceable
+    # vault key) must be readable/backupable without sudo
+    user: "${HUB_UID:-1000}:${HUB_GID:-1000}"
+    environment:
+      - ALPHAHUB_WEBHOOK_SECRET=${ALPHAHUB_WEBHOOK_SECRET:?set ALPHAHUB_WEBHOOK_SECRET in deploy/.env}
+      # the browser origin allowed to POST /signup and /me (the marketing site)
+      - ALPHAHUB_SITE_ORIGIN=https://${DOMAIN}
+    volumes:
+      # HUBDATA lives OUTSIDE the git clone on purpose: hub.db and the vault key must survive
+      # `git clean -xdf`, a re-clone, or a wiped checkout. Default /srv/alphahub.
+      - ${HUBDATA:-/srv/alphahub}:/data
+
+volumes:
+  caddy_data:
+  caddy_config:

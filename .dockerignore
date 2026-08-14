@@ -9,6 +9,19 @@
 packaging/
 docs/
 
+# SECRETS — never bake these into an image layer. The wildcard COPYs (alphahub/, alphanode/)
+# would otherwise sweep in whatever the working tree happens to hold, and an image layer is
+# forever: anyone who can pull it can read the key that opens every sealed formula.
+alphahub/vault_key
+alphahub/vault_key.pub
+alphahub/hub.db
+alphanode/vault_server_key
+alphanode/anthropic_key
+alphanode/alphahub_identity
+deploy/hubdata/
+deploy/.env
+token_tokenovich
+
 # runtime / generated state — the container has its own /data volume
 alphanode/state/
 alphanode/gui_settings.json

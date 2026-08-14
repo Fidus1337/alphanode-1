@@ -33,6 +33,20 @@ if os.path.exists(_data):
 else:
     print('AlphaNode.spec: data.pickle not found — building without a bundled snapshot')
 
+# The vendor's PUBLIC vault key. Without it the node mines UNSEALED — the whole subscription
+# model silently stops protecting anything — so a release build must not be allowed to omit it.
+# Fetch before building:  curl -s https://api.<DOMAIN>/pub.txt > alphanode/vault_server_key.pub
+_pub = os.path.join(APP, 'vault_server_key.pub')
+if os.path.exists(_pub):
+    datas.append((_pub, 'alphanode'))
+elif os.environ.get('ALPHANODE_ALLOW_UNSEALED') == '1':
+    print('AlphaNode.spec: no vault_server_key.pub — building an UNSEALED node (dev only)')
+else:
+    raise SystemExit(
+        'AlphaNode.spec: alphanode/vault_server_key.pub is missing.\n'
+        '  curl -s https://api.<YOUR-DOMAIN>/pub.txt > alphanode/vault_server_key.pub\n'
+        '  (or set ALPHANODE_ALLOW_UNSEALED=1 for a deliberately unprotected dev build)')
+
 a = Analysis(
     [os.path.join(APP, 'app_entry.py')],
     pathex=[PROJ, APP, os.path.join(PROJ, 'evolution')],

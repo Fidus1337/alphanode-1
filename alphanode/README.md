@@ -55,7 +55,7 @@ On the left — the **full set of search settings** (scrollable), grouped into s
 - **Fitness** — complexity penalty, correlation threshold/penalty, Hall of Fame size;
 - **Date segments** — TRAIN / VAL / TEST boundaries.
 
-On the right — live status, a **progress chart** (best TEST by round) and a **leaderboard**. By default it
+On the right — live status (with the best fitness so far as a stat tile) and a **leaderboard**. By default it
 lists **every alpha** in the library, scrollable; the **"families only"** switch in the heading collapses it
 to the best alpha per family (distinct formula shapes) — the old compact view — for when the near-duplicates
 get noisy. **Click a column header to sort** (repeat click flips the direction): **fitness** and **TEST OOS**

@@ -73,7 +73,8 @@ def _pick_top(n, select='test', lib=None):
                 rows.append(json.loads(line))
             except json.JSONDecodeError:
                 pass
-    rows = [c for c in rows if key(c) is not None]
+    rows = [c for c in rows if key(c) is not None and c.get('formula')]   # sealed rows (vault)
+    #                                    carry full metrics but no plaintext — nothing to simulate
     rows.sort(key=key, reverse=True)
     kept, top = [], []
     for c in rows[:500]:

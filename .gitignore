@@ -49,3 +49,11 @@ data*.pickle
 research/
 alphanode/anthropic_key
 alphanode/alphahub_identity
+alphanode/vault_server_key
+alphanode/vault_server_key.pub
+alphahub/vault_key
+alphahub/vault_key.pub
+alphahub/hub.db
+deploy/.env
+deploy/hubdata/
+token_tokenovich
