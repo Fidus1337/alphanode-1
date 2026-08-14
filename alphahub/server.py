@@ -68,6 +68,8 @@ class RevealBatchIn(BaseModel):
 
 class AccessRequestIn(BaseModel):
     email: str
+    name: str | None = None
+    phone: str | None = None                             # optional on the form
     note: str | None = None
     website: str | None = None                           # honeypot: humans leave this empty
 
@@ -183,12 +185,18 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
         if body.website:                                  # honeypot filled -> a bot. Look like
             return {'ok': True}                           # success so it stops retrying.
         try:
-            first_time = hubdb.add_access_request(conn, body.email, body.note)
+            first_time = hubdb.add_access_request(conn, body.email, name=body.name,
+                                                  phone=body.phone, note=body.note)
         except ValueError:
             raise HTTPException(status_code=422, detail='enter a valid email address')
         if first_time:
-            bg.add_task(_notify, f'AlphaNode early access: {body.email.strip()}',
-                        f'{body.email.strip()}\n\n{(body.note or "").strip() or "(no note)"}\n')
+            email = body.email.strip()
+            name = (body.name or '').strip()
+            body_txt = (f'name:  {name or "(not given)"}\n'
+                        f'email: {email}\n'
+                        f'phone: {(body.phone or "").strip() or "(not given)"}\n\n'
+                        f'{(body.note or "").strip() or "(no note)"}\n')
+            bg.add_task(_notify, f'AlphaNode early access: {name or email}', body_txt)
         return {'ok': True}
 
     @app.post('/webhook/payment')

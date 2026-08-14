@@ -92,7 +92,10 @@ def cmd_requests(a):
         print('no requests')
         return
     for r in rows:
-        print(f'{r["created_at"]}  {r["status"]:<8} {r["email"]}')
+        who = f'{r["name"]} <{r["email"]}>' if r['name'] else r['email']
+        print(f'{r["created_at"]}  {r["status"]:<8} {who}')
+        if r['phone']:
+            print(f'      tel: {r["phone"]}')
         if r['note']:
             print(f'      {r["note"][:300]}')
     print(f'\n{len(rows)} request(s)')

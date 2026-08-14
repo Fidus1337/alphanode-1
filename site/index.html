@@ -336,9 +336,19 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
       </ul>
 
       <form class="req" id="req-form" novalidate>
-        <label for="req-email">Your email</label>
-        <input id="req-email" name="email" type="email" autocomplete="email"
-               placeholder="you@example.com" required>
+        <label for="req-name">Your name</label>
+        <input id="req-name" name="name" type="text" autocomplete="name"
+               placeholder="First and last name" required>
+        <div class="gap">
+          <label for="req-email">Your email</label>
+          <input id="req-email" name="email" type="email" autocomplete="email"
+                 placeholder="you@example.com" required>
+        </div>
+        <div class="gap">
+          <label for="req-phone">Phone <span style="opacity:.7">(optional)</span></label>
+          <input id="req-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel"
+                 placeholder="+82 10 1234 5678">
+        </div>
         <div class="gap">
           <label for="req-note">What would you point it at? <span style="opacity:.7">(optional)</span></label>
           <textarea id="req-note" name="note" rows="3"
@@ -420,17 +430,28 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
     : 'http://127.0.0.1:8790';
 
   function say(text, kind) { msg.textContent = text; msg.className = 'req-msg' + (kind ? ' ' + kind : ''); }
+  // form.elements[...], never form.<field>: HTMLFormElement already owns a `name` property, so
+  // form.name is the form's own attribute and never the input we just added.
+  function val(field) { return (form.elements[field].value || '').trim(); }
 
   form.addEventListener('submit', function (e) {
     e.preventDefault();
-    var email = form.email.value.trim();
+    var name = val('name');
+    var email = val('email');
+    var phone = val('phone');
+    if (!name) { say('Enter your name.', 'err'); return; }
     if (!email || email.indexOf('@') < 1) { say('Enter a valid email address.', 'err'); return; }
+    // Optional, so an empty box is fine — but a stray "12" is a typo, not a number we can call.
+    if (phone && (phone.match(/\d/g) || []).length < 5) {
+      say('Enter a full phone number, or leave it empty.', 'err'); return;
+    }
     btn.disabled = true;
     say('Sending…');
     fetch(API + '/request-access', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email, note: form.note.value, website: form.website.value })
+      body: JSON.stringify({ name: name, email: email, phone: phone,
+                             note: val('note'), website: val('website') })
     }).then(function (r) {
       if (!r.ok) throw new Error(r.status === 422 ? 'Enter a valid email address.' : 'HTTP ' + r.status);
       // Replace the form outright: a still-editable form after success invites a second submit.

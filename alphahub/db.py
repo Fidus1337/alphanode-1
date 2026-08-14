@@ -47,6 +47,8 @@ CREATE TABLE IF NOT EXISTS reveals (          -- audit: which account/device ope
 CREATE TABLE IF NOT EXISTS access_requests (  -- early-access waitlist from the site's form
     id         INTEGER PRIMARY KEY,
     email      TEXT UNIQUE NOT NULL,          -- one row per address: a re-submit updates it
+    name       TEXT,
+    phone      TEXT,                          -- optional on the form; a way to reach fast buyers
     note       TEXT,
     status     TEXT NOT NULL DEFAULT 'new',   -- new | invited
     created_at TEXT NOT NULL,
@@ -92,7 +94,18 @@ def connect(path):
 
 def init_db(conn):
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn):
+    """Additive column adds for a database created by an earlier version. CREATE TABLE IF NOT
+    EXISTS is a no-op once the table exists, so a column added to SCHEMA never reaches a live
+    hub without this — and the live hub is the one holding the waitlist."""
+    have = {r['name'] for r in conn.execute('PRAGMA table_info(access_requests)')}
+    for col in ('name', 'phone'):
+        if col not in have:
+            conn.execute(f'ALTER TABLE access_requests ADD COLUMN {col} TEXT')
 
 
 def new_token():
@@ -240,24 +253,37 @@ def log_reveal(conn, user_id, device_id, formula_id):
 
 
 # ---- early-access waitlist (the site's request form) ----
-def add_access_request(conn, email, note=None):
-    """Record an early-access request. One row per address — a re-submit refreshes the note and
+def add_access_request(conn, email, name=None, phone=None, note=None):
+    """Record an early-access request. One row per address — a re-submit refreshes the details and
     the timestamp instead of piling up duplicates, so the list stays a list of PEOPLE. Returns
-    True when this is a first-time request (worth a notification), False for a repeat."""
-    email = (email or '').strip()
+    True when this is a first-time request (worth a notification), False for a repeat.
+
+    Only the email is validated: name and phone are free text people type in a hurry, and losing a
+    prospective buyer over a phone format we did not anticipate costs more than a messy string."""
+    # lowercased like every other email in this module: the UNIQUE index is case-sensitive, so
+    # without it "Yurii@Gmail.com" is a second person, and `invite` (which grants against the
+    # lowercased address) would never find the row to mark.
+    email = (email or '').strip().lower()
     if len(email) < 3 or '@' not in email or len(email) > 320:
         raise ValueError('invalid email')
+    name = (name or '').strip()[:200] or None
+    phone = (phone or '').strip()[:64] or None
     note = (note or '').strip()[:2000] or None
     now = iso_now()
     # asked BEFORE the write: an upsert reports rowcount 1 either way, so it cannot tell a new
     # person from someone submitting twice — and that distinction is what gates the notification
     first_time = conn.execute('SELECT 1 FROM access_requests WHERE email = ?',
                               (email,)).fetchone() is None
+    # COALESCE per field: a second submit that leaves the phone blank must not erase the number
+    # given the first time round.
     conn.execute(
-        'INSERT INTO access_requests(email, note, created_at, updated_at) VALUES (?,?,?,?) '
-        'ON CONFLICT(email) DO UPDATE SET note = COALESCE(excluded.note, access_requests.note), '
+        'INSERT INTO access_requests(email, name, phone, note, created_at, updated_at) '
+        'VALUES (?,?,?,?,?,?) '
+        'ON CONFLICT(email) DO UPDATE SET name  = COALESCE(excluded.name,  access_requests.name), '
+        '                                 phone = COALESCE(excluded.phone, access_requests.phone), '
+        '                                 note  = COALESCE(excluded.note,  access_requests.note), '
         '                                 updated_at = excluded.updated_at',
-        (email, note, now, now))
+        (email, name, phone, note, now, now))
     conn.commit()
     return first_time
 
@@ -273,6 +299,6 @@ def mark_access_request(conn, email, status):
     if status not in ('new', 'invited'):
         raise ValueError("status must be 'new' or 'invited'")
     cur = conn.execute('UPDATE access_requests SET status = ?, updated_at = ? WHERE email = ?',
-                       (status, iso_now(), (email or '').strip()))
+                       (status, iso_now(), (email or '').strip().lower()))
     conn.commit()
     return cur.rowcount > 0
