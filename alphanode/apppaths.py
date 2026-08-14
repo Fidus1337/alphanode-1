@@ -94,7 +94,7 @@ def config_ini():
 
 
 def engine_dir():
-    """Directory with the formula-engine sources (for copying into a paper bundle)."""
+    """Directory with the formula-engine sources (imported at runtime via sys.path)."""
     return os.path.join(RES_ROOT, 'evolution')
 
 

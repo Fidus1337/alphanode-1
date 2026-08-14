@@ -1098,7 +1098,7 @@ class App:
                           '  and its own alpha library — download data for it first;\n'
                           '• picking a timeframe fills in its recommended date segments\n'
                           '  and pair count (intraday history is shorter and denser);\n'
-                          '• portfolio build and paper-trade are daily-only for now.')
+                          '• portfolio build and the forward track are daily-only for now.')
         self.lbl_tf_note = self._lbl(inner, text='', text_color=MUT, font=(self.UI, 11),
                                      anchor='w', justify='left', wraplength=330)
         # wraplength: the intraday note is the widest line in the pane — unwrapped it would
@@ -1732,7 +1732,7 @@ class App:
         self._tip(sel_box, 'How the top-N members are picked from the library:\n'
                            '• TEST — by held-out TEST Sharpe: what actually worked on 2023+.\n'
                            '  ⚠ the shown combined TEST becomes optimistic (the same window\n'
-                           '  picked the members) — validate with Paper before trusting it.\n'
+                           '  picked the members) — validate on the forward track first.\n'
                            '• fitness — by min(train,val): TEST never enters selection, so\n'
                            '  the combined TEST numbers are honest out-of-sample.')
         self.btn_pf = self._btn(ctl, '▶ Build portfolio', self._build_portfolio, kind='accent')
@@ -1744,9 +1744,6 @@ class App:
         self.btn_pf_csv = self._btn(ctl, 'CSV', self._pf_download_signals, width=76)
         self.btn_pf_csv.configure(state='disabled')
         self.btn_pf_csv.pack(side='left', padx=(8, 0))
-        self.btn_pf_paper = self._btn(ctl, 'Paper', self._pf_paper_trade, width=86)
-        self.btn_pf_paper.configure(state='disabled')
-        self.btn_pf_paper.pack(side='left', padx=(6, 0))
         self.btn_pf_sig = self._btn(ctl, 'Serve', self._pf_serve_signal, width=86)
         self.btn_pf_sig.configure(state='disabled')
         self.btn_pf_sig.pack(side='left', padx=(6, 0))
@@ -1766,10 +1763,7 @@ class App:
                                    'weight per asset per bar over TRAIN/VAL/TEST (each row labeled\n'
                                    'with its segment), with the asset\'s OHLCV on that bar —\n'
                                    'same as for a single alpha. Intraday timeframes: TEST only.')
-        self._tip(self.btn_pf_paper, 'Build a self-contained paper-trading bundle for the whole\n'
-                                     'portfolio (all N alphas combined via the real Portfolio engine)\n'
-                                     'to run daily on live Binance data — same as for a single alpha.')
-        self._tip(self.btn_pf_sig, 'Start a local signal API for the whole portfolio — serves the\n'
+        self._tip(self.btn_pf_sig,'Start a local signal API for the whole portfolio — serves the\n'
                                    'combined live target positions as JSON on localhost. Each\n'
                                    'service takes the next free port from 8799 and appears in the\n'
                                    'SIGNAL API card above (URL, log, "free the port").')
@@ -1947,7 +1941,7 @@ class App:
         self.lbl_pf_m.configure(text='')
         self.pf_img.config(image='')
         self._pf_img_ref = None
-        for b in (self.btn_pf_csv, self.btn_pf_paper, self.btn_pf_sig, self.btn_pf_track):
+        for b in (self.btn_pf_csv, self.btn_pf_sig, self.btn_pf_track):
             b.configure(state='disabled')
 
     def _stat(self, parent, label, col, accent=False):
@@ -3476,7 +3470,6 @@ class App:
             return
         self._pf_doc = doc                               # remember for re-render on resize
         self.btn_pf_csv.configure(state=('normal' if doc.get('weights') else 'disabled'))
-        self.btn_pf_paper.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         self.btn_pf_sig.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
         self.btn_pf_pdf.configure(state=('normal' if doc.get('weights') else 'disabled'))
         self.btn_pf_track.configure(state=('normal' if doc.get('formulas_full') else 'disabled'))
@@ -3487,7 +3480,7 @@ class App:
             picked = 'by fitness min(train,val)'
         else:                                            # 'test' or legacy docs without 'sel'
             note = ('⚠ members picked by TEST — its numbers are optimistic (cherry-pick); '
-                    'validate with Paper')
+                    'validate on the forward track')
             picked = 'by TEST OOS'
         eng = 'the real engine' if doc.get('tf', '1d') == '1d' else f'fastsim on {doc["tf"]} bars'
         span = (f'TRAIN+VAL+TEST {doc["span"]}' if doc.get('span')
@@ -4180,10 +4173,8 @@ class App:
                      wraplength=img_w - 30, font=(self.MONO, 12)).pack(anchor='w', pady=(6, 0))
         btnrow = self._box(head)
         btnrow.pack(anchor='w', pady=(10, 0))
-        self._btn(btnrow, 'Paper Trade — build bundle', lambda: self._paper_trade(champ),
-                  width=230).pack(side='left')
         self._btn(btnrow, 'Download signals (CSV)', lambda: self._download_signals(champ),
-                  width=196).pack(side='left', padx=(8, 0))
+                  width=196).pack(side='left')
         _f = champ.get('formula', '')
         self._btn(btnrow, 'Serve signal (API)',
                   lambda: self._serve_signal([_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6]),
@@ -4699,7 +4690,7 @@ class App:
                    **self._worker_cfg()}
         self._run_pdf_report(payload, path)
 
-    # ---------- PORTFOLIO: CSV signals + paper-trade bundle (same as a single alpha) ----------
+    # ---------- PORTFOLIO: CSV signals (same as a single alpha) ----------
     def _pf_download_signals(self):
         doc = self._pf_doc
         if not doc or not doc.get('weights'):
@@ -4736,47 +4727,6 @@ class App:
         except Exception as e:                                     # noqa: BLE001
             messagebox.showerror('Error', f'Failed to build signals: {e}', parent=self.root)
 
-    def _pf_paper_trade(self):
-        if self._tf_gate('Paper trading'):
-            return
-        doc = self._pf_doc
-        formulas = (doc or {}).get('formulas_full')
-        if not formulas:
-            messagebox.showinfo('Paper Trade',
-                                'Build the portfolio first (rebuild it if it was built by an older version).',
-                                parent=self.root)
-            return
-        try:
-            sys.path.insert(0, HERE)
-            import paper_export
-        except Exception as e:                                     # noqa: BLE001
-            messagebox.showerror('Paper Trade', f'The generator failed to load: {e}', parent=self.root)
-            return
-        c = self.cfg
-        if c.get('universe_all', True):
-            try:
-                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
-            except Exception as e:                                 # noqa: BLE001
-                messagebox.showerror('Paper Trade', f'Cannot read the loaded data: {e}', parent=self.root)
-                return
-        else:
-            tickers = [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]
-        if not tickers:
-            messagebox.showwarning('Paper Trade', 'The pairs universe is empty.', parent=self.root)
-            return
-        name = f'portfolio_top{doc.get("n", len(formulas))}'
-        meta = {'test': (doc.get('metrics') or {})}                # readme shows the combined TEST Sharpe
-        try:
-            path = paper_export.build_bundle(
-                list(formulas), name, tickers, float(c.get('target_vol', 0.25)),
-                float(c.get('exec_cost', 0.001)),
-                str(doc.get('sim_start', c.get('train_start', '2019-09-05'))),
-                apppaths.exports_dir(), meta=meta)
-        except Exception as e:                                     # noqa: BLE001
-            messagebox.showerror('Paper Trade', f'Bundle build error: {e}', parent=self.root)
-            return
-        self._paper_dialog(path, len(tickers))
-
     def _signals_dialog(self, path, latest_date, positions, n_days, rng=None):
         win = self._dialog('Portfolio signals', '460x580')
         frm = self._box(win)
@@ -4809,64 +4759,6 @@ class App:
                      anchor='w').pack(anchor='w', pady=(10, 0))
         self._btn(frm, 'Close', win.destroy, width=80).pack(anchor='e', pady=(10, 0))
 
-    # ---------- paper trade: export the bundle + run ----------
-    def _paper_trade(self, champ):
-        if self._tf_gate('Paper trading'):
-            return
-        formula = champ.get('formula', '')
-        if not formula:
-            return
-        try:
-            sys.path.insert(0, HERE)
-            import paper_export
-        except Exception as e:                           # noqa: BLE001
-            messagebox.showerror('Paper Trade', f'The generator failed to load: {e}', parent=self.root)
-            return
-        c = self.cfg
-        if c.get('universe_all', True):
-            try:
-                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
-            except Exception as e:                       # noqa: BLE001
-                messagebox.showerror('Paper Trade', f'Cannot read the loaded data: {e}', parent=self.root)
-                return
-        else:
-            tickers = [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]
-        if not tickers:
-            messagebox.showwarning('Paper Trade', 'The pairs universe is empty.', parent=self.root)
-            return
-        name = 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
-        out_root = apppaths.exports_dir()
-        try:
-            path = paper_export.build_bundle(
-                formula, name, tickers, float(c.get('target_vol', 0.25)),
-                float(c.get('exec_cost', 0.001)), str(c.get('train_start', '2019-09-05')),
-                out_root, meta=champ)
-        except Exception as e:                           # noqa: BLE001
-            messagebox.showerror('Paper Trade', f'Bundle build error: {e}', parent=self.root)
-            return
-        self._paper_dialog(path, len(tickers))
-
-    def _paper_dialog(self, path, n):
-        win = self._dialog('Paper-trading bundle ready', '660x300')
-        frm = self._box(win)
-        frm.pack(fill='both', expand=True, padx=18, pady=16)
-        self._lbl(frm, text='Bundle built', text_color=TXT,
-                     font=(self.UI, 19, 'bold')).pack(anchor='w')
-        self._lbl(frm, text=f'{n} pairs · engine + strategy.py + paper_trade.py + README.md',
-                     text_color=MUT, font=(self.UI, 13)).pack(anchor='w', pady=(2, 10))
-        self._lbl(frm, text=path, text_color=ACC, font=(self.MONO, 13), wraplength=600,
-                     justify='left', anchor='w').pack(anchor='w')
-        self._lbl(frm, text='Run paper trading FORWARD on new data — that is the honest check. '
-                               'Live is not included in the bundle (see README).',
-                     text_color=MUT, font=(self.UI, 13), wraplength=600, justify='left',
-                     anchor='w').pack(anchor='w', pady=(10, 14))
-        row = self._box(frm)
-        row.pack(fill='x')
-        self._btn(row, 'Open folder', lambda: self._open_folder(path), width=124).pack(side='left')
-        self._btn(row, '▶ Run now', lambda: (win.destroy(), self._run_bundle(path)),
-                  kind='accent', width=100).pack(side='left', padx=8)
-        self._btn(row, 'Close', win.destroy, width=80).pack(side='right')
-
     def _open_folder(self, path):
         """Open a file or a folder in the system viewer."""
         if not path:
@@ -4884,54 +4776,6 @@ class App:
                 return
             except Exception:                            # noqa: BLE001
                 continue
-
-    def _run_bundle(self, path):
-        win = self._dialog('Paper-trade — step', '780x460')
-        txt = self._console(win)
-
-        def add(s):
-            if not win.winfo_exists():
-                return
-            txt.configure(state='normal')
-            txt.insert('end', s)
-            txt.see('end')
-            txt.configure(state='disabled')
-
-        add('$ python paper_trade.py force\n\n')
-        if apppaths.FROZEN:                              # own interpreter (numpy/pandas inside)
-            cmd = [sys.executable, '--role', 'runpy', os.path.join(path, 'paper_trade.py'), 'force']
-        else:
-            cmd = [sys.executable, '-u', 'paper_trade.py', 'force']
-        try:
-            proc = subprocess.Popen(cmd, cwd=path,
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        except Exception as e:                           # noqa: BLE001
-            add(f'Failed to launch: {e}\n')
-            return
-        q = queue.Queue()
-
-        def _reader():
-            for line in proc.stdout:
-                q.put(line)
-            q.put(None)
-        threading.Thread(target=_reader, daemon=True).start()
-
-        def pump():
-            if not win.winfo_exists():
-                return
-            try:
-                while True:
-                    line = q.get_nowait()
-                    if line is None:
-                        code = proc.poll()
-                        add('\n' + ('✓ Step done. The account is in paper_state.json (in the bundle folder).'
-                                    if code == 0 else f'✗ Error (code {code}).') + '\n')
-                        return
-                    add(line)
-            except queue.Empty:
-                pass
-            win.after(200, pump)
-        win.after(200, pump)
 
     @staticmethod
     def _storm_spans(reg):

@@ -9,7 +9,7 @@ candles, same funding events, one data lineage — the archive just lags live by
 `fetch_rows()` is a drop-in for the /fapi/v1/klines paging loop: it returns rows in the exact
 fapi shape (12 fields, ms timestamps, prices as strings), probing fapi once per process and
 switching to the archive when fapi is unreachable or geo-blocked. Stdlib only — this module is
-also inlined into generated paper-trade bundles.
+used by the data fetcher, the signal API and the forward track.
 """
 import io
 import csv

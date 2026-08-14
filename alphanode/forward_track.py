@@ -2,7 +2,7 @@
 
 Enrolling FREEZES a strategy (formulas + universe + vol/fee) as of that day; from then on the
 node steps it once per closed daily bar on LIVE Binance data with the same semantics as a
-paper-trade bundle: run the real engine up to the last closed bar -> target weights ->
+live signal service: run the real engine up to the last closed bar -> target weights ->
 mark-to-market -> rebalance -> fees -> log. The account lives in the entry, one JSON per node
 (state/forward.json). History is APPEND-ONLY: forward numbers are written by live steps and
 never recomputed backwards — a "recomputed" track would just be another backtest.
@@ -156,7 +156,7 @@ def fetch_klines(symbol, start_ms, end_ms, interval='1d'):
 
 
 def _compute_targets(entry, tickers, dfs, end):
-    """Same maths as the paper bundle: each formula via the real engine, combined by Portfolio;
+    """Same maths as the signal service: each formula via the real engine, combined by Portfolio;
     the last row gives target weights + leverage (one alpha = a one-strategy portfolio)."""
     from evolved_strategy import make_evolved
     from quantpylib.simulator.alpha import Portfolio

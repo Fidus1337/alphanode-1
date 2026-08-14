@@ -9,7 +9,6 @@
     python alphanode/cli.py forward step       # advance the forward track now (run also does it itself)
     python alphanode/cli.py portfolio [flags]  # build a combined portfolio from top-N alphas by TEST
     python alphanode/cli.py signal [flags]     # serve live target positions over a local HTTP API (JSON)
-    python alphanode/cli.py export [flags]     # build a paper-trading bundle from a formula/rank
 
 Everything configurable in the GUI is here as flags too; an unset flag = taken from ALPHANODE_*/config.ini.
 State (library, status) is read from ALPHANODE_STATE_DIR (in Docker — /data).
@@ -240,43 +239,6 @@ def cmd_status(args):
             print(f'  {i:>2}  fit {_fmt(c.get("base")):>6}  TEST {_fmt(_testsh(c)):>6}  {f[:70]}')
 
 
-def cmd_export(args):
-    import hashlib
-    import paper_export
-    rows, path = _load_library(_state_dir())
-    if args.formula:
-        formula = args.formula
-        champ = next((c for c in rows if c.get('formula') == formula), None)
-    else:
-        picked = _rank(rows, args.sort, None, args.rank, diverse=False)
-        if len(picked) < args.rank:
-            print(f'library has fewer than {args.rank} alphas (total {len(picked)})')
-            return
-        champ = picked[args.rank - 1]
-        formula = champ.get('formula')
-    if not formula:
-        print('formula not specified and not found')
-        return
-
-    if args.universe:
-        tickers = [x.strip().upper() for x in args.universe.split(',') if x.strip()]
-    else:
-        try:
-            tickers = list(pickle.load(open(_data_path(), 'rb'))[0])
-        except OSError as e:
-            print(f'cannot read data ({_data_path()}): {e}')
-            return
-    name = 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
-    out_root = args.out or apppaths.exports_dir()
-    os.makedirs(out_root, exist_ok=True)
-    meta = {k: champ.get(k) for k in ('train', 'val', 'test')} if champ else None
-    dest = paper_export.build_bundle(
-        formula, name, tickers, float(args.target_vol), float(args.exec_cost),
-        args.start, out_root, meta=meta)
-    print(f'✓ bundle built: {dest}')
-    print(f'  run:  cd "{dest}" && pip install -r requirements.txt && python paper_trade.py')
-
-
 def cmd_portfolio(args):
     os.environ.setdefault('ALPHANODE_STATE_DIR', _state_dir())
     os.environ.setdefault('ALPHANODE_DATA', _data_path())
@@ -399,18 +361,6 @@ def build_parser():
                     help='list — enrolled strategies + paper equity; step — advance due entries now')
     fw.add_argument('--force', action='store_true', help='re-step even if the bar was processed')
     fw.set_defaults(func=cmd_forward)
-
-    e = sub.add_parser('export', help='build a paper-trading bundle')
-    g = e.add_mutually_exclusive_group()
-    g.add_argument('--formula', help='specific formula')
-    g.add_argument('--rank', type=int, default=1, help='Nth alpha by --sort (default 1)')
-    e.add_argument('--sort', choices=['fitness', 'test'], default='fitness')
-    e.add_argument('--universe', help='ticker list; default — all from data.pickle')
-    e.add_argument('--target-vol', dest='target_vol', type=float, default=0.25)
-    e.add_argument('--exec-cost', dest='exec_cost', type=float, default=0.001)
-    e.add_argument('--start', default='2019-09-05')
-    e.add_argument('--out', default=None, help='where to put the bundle (default exports/)')
-    e.set_defaults(func=cmd_export)
 
     pf = sub.add_parser('portfolio', help='build a combined portfolio from top-N alphas by TEST')
     pf.add_argument('--top', type=int, default=6)

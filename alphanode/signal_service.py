@@ -4,7 +4,7 @@ computed on LIVE Binance data, over a tiny stdlib HTTP server (JSON, localhost o
     python alphanode/signal_service.py          # config from ALPHANODE_SIGNAL_* env + config.ini
     <exe> --role signal                         # frozen build
 
-It is `paper_export`'s compute_targets turned into a live service: fetch fresh CLOSED candles
+It is the engine's target-weight computation turned into a live service: fetch fresh CLOSED candles
 at the active timeframe -> compute target weights -> serve the last bar's book. Daily bars run
 through the REAL quantpylib engine (combine via Portfolio); intraday timeframes (15m/1h/4h) use
 the forward track's math — fastsim parameterized by the bar size — because the quantpylib
@@ -26,7 +26,7 @@ Endpoints (bound to 127.0.0.1 — a signal is private):
                    pid/n_* let a restarted GUI re-adopt a service it no longer has a handle on.
 
 NOTE: this is an advisory SIGNAL feed, not execution. No orders, keys, limits or kill-switch —
-the consumer decides how (and whether) to trade it. Same disclaimer as the paper bundle.
+the consumer decides how (and whether) to trade it. Nothing here places an order.
 """
 import os
 import sys

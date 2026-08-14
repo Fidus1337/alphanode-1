@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 """Cross-platform build of AlphaNode (Linux AppImage / Windows .exe) with a single entry point
-(alphanode/app_entry.py) that, based on --role, launches the GUI / node / data fetcher / paper bundle.
+(alphanode/app_entry.py) that, based on --role, launches the GUI / node / data fetcher.
 
 We build onedir (a folder) — for AppImage this is optimal (the AppImage itself is the compression layer).
 On Windows CI, the .exe and installer are assembled from this same folder.
@@ -12,9 +12,9 @@ PROJ = os.path.dirname(SPECPATH)                     # packaging/ -> repository 
 APP = os.path.join(PROJ, 'alphanode')
 
 # The engine and its dependencies are imported dynamically (via sys.path) — list them explicitly, plus
-# collect all quantpylib submodules (it's pulled in by the qt data fetcher and the paper bundle).
+# collect all quantpylib submodules (it's pulled in by the qt data fetcher and the portfolio engine).
 hiddenimports = (
-    ['fetch_data', 'apppaths', 'node', 'alphanode_gui', 'paper_export', 'portfolio_build', 'cli',
+    ['fetch_data', 'apppaths', 'node', 'alphanode_gui', 'portfolio_build', 'cli',
      'signal_service', 'metrics_worker', 'pdf_report', 'pdf_worker', 'rescore_library',
      'forward_track',
      'config', 'evolution', 'evaluator', 'fastsim', 'genome', 'primitives',
@@ -61,8 +61,7 @@ a = Analysis(
     noarchive=False,
 )
 
-# We ship the raw engine and quantpylib sources as DATA: (1) the engine imports them at runtime,
-# (2) the paper-bundle generator (paper_export) copies them — the files must be present on disk.
+# We ship the raw engine and quantpylib sources as DATA — the engine imports them at runtime.
 a.datas += Tree(os.path.join(PROJ, 'evolution'), prefix='evolution',
                 excludes=['__pycache__', '*.pyc', '*.pyo'])
 a.datas += Tree(os.path.join(PROJ, 'quantpylib'), prefix='quantpylib',

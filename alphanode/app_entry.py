@@ -7,7 +7,6 @@ ourselves):
     <exe>                      → GUI (default)
     <exe> --role node          → background search node (node.main)
     <exe> --role fetch [args]  → Binance data fetcher (fetch_data.main)
-    <exe> --role runpy F [a…]  → run python file F of a paper-trade bundle (for the "run" button)
 
 In development mode this file is not used (the GUI calls scripts through real python).
 """
@@ -142,10 +141,6 @@ def _selfcheck_body(out):
     else:
         out('dataset     : no embedded data.pickle (download it in the app)')
 
-    import paper_export
-    out('paper EVO   :', paper_export.EVO, os.path.isdir(paper_export.EVO))
-    out('paper QUANT :', paper_export.QUANT, os.path.isdir(paper_export.QUANT))
-
     if os.environ.get('DISPLAY') or sys.platform.startswith('win'):
         import customtkinter as ctk
         import alphanode_gui
@@ -207,15 +202,6 @@ def main():
         cli.main(argv[1:])                               # remaining argv -> CLI subcommands
     elif role == 'selfcheck':
         _selfcheck()
-    elif role == 'runpy':
-        if len(argv) < 2:
-            print('runpy: no file given', file=sys.stderr)
-            sys.exit(2)
-        import runpy
-        target = os.path.abspath(argv[1])
-        sys.argv = [target] + list(argv[2:])             # as if the script itself was launched
-        os.chdir(os.path.dirname(target))
-        runpy.run_path(target, run_name='__main__')
     else:
         import alphanode_gui
         alphanode_gui.main()
