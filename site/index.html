@@ -37,8 +37,23 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset
 /* ---------- nav ---------- */
 nav{border-bottom:1px solid var(--line)}
 .nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
-.logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--acc)}
+.logo{display:flex;align-items:center;gap:11px;font-weight:650;font-size:19px;letter-spacing:-.01em;text-decoration:none}
+/* a status LED: the node reporting in with a green double-tick every few seconds, then back to
+   rest. The expanding halo is what makes it read at this size — the fill stays on the page's own
+   green rather than inventing a brighter one. The global reduced-motion rule parks it at rest. */
+.dot{width:10px;height:10px;flex:none;border-radius:50%;background:var(--acc);
+  animation:heartbeat 4.4s ease-in-out infinite}
+/* two shadows on every frame so they interpolate pairwise: a steady bloom that holds for the
+   whole green phase, and a ring that expands twice. The ring alone is nearly invisible — its
+   alpha falls as fast as it grows. */
+@keyframes heartbeat{
+  0%,70%   {background:var(--acc);   box-shadow:0 0 0 0 rgba(30,127,78,0),   0 0 0 0 rgba(30,127,78,0)}
+  73%      {background:var(--green); box-shadow:0 0 0 0 rgba(30,127,78,.32), 0 0 7px 1px rgba(30,127,78,.42)}
+  79%      {background:var(--green); box-shadow:0 0 0 6px rgba(30,127,78,0), 0 0 7px 1px rgba(30,127,78,.42)}
+  82%      {background:var(--green); box-shadow:0 0 0 0 rgba(30,127,78,.32), 0 0 7px 1px rgba(30,127,78,.42)}
+  88%      {background:var(--green); box-shadow:0 0 0 6px rgba(30,127,78,0), 0 0 7px 1px rgba(30,127,78,.42)}
+  92%,100% {background:var(--acc);   box-shadow:0 0 0 0 rgba(30,127,78,0),   0 0 0 0 rgba(30,127,78,0)}
+}
 .nav-links{display:flex;gap:22px;margin-left:auto}
 .nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
 .nav-links a:hover{color:var(--ink)}
@@ -175,10 +190,14 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   .truths{grid-template-columns:1fr}
   section{padding:72px 0}
 }
-@media (max-width: 560px){
-  .steps,.feats{grid-template-columns:1fr}
+/* below this the five links no longer fit on one line and each starts wrapping inside itself,
+   which looks broken. The page is a single scroll and the CTA stays, so drop the links instead. */
+@media (max-width: 820px){
   .nav-links{display:none}
   .nav-in > .btn{margin-left:auto}
+}
+@media (max-width: 560px){
+  .steps,.feats{grid-template-columns:1fr}
   .term .f{max-width:150px}
 }
 </style>
