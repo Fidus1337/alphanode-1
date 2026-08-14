@@ -44,6 +44,14 @@ CREATE TABLE IF NOT EXISTS reveals (          -- audit: which account/device ope
     formula_id TEXT NOT NULL,
     at         TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS access_requests (  -- early-access waitlist from the site's form
+    id         INTEGER PRIMARY KEY,
+    email      TEXT UNIQUE NOT NULL,          -- one row per address: a re-submit updates it
+    note       TEXT,
+    status     TEXT NOT NULL DEFAULT 'new',   -- new | invited
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS ix_devices_user ON devices(user_id);
 """
 
@@ -229,3 +237,42 @@ def log_reveal(conn, user_id, device_id, formula_id):
     conn.execute('INSERT INTO reveals(user_id, device_id, formula_id, at) VALUES (?,?,?,?)',
                  (user_id, device_id, formula_id, iso_now()))
     conn.commit()
+
+
+# ---- early-access waitlist (the site's request form) ----
+def add_access_request(conn, email, note=None):
+    """Record an early-access request. One row per address — a re-submit refreshes the note and
+    the timestamp instead of piling up duplicates, so the list stays a list of PEOPLE. Returns
+    True when this is a first-time request (worth a notification), False for a repeat."""
+    email = (email or '').strip()
+    if len(email) < 3 or '@' not in email or len(email) > 320:
+        raise ValueError('invalid email')
+    note = (note or '').strip()[:2000] or None
+    now = iso_now()
+    # asked BEFORE the write: an upsert reports rowcount 1 either way, so it cannot tell a new
+    # person from someone submitting twice — and that distinction is what gates the notification
+    first_time = conn.execute('SELECT 1 FROM access_requests WHERE email = ?',
+                              (email,)).fetchone() is None
+    conn.execute(
+        'INSERT INTO access_requests(email, note, created_at, updated_at) VALUES (?,?,?,?) '
+        'ON CONFLICT(email) DO UPDATE SET note = COALESCE(excluded.note, access_requests.note), '
+        '                                 updated_at = excluded.updated_at',
+        (email, note, now, now))
+    conn.commit()
+    return first_time
+
+
+def list_access_requests(conn, status=None):
+    if status:
+        return conn.execute('SELECT * FROM access_requests WHERE status = ? '
+                            'ORDER BY created_at', (status,)).fetchall()
+    return conn.execute('SELECT * FROM access_requests ORDER BY created_at').fetchall()
+
+
+def mark_access_request(conn, email, status):
+    if status not in ('new', 'invited'):
+        raise ValueError("status must be 'new' or 'invited'")
+    cur = conn.execute('UPDATE access_requests SET status = ?, updated_at = ? WHERE email = ?',
+                       (status, iso_now(), (email or '').strip()))
+    conn.commit()
+    return cur.rowcount > 0

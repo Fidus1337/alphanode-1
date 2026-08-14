@@ -17,7 +17,7 @@ the whole JSON body before any auth check runs, so the proxy is the real pre-aut
 import os
 import sys
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -64,6 +64,40 @@ class RevealBatchIn(BaseModel):
     token: str
     device_id: str
     formulas: list[str]
+
+
+class AccessRequestIn(BaseModel):
+    email: str
+    note: str | None = None
+    website: str | None = None                           # honeypot: humans leave this empty
+
+
+def _notify(subject, body):
+    """Best-effort email to the operator. Configured entirely by env — unset means the request
+    is still stored (and listed by `admin requests`), just not announced. Never raises: a dead
+    SMTP server must not turn a visitor's request into an error page."""
+    host = os.environ.get('ALPHAHUB_SMTP_HOST')
+    to = os.environ.get('ALPHAHUB_NOTIFY_TO')
+    if not host or not to:
+        return
+    import smtplib
+    from email.message import EmailMessage
+    msg = EmailMessage()
+    msg['From'] = os.environ.get('ALPHAHUB_SMTP_FROM', to)
+    msg['To'] = to
+    msg['Subject'] = subject
+    msg.set_content(body)
+    port = int(os.environ.get('ALPHAHUB_SMTP_PORT', '587'))
+    user = os.environ.get('ALPHAHUB_SMTP_USER')
+    pwd = os.environ.get('ALPHAHUB_SMTP_PASS')
+    try:
+        with smtplib.SMTP(host, port, timeout=10) as smtp:
+            smtp.starttls()
+            if user:
+                smtp.login(user, pwd or '')
+            smtp.send_message(msg)
+    except Exception as e:                               # noqa: BLE001 — log and move on
+        print(f'notify failed: {e}', flush=True)
 
 
 def create_app(db_path, key_path, webhook_secret, site_origins=()):
@@ -137,6 +171,25 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
         return {'ok': True, 'token': token, 'plan': 'demo'}
+
+    @app.post('/request-access')
+    def request_access(body: AccessRequestIn, bg: BackgroundTasks, conn=Depends(get_db)):
+        """The site's early-access form. Stores the request and (if SMTP is configured) mails it
+        to the operator. The DB is the source of truth on purpose — mail gets spam-filtered and
+        lost, a row does not, and `admin requests` can always list the waitlist.
+
+        Answers 200 for a repeat submit as well: whether an address is already on the list is not
+        something a public form should reveal, and the visitor did nothing wrong either way."""
+        if body.website:                                  # honeypot filled -> a bot. Look like
+            return {'ok': True}                           # success so it stops retrying.
+        try:
+            first_time = hubdb.add_access_request(conn, body.email, body.note)
+        except ValueError:
+            raise HTTPException(status_code=422, detail='enter a valid email address')
+        if first_time:
+            bg.add_task(_notify, f'AlphaNode early access: {body.email.strip()}',
+                        f'{body.email.strip()}\n\n{(body.note or "").strip() or "(no note)"}\n')
+        return {'ok': True}
 
     @app.post('/webhook/payment')
     def webhook(body: PaymentIn, conn=Depends(get_db)):

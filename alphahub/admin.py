@@ -7,6 +7,8 @@ apply_payment (exactly what the payment webhook does) so grants/cancels are cons
     python -m alphahub.admin unseat <email> <device_id>         # free a seat
     python -m alphahub.admin rotate <email>                     # new token (revokes the old)
     python -m alphahub.admin list                               # all accounts
+    python -m alphahub.admin requests [--new]                   # early-access waitlist
+    python -m alphahub.admin invite <email> <plan> [--days N]   # grant + mark the request invited
 
 Config: ALPHAHUB_DB (default alphahub/hub.db).
 """
@@ -83,6 +85,28 @@ def cmd_rotate(a):
     print('new token:', hubdb.rotate_token(conn, row['id']))
 
 
+def cmd_requests(a):
+    conn = _db()
+    rows = hubdb.list_access_requests(conn, 'new' if a.new else None)
+    if not rows:
+        print('no requests')
+        return
+    for r in rows:
+        print(f'{r["created_at"]}  {r["status"]:<8} {r["email"]}')
+        if r['note']:
+            print(f'      {r["note"][:300]}')
+    print(f'\n{len(rows)} request(s)')
+
+
+def cmd_invite(a):
+    """Grant the plan and take the address off the waitlist in one step — the token it prints
+    is what you paste into the reply."""
+    cmd_grant(a)
+    conn = _db()
+    if hubdb.mark_access_request(conn, a.email, 'invited'):
+        print('waitlist: marked invited')
+
+
 def cmd_list(_a):
     conn = _db()
     for u in conn.execute('SELECT id, email, token FROM users ORDER BY id'):
@@ -102,6 +126,11 @@ def main(argv=None):
     u.set_defaults(fn=cmd_unseat)
     r = sub.add_parser('rotate'); r.add_argument('email'); r.set_defaults(fn=cmd_rotate)
     ls = sub.add_parser('list'); ls.set_defaults(fn=cmd_list)
+    rq = sub.add_parser('requests'); rq.add_argument('--new', action='store_true',
+                                                     help='only the ones not invited yet')
+    rq.set_defaults(fn=cmd_requests)
+    iv = sub.add_parser('invite'); iv.add_argument('email'); iv.add_argument('plan')
+    iv.add_argument('--days', type=int, default=0); iv.set_defaults(fn=cmd_invite)
     args = ap.parse_args(argv)
     args.fn(args)
 
