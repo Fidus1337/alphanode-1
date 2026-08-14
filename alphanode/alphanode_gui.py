@@ -232,13 +232,6 @@ def _mix(c1, c2, t):
     return '#%02x%02x%02x' % tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
-def _rrect(cv, x0, y0, x1, y1, r, **kw):
-    """A rounded rectangle on a tk.Canvas (smoothed polygon — Tk has no native one)."""
-    pts = (x0 + r, y0, x1 - r, y0, x1, y0, x1, y0 + r, x1, y1 - r, x1, y1,
-           x1 - r, y1, x0 + r, y1, x0, y1, x0, y1 - r, x0, y0 + r, x0, y0)
-    return cv.create_polygon(pts, smooth=True, **kw)
-
-
 class App:
     def __init__(self, root):
         self.root = root
@@ -752,12 +745,7 @@ class App:
         top.pack(fill='x', padx=20, pady=(14, 11))
         brand = self._box(top, bg=BG)
         brand.pack(side='left')
-        ms = int(30 * self.SCALE)                        # logo mark: rounded square with an alpha
-        mark = tk.Canvas(brand, width=ms, height=ms, bg=BG, highlightthickness=0)
-        _rrect(mark, 1, 1, ms - 1, ms - 1, int(9 * self.SCALE), fill=ACC, outline='')
-        mark.create_text(ms / 2, ms / 2 - 1 * self.SCALE, text='α', fill='#ffffff',
-                         font=self._font(self.UI, 17, 'bold'))
-        mark.pack(side='left', padx=(0, 10), pady=(2, 0))
+        # wordmark only — no logo glyph in front of it
         self._lbl(brand, text='Alpha', font=(self.UI, 24, 'bold'), text_color=TXT, bg=BG).pack(side='left')
         self._lbl(brand, text='Node', font=(self.UI, 24, 'bold'), text_color=ACC, bg=BG).pack(side='left')
         self._build_theme_pick(top)
