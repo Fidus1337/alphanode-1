@@ -17,7 +17,7 @@
   --acc:#7d8cff; --acctext:#5261d6; --orange:#f99c00;
   --green:#1e7f4e; --red:#c14b36; --violet:#6d4aa8;
   --dark:#2e2b27; --darkline:#3f3b36; --darkline2:#57524b;
-  --darkink:#f6f4f0; --darkmut:#a5a09a; --darkacc:#bfd1ff; --darkgreen:#5abd8c; --darkred:#e57a63;
+  --darkink:#f6f4f0; --darkmut:#a5a09a; --darkacc:#bfd1ff; --darkgreen:#5abd8c; --darkred:#e57a63; --darkviolet:#c6a6f2;
 }
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
@@ -143,44 +143,30 @@ h1 .quiet{color:var(--mut);font-weight:500}
 .step h3{margin:10px 0 8px;font-size:16px;letter-spacing:-.01em}
 .step p{margin:0;font-size:14px;color:var(--mut)}
 
-/* ---------- how the search works: one formula tree, mutating and breeding ---------- */
-.gp{margin-top:40px;background:var(--card);border:1px solid var(--line);border-radius:3px;padding:22px 24px}
+/* ---------- how the search works: a formula, alive on graphite ---------- */
+.gp{margin-top:40px}
 .gp-head{display:flex;align-items:baseline;gap:12px 20px;flex-wrap:wrap;margin-bottom:12px}
 .gp-head .no{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
   letter-spacing:.1em;text-transform:uppercase;color:var(--acctext)}
 .gp-step{margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
   letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
-/* without the key the colours are decoration; with it they are the grammar of the formula */
-.gp-key{display:flex;flex-wrap:wrap;gap:7px 20px;margin:0 0 4px;padding:0;list-style:none;
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;color:var(--mut)}
-.gp-key li{display:flex;align-items:center;gap:7px}
-.gp-key i{width:10px;height:10px;border-radius:2px;flex:none}
-.gp-key .kd{background:var(--green)}
-.gp-key .kt{background:var(--acctext)}
-.gp-key .kc{background:var(--violet)}
-.gp-key .ko{background:var(--card);border:1px solid var(--ink)}
-/* the same formula in the form the app prints it, so the picture and the text are one thing.
-   nowrap + scroll, never wrap: a second line here would resize the block mid-loop */
-.gp-expr{display:block;margin-top:12px;padding:8px 11px;background:var(--soft);border-radius:3px;
+.gp-stage{background:var(--dark);border:1px solid var(--darkline2);border-radius:4px;
+  overflow:hidden}
+.gp-cv{display:block;width:100%;aspect-ratio:820/370}
+/* the same formula in the form the app prints it: the picture is the feeling, this is the fact.
+   nowrap + scroll, never wrap — a second line here would resize the block mid-loop */
+.gp-expr{display:block;margin-top:12px;padding:9px 12px;background:var(--soft);border-radius:3px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--ink);
   white-space:nowrap;overflow-x:auto}
-/* a tree is wide by nature: on a phone it pans instead of shrinking its labels to nothing */
-.gp-wrap{overflow-x:auto;margin-top:6px}
-.gp-svg{display:block;width:100%;min-width:640px;height:auto;aspect-ratio:760/318}
-.gp-svg text{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
-.gp-n rect{stroke-width:1}
-.gp-n text{fill:#fff}
-.gp-d rect{fill:var(--green);stroke:var(--green)}
-.gp-t rect{fill:var(--acctext);stroke:var(--acctext)}
-.gp-c rect{fill:var(--violet);stroke:var(--violet)}
-.gp-o rect{fill:var(--card);stroke:var(--line)}
-.gp-o text{fill:var(--ink)}
-.gp-n.hot rect{stroke:var(--ink);stroke-width:2}          /* just changed, or just arrived */
-.gp-n.out rect{stroke:var(--red);stroke-width:1.6;stroke-dasharray:3 2.5}   /* on its way out */
-.gp-edge{stroke:var(--line);stroke-width:1.2;fill:none}
-.gp-plabel{fill:var(--mut);font-size:11px;letter-spacing:.09em;text-transform:uppercase}
-.gp-foot{display:flex;flex-wrap:wrap;gap:10px 20px;align-items:center;margin-top:16px;
-  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;color:var(--mut)}
+.gp-foot{display:flex;flex-wrap:wrap;gap:10px 22px;align-items:center;margin-top:14px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:var(--mut)}
+.gp-key{display:flex;flex-wrap:wrap;gap:7px 16px;margin:0;padding:0;list-style:none}
+.gp-key li{display:flex;align-items:center;gap:6px}
+.gp-key i{width:9px;height:9px;border-radius:50%;flex:none}
+.gp-key .kd{background:#3aa06b}
+.gp-key .kt{background:#7d8cff}
+.gp-key .kc{background:#9a6fd8}
+.gp-key .ko{background:transparent;box-shadow:inset 0 0 0 1.5px var(--mut)}
 .gp-fit b{color:var(--ink);font-weight:600}
 .gp-test{margin-left:auto;border:1px solid var(--line);border-radius:3px;padding:5px 10px;
   white-space:nowrap;transition:border-color .3s ease,color .3s ease}
@@ -337,27 +323,22 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
         <span class="no">Inside 01 · Mine</span>
         <span class="gp-step" id="gp-step">step 1 of 5</span>
       </div>
-      <ul class="gp-key">
-        <li><i class="kd"></i>market data</li>
-        <li><i class="kt"></i>time-series op</li>
-        <li><i class="kc"></i>cross-section op</li>
-        <li><i class="ko"></i>combine</li>
-      </ul>
-      <code class="gp-expr" id="gp-expr">add(cs_zscore(z:18(close)), ema:200(close))</code>
-      <div class="gp-wrap">
-        <svg class="gp-svg" id="gp-svg" viewBox="0 0 760 318" role="img"
-             aria-label="A formula, drawn as a tree of coloured nodes, evolving on a loop: a random starting tree, a node mutated from an 18-bar to a 64-bar z-score, a whole branch replaced by 12-bar momentum, a crossover in which a second surviving tree donates a relative-volume branch, and the resulting child scoring +1.94 with the held-out TEST slice finally unsealed at +0.42">
-          <text class="gp-plabel" id="gp-la" text-anchor="middle" x="228" y="18" opacity="0">parent A</text>
-          <text class="gp-plabel" id="gp-lb" text-anchor="middle" x="532" y="18" opacity="0">parent B — same round</text>
-          <g id="gp-edges"></g>
-          <g id="gp-nodes"></g>
-        </svg>
+      <div class="gp-stage">
+        <canvas class="gp-cv" id="gp-cv" role="img"
+                aria-label="A formula drawn as a living tree of glowing nodes, evolving on a loop: market data at the top flows down through operators into a single signal at the root. A random starting tree, a node mutated from an 18-bar to a 64-bar z-score, a branch replaced by 12-bar momentum, a crossover where a second tree donates a relative-volume branch, and the child that results — scoring +1.94, with the held-out TEST slice unsealed at the end at +0.42"></canvas>
       </div>
+      <code class="gp-expr" id="gp-expr">add(cs_zscore(z:18(close)), ema:200(close))</code>
       <div class="gp-foot">
+        <ul class="gp-key">
+          <li><i class="kd"></i>data</li>
+          <li><i class="kt"></i>time-series</li>
+          <li><i class="kc"></i>cross-section</li>
+          <li><i class="ko"></i>combine</li>
+        </ul>
         <span class="gp-fit">fitness min(train,val) <b id="gp-fit">+0.62</b></span>
         <span class="gp-test" id="gp-test">TEST — held out · <span id="gp-testv">sealed</span></span>
       </div>
-      <p class="gp-cap" id="gp-cap">A random tree to start.</p>
+      <p class="gp-cap" id="gp-cap">One tree out of the first random batch.</p>
     </div>
   </div>
 </section>
@@ -525,37 +506,38 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
 </footer>
 
 <script>
-// "Inside 01 · Mine": the genetic search on one formula, drawn the way the app's formula
-// passport draws it — a tree of typed nodes. Five steps on a loop: a random tree, a point
-// mutation, a branch replaced, a crossover with another survivor, and the child that comes out.
-// Node ids are stable across steps on purpose. A node that survives a mutation is the SAME node,
-// so it stays put on screen while its neighbours change, and a branch that is traded between two
-// parents visibly flies from one tree into the other.
+// "Inside 01 · Mine": the search, drawn as the formula itself rather than as a flowchart of it.
+// Market data sits at the top and flows down through the operators into a single signal at the
+// root. Five steps on a loop — a random tree, a point mutation, a branch replaced, a crossover
+// with another survivor, and the child.
+//
+// Node ids are stable across steps, and that is the whole trick: a node that survives a mutation
+// is the same object, so it holds still and keeps its drift while its neighbours change, and at
+// the crossover the donated branch visibly travels out of one parent and into the other. The
+// picture carries the feeling; the formula printed underneath carries the precision.
 (function () {
   var root = document.getElementById('gp');
   if (!root) return;
-  var svg = document.getElementById('gp-svg'), gE = document.getElementById('gp-edges'),
-      gN = document.getElementById('gp-nodes'), stepEl = document.getElementById('gp-step'),
-      capEl = document.getElementById('gp-cap'), fitEl = document.getElementById('gp-fit'),
-      testEl = document.getElementById('gp-test'), testV = document.getElementById('gp-testv'),
-      laEl = document.getElementById('gp-la'), lbEl = document.getElementById('gp-lb'),
-      exprEl = document.getElementById('gp-expr');
-  if (!svg || !gE || !gN || !stepEl || !capEl || !fitEl || !testEl || !testV || !exprEl) return;
+  var cv = document.getElementById('gp-cv');
+  var stepEl = document.getElementById('gp-step'), capEl = document.getElementById('gp-cap'),
+      fitEl = document.getElementById('gp-fit'), testEl = document.getElementById('gp-test'),
+      testV = document.getElementById('gp-testv'), exprEl = document.getElementById('gp-expr');
+  if (!cv || !cv.getContext || !stepEl || !capEl || !fitEl || !testEl || !testV || !exprEl) return;
+  var g = cv.getContext('2d');
 
-  var NS = 'http://www.w3.org/2000/svg';
-  var VBW = 760, VBH = 318, LEAF = 104, LEVEL = 58, TOP = 42, NH = 23;
+  var W = 820, H = 370, LEAF = 190, LEVEL = 70;
+  var COL = {d: [90, 189, 140], t: [159, 180, 255], c: [198, 166, 242], o: [239, 233, 223]};
+  var RAD = {d: 6.2, t: 7, c: 7, o: 7.8};
 
   function n(id, k, l, kids) { return {id: id, k: k, l: l, c: kids || []}; }
-
-  // the branches this lineage is built from
   var EMA = n('e', 't', 'ema 200', [n('f', 'd', 'close')]),
       MOM = n('g', 'c', 'cs_rank', [n('h', 't', 'delta 12', [n('i', 'd', 'close')])]),
       RVOL = n('q', 't', 'rank 56', [
         n('r', 'o', 'div', [n('s', 'd', 'volume'), n('t', 't', 'mean 56', [n('u', 'd', 'volume')])])
       ]);
-  function tree(zLabel, right) {
+  function tree(z, right) {
     return n('a', 'o', 'add', [
-      n('b', 'c', 'cs_zscore', [n('c', 't', zLabel, [n('d', 'd', 'close')])]), right
+      n('b', 'c', 'cs_zscore', [n('c', 't', z, [n('d', 'd', 'close')])]), right
     ]);
   }
 
@@ -571,123 +553,226 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
         + 'its place, 12-bar momentum ranked across the market.'},
     {fit: '+1.78', pair: true, trees: [tree('z 64', MOM), n('p', 'c', 'cs_zscore', [RVOL])],
      hot: ['q', 'r', 's', 't', 'u'], out: ['b', 'c', 'd'],
-     cap: 'Crossover. Two survivors of the same round trade a branch: this tree gives up its '
-        + 'z-score of price (dashed) and takes the other one’s idea — volume measured against '
-        + 'its own 56-bar average.'},
-    {fit: '+1.94', trees: [n('a', 'o', 'add', [RVOL, MOM])], hot: ['q', 'r', 's', 't', 'u'], open: true,
+     cap: 'Crossover. Two survivors of the same round trade a branch: this tree lets go of its '
+        + 'z-score of price and takes the other one’s idea — volume measured against its own '
+        + '56-bar average.'},
+    {fit: '+1.94', trees: [n('a', 'o', 'add', [RVOL, MOM])], hot: ['q', 'r', 's', 't', 'u'],
+     open: true,
      cap: 'The child: momentum and relative volume in one formula, and the best of the run. Only '
         + 'now is TEST unsealed — +0.42 on data the search never touched, and could not tune.'}
   ];
 
-  // ---- layout: leaves get consecutive slots, a parent sits over the middle of its children ----
+  // ---- layout: leaves take consecutive slots, a parent sits under the middle of its children ----
   function walk(node, depth, ctx) {
     node._d = depth;
     if (!node.c.length) { node._x = ctx.leaf++; return; }
     for (var i = 0; i < node.c.length; i++) walk(node.c[i], depth + 1, ctx);
     node._x = (node.c[0]._x + node.c[node.c.length - 1]._x) / 2;
   }
-  function flat(node, ox, top, out, parent) {
-    out.push({id: node.id, k: node.k, l: node.l, p: parent,
-              x: ox + node._x * LEAF, y: top + node._d * LEVEL});
-    for (var i = 0; i < node.c.length; i++) flat(node.c[i], ox, top, out, node.id);
-    return out;
-  }
   function deepest(node) {
     var m = node._d;
     for (var i = 0; i < node.c.length; i++) m = Math.max(m, deepest(node.c[i]));
     return m;
   }
+  function flat(node, ox, rootY, out, parent) {
+    out.push({id: node.id, k: node.k, l: node.l, p: parent, depth: node._d,
+              x: ox + node._x * LEAF, y: rootY - node._d * LEVEL});
+    for (var i = 0; i < node.c.length; i++) flat(node.c[i], ox, rootY, out, node.id);
+    return out;
+  }
   function layout(step) {
-    var out = [], widths = [], maxD = 0, i, ctx;
-    for (i = 0; i < step.trees.length; i++) {            // measure every tree before placing any
-      ctx = {leaf: 0};
-      walk(step.trees[i], 0, ctx);
-      widths.push((ctx.leaf - 1) * LEAF);
+    var out = [], widths = [], maxD = 0, i, c;
+    for (i = 0; i < step.trees.length; i++) {
+      c = {leaf: 0};
+      walk(step.trees[i], 0, c);
+      widths.push((c.leaf - 1) * LEAF);
       maxD = Math.max(maxD, deepest(step.trees[i]));
     }
-    // centre the tree in the canvas, and in the crossover step give both parents the same top so
-    // their roots sit on one line even though one is deeper
-    var top = Math.max(TOP, Math.round((VBH - maxD * LEVEL) / 2));
+    // the root sits low, the leaves high, and the whole thing is centred in the frame — in the
+    // crossover step both parents share one root line even though one is deeper
+    var rootY = H / 2 + (maxD * LEVEL) / 2;
     if (step.pair) {
-      var offs = [176, 480];
-      for (i = 0; i < step.trees.length; i++) flat(step.trees[i], offs[i], top, out, null);
+      var offs = [145, 480];
+      for (i = 0; i < step.trees.length; i++) flat(step.trees[i], offs[i], rootY, out, null);
+      out.pair = [offs[0] + widths[0] / 2, offs[1] + widths[1] / 2, rootY - maxD * LEVEL];
       return out;
     }
-    return flat(step.trees[0], (VBW - widths[0]) / 2, top, out, null);
+    return flat(step.trees[0], (W - widths[0]) / 2, rootY, out, null);
   }
 
-  // ---- the live scene: one entry per node id, tweened toward its target every frame ----
-  var live = {};
-  function el(tag, cls) {
-    var e = document.createElementNS(NS, tag);
-    if (cls) e.setAttribute('class', cls);
-    return e;
-  }
-  function make(it) {
-    var g = el('g', 'gp-n gp-' + it.k), w = Math.round(20 + it.l.length * 6.9);
-    var r = el('rect');
-    r.setAttribute('x', -w / 2); r.setAttribute('y', -NH / 2);
-    r.setAttribute('width', w); r.setAttribute('height', NH);
-    r.setAttribute('rx', 4);
-    var t = el('text');
-    t.setAttribute('text-anchor', 'middle');
-    t.setAttribute('y', 4);
-    g.appendChild(r); g.appendChild(t);
-    gN.appendChild(g);
-    return g;
-  }
-
-  function apply(step) {
-    var items = layout(step), hot = step.hot || [], out = step.out || [], seen = {}, i, it, s;
-    for (i = 0; i < items.length; i++) {
-      it = items[i];
-      seen[it.id] = 1;
-      s = live[it.id];
-      if (!s) {                                          // born at its parent, so it grows outward
-        var par = live[it.p];
-        s = live[it.id] = {x: par ? par.x : it.x, y: par ? par.y : it.y, o: 0};
-        s.el = make(it);
-        s.edge = it.p ? gE.appendChild(el('line', 'gp-edge')) : null;
-      }
-      s.el.setAttribute('class', 'gp-n gp-' + it.k
-        + (hot.indexOf(it.id) >= 0 ? ' hot' : '') + (out.indexOf(it.id) >= 0 ? ' out' : ''));
-      s.el.lastChild.textContent = it.l;
-      s.tx = it.x; s.ty = it.y; s.to = 1; s.pid = it.p;
-    }
-    for (var id in live) if (!seen[id]) live[id].to = 0;
-  }
-
-  function frame(dt) {
-    var k = dt < 0 ? 1 : 1 - Math.exp(-dt / 130);        // dt < 0 means "snap into place"
-    for (var id in live) {
-      var s = live[id];
-      s.x += (s.tx - s.x) * k; s.y += (s.ty - s.y) * k; s.o += (s.to - s.o) * k;
-      s.el.setAttribute('transform', 'translate(' + s.x.toFixed(1) + ',' + s.y.toFixed(1) + ')');
-      s.el.setAttribute('opacity', s.o.toFixed(3));
-      if (s.edge) {
-        var p = live[s.pid];
-        if (p) {
-          s.edge.setAttribute('x1', p.x.toFixed(1));
-          s.edge.setAttribute('y1', (p.y + NH / 2).toFixed(1));
-          s.edge.setAttribute('x2', s.x.toFixed(1));
-          s.edge.setAttribute('y2', (s.y - NH / 2).toFixed(1));
-          s.edge.setAttribute('opacity', Math.min(s.o, p.o).toFixed(3));
-        }
-      }
-      if (s.to === 0 && s.o < .02) {
-        s.el.parentNode.removeChild(s.el);
-        if (s.edge) s.edge.parentNode.removeChild(s.edge);
-        delete live[id];
-      }
-    }
-  }
-
-  // printed from the same tree the picture is drawn from, so the two can never disagree
   function expr(node) {
     if (!node.c.length) return node.l;
     var kids = [];
     for (var i = 0; i < node.c.length; i++) kids.push(expr(node.c[i]));
     return node.l.replace(' ', ':') + '(' + kids.join(', ') + ')';
+  }
+
+  // ---- the live scene ----
+  var live = {}, edges = [], pulses = [], pairInfo = null, T = 0, S = 1;
+  var seed = 1;
+  function rnd() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+
+  function apply(step) {
+    var items = layout(step), hot = step.hot || [], gone = step.out || [], seen = {}, i, it, s;
+    pairInfo = items.pair || null;
+    for (i = 0; i < items.length; i++) {
+      it = items[i];
+      seen[it.id] = 1;
+      s = live[it.id];
+      if (!s) {
+        var par = live[it.p];
+        s = live[it.id] = {x: par ? par.x : it.x, y: par ? par.y : it.y, a: 0, rr: 0,
+                           ph: rnd() * 6.283, sp: .7 + rnd() * .6};
+      }
+      s.k = it.k; s.l = it.l; s.pid = it.p; s.depth = it.depth;
+      s.tx = it.x; s.ty = it.y; s.ta = 1;
+      s.tr = RAD[it.k] + (it.depth === 0 ? 2 : 0);
+      s.hot = hot.indexOf(it.id) >= 0;
+      s.dim = gone.indexOf(it.id) >= 0;
+      if (s.hot) pulses.push({x: it.x, y: it.y, t: 0, c: COL[it.k]});
+    }
+    for (var id in live) if (!seen[id]) { live[id].ta = 0; live[id].hot = false; }
+
+    edges = [];
+    for (i = 0; i < items.length; i++) {
+      if (!items[i].p) continue;
+      edges.push({a: items[i].p, b: items[i].id, u: rnd(), sp: .26 + rnd() * .16});
+    }
+  }
+
+  // ---- drawing ----
+  function rgba(c, a) { return 'rgba(' + c[0] + ',' + c[1] + ',' + c[2] + ',' + a.toFixed(3) + ')'; }
+  function px(s) { return s.x + Math.sin(T * .55 * s.sp + s.ph) * 3.4; }
+  function py(s) { return s.y + Math.cos(T * .42 * s.sp + s.ph * 1.7) * 2.8; }
+  function bez(u, p0, p1, p2, p3) {
+    var m = 1 - u;
+    return m * m * m * p0 + 3 * m * m * u * p1 + 3 * m * u * u * p2 + u * u * u * p3;
+  }
+
+  function draw() {
+    g.clearRect(0, 0, W, H);
+    var id, s, i, e, A, B, ax, ay, bx, by, c1y, c2y, alpha;
+
+    // edges: child (high) curving down into parent (low), tinted from one to the other
+    for (i = 0; i < edges.length; i++) {
+      e = edges[i];
+      A = live[e.a]; B = live[e.b];
+      if (!A || !B) continue;
+      alpha = Math.min(A.a, B.a);
+      if (alpha < .02) continue;
+      ax = px(A); ay = py(A); bx = px(B); by = py(B);
+      c1y = by + (ay - by) * .5; c2y = ay - (ay - by) * .5;
+      var grad = g.createLinearGradient(bx, by, ax, ay);
+      grad.addColorStop(0, rgba(COL[B.k], .5 * alpha * (B.dim ? .35 : 1)));
+      grad.addColorStop(1, rgba(COL[A.k], .16 * alpha));
+      g.strokeStyle = grad;
+      g.lineWidth = 1.35;
+      g.beginPath();
+      g.moveTo(bx, by);
+      g.bezierCurveTo(bx, c1y, ax, c2y, ax, ay);
+      g.stroke();
+
+      // one mote of data per edge, sliding down into the signal — three fading dots make a tail
+      for (var k = 0; k < 3; k++) {
+        var u = e.u - k * .045;
+        if (u < 0 || u > 1) continue;
+        var mx = bez(u, bx, bx, ax, ax), my = bez(u, by, c1y, c2y, ay);
+        g.fillStyle = rgba(COL[B.k], (.85 - k * .28) * alpha * (B.dim ? .3 : 1));
+        g.beginPath();
+        g.arc(mx, my, 1.7 - k * .35, 0, 6.283);
+        g.fill();
+      }
+    }
+
+    // nodes: a wide soft bloom, then a small hard core
+    for (id in live) {
+      s = live[id];
+      if (s.a < .02) continue;
+      var x = px(s), y = py(s), r = s.rr, col = COL[s.k], a = s.a * (s.dim ? .38 : 1);
+      var bloom = g.createRadialGradient(x, y, 0, x, y, r * 4.6);
+      bloom.addColorStop(0, rgba(col, .34 * a));
+      bloom.addColorStop(.42, rgba(col, .1 * a));
+      bloom.addColorStop(1, rgba(col, 0));
+      g.fillStyle = bloom;
+      g.beginPath();
+      g.arc(x, y, r * 4.6, 0, 6.283);
+      g.fill();
+      if (s.k === 'o') {                                 // a junction, not a source: ring only
+        g.strokeStyle = rgba(col, .8 * a);
+        g.lineWidth = 1.5;
+        g.beginPath();
+        g.arc(x, y, r, 0, 6.283);
+        g.stroke();
+      } else {
+        g.fillStyle = rgba(col, .95 * a);
+        g.beginPath();
+        g.arc(x, y, r, 0, 6.283);
+        g.fill();
+      }
+      if (s.hot) {                                       // just changed, or just arrived
+        g.strokeStyle = rgba([255, 255, 255], .55 * a);
+        g.lineWidth = 1;
+        g.beginPath();
+        g.arc(x, y, r + 4.5, 0, 6.283);
+        g.stroke();
+      }
+    }
+
+    // labels only where they earn their place: the data going in, and whatever just changed.
+    // Below ~0.62 scale they would be unreadable anyway, and the formula sits under the frame.
+    if (S > .62) {
+      g.font = '10.5px ui-monospace, SFMono-Regular, Menlo, monospace';
+      for (id in live) {
+        s = live[id];
+        if (s.a < .25 || !(s.k === 'd' || s.hot)) continue;
+        g.fillStyle = rgba([246, 244, 240], (s.k === 'd' ? .5 : .78) * s.a * (s.dim ? .4 : 1));
+        if (s.k === 'd') {
+          g.textAlign = 'center';
+          g.fillText(s.l, px(s), py(s) - s.rr - 8);
+        } else {
+          g.textAlign = 'left';
+          g.fillText(s.l, px(s) + s.rr + 9, py(s) + 3.5);
+        }
+      }
+      if (pairInfo) {
+        g.textAlign = 'center';
+        g.fillStyle = rgba([165, 160, 154], .85);
+        g.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+        g.fillText('PARENT  A', pairInfo[0], pairInfo[2] - 34);
+        g.fillText('PARENT  B  ·  SAME  ROUND', pairInfo[1], pairInfo[2] - 34);
+      }
+      g.textAlign = 'left';
+    }
+
+    for (i = 0; i < pulses.length; i++) {
+      var p = pulses[i];
+      g.strokeStyle = rgba(p.c, (1 - p.t) * .45);
+      g.lineWidth = 1.6 * (1 - p.t) + .3;
+      g.beginPath();
+      g.arc(p.x, p.y, 7 + p.t * 40, 0, 6.283);
+      g.stroke();
+    }
+  }
+
+  function stepScene(dt) {
+    var k = dt < 0 ? 1 : 1 - Math.exp(-dt / 210), id, i;
+    if (dt > 0) T += dt / 1000;
+    for (id in live) {
+      var s = live[id];
+      s.x += (s.tx - s.x) * k;
+      s.y += (s.ty - s.y) * k;
+      s.a += (s.ta - s.a) * k;
+      s.rr += ((s.ta ? s.tr : 0) - s.rr) * k;
+      if (s.ta === 0 && s.a < .02) delete live[id];
+    }
+    for (i = 0; i < edges.length; i++) {
+      edges[i].u += (dt > 0 ? dt : 0) / 1000 * edges[i].sp;
+      if (edges[i].u > 1.14) edges[i].u -= 1.14;
+    }
+    for (i = pulses.length - 1; i >= 0; i--) {
+      pulses[i].t += (dt > 0 ? dt : 900) / 1100;
+      if (pulses[i].t >= 1) pulses.splice(i, 1);
+    }
   }
 
   function show(i) {
@@ -698,12 +783,20 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
     capEl.textContent = st.cap;
     testEl.className = 'gp-test' + (st.open ? ' open' : '');
     testV.textContent = st.open ? '+0.42 · read-only' : 'sealed';
-    if (laEl) laEl.setAttribute('opacity', st.pair ? '1' : '0');
-    if (lbEl) lbEl.setAttribute('opacity', st.pair ? '1' : '0');
     apply(st);
   }
 
-  // The caption is the tallest thing that changes; reserve its worst case rather than letting the
+  function resize() {
+    var r = cv.getBoundingClientRect();
+    if (!r.width) return;
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    S = r.width / W;
+    cv.width = Math.round(r.width * dpr);
+    cv.height = Math.round(r.height * dpr);
+    g.setTransform(dpr * S, 0, 0, dpr * S, 0, 0);        // draw in logical units, always
+  }
+
+  // The caption is the tallest thing that changes; reserve its worst case instead of letting the
   // section shuffle every few seconds.
   function lockCap() {
     var keep = capEl.textContent, max = 0;
@@ -715,21 +808,25 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
     capEl.textContent = keep;
     capEl.style.minHeight = Math.ceil(max) + 'px';
   }
+
+  resize();
   lockCap();
   var rt;
   window.addEventListener('resize', function () {
     clearTimeout(rt);
-    rt = setTimeout(lockCap, 150);
+    rt = setTimeout(function () { resize(); lockCap(); draw(); }, 150);
   });
 
   if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
     show(STEPS.length - 1);                              // the finished child, held still
-    frame(-1);
+    pulses.length = 0;
+    stepScene(-1);
+    draw();
     return;
   }
 
   show(0);
-  frame(-1);
+  stepScene(-1);
   var at = 0, dwell = 0, last = 0, hover = false, onscreen = true;
   root.addEventListener('mouseenter', function () { hover = true; });
   root.addEventListener('mouseleave', function () { hover = false; });
@@ -742,9 +839,10 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
     var dt = last ? Math.min(90, ts - last) : 16;
     last = ts;
     if (hover || !onscreen || document.hidden) return;   // reading it, or not looking at it
-    frame(dt);
+    stepScene(dt);
+    draw();
     dwell += dt;
-    if (dwell >= 4200) { dwell = 0; show(at = (at + 1) % STEPS.length); }
+    if (dwell >= 4600) { dwell = 0; show(at = (at + 1) % STEPS.length); }
   })(0);
 })();
 
