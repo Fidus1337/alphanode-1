@@ -10,6 +10,7 @@ apply_payment (exactly what the payment webhook does) so grants/cancels are cons
     python -m alphahub.admin requests [--new]                   # early-access waitlist
     python -m alphahub.admin invite <email> <plan> [--days N]   # grant + mark the request invited
     python -m alphahub.admin testmail                           # prove the notification mail works
+    python -m alphahub.admin catchup                            # mail every request never announced
 
 Config: ALPHAHUB_DB (default alphahub/hub.db).
 """
@@ -94,12 +95,55 @@ def cmd_requests(a):
         return
     for r in rows:
         who = f'{r["name"]} <{r["email"]}>' if r['name'] else r['email']
-        print(f'{r["created_at"]}  {r["status"]:<8} {who}')
+        # the marker matters: an unannounced request is one you only ever see by running this
+        flag = '' if r['notified_at'] else '  ← never announced'
+        print(f'{r["created_at"]}  {r["status"]:<8} {who}{flag}')
         if r['phone']:
             print(f'      tel: {r["phone"]}')
         if r['note']:
             print(f'      {r["note"][:300]}')
     print(f'\n{len(rows)} request(s)')
+
+
+def _one_request(r):
+    who = f'{r["name"]} <{r["email"]}>' if r['name'] else r['email']
+    out = [f'{r["created_at"]}  {who}']
+    if r['phone']:
+        out.append(f'      tel: {r["phone"]}')
+    if r['note']:
+        out.append(f'      {r["note"]}')
+    out.append(f'      invite: admin invite {r["email"]} demo')
+    return '\n'.join(out)
+
+
+def cmd_catchup(a):
+    """Mail one digest of every request the operator was never told about, then stamp them.
+
+    This is the command that rescues a backlog: requests that arrived while SMTP was unconfigured
+    are not lost, they are simply unannounced, and there is no other way to find that out than
+    remembering to run `requests`. Nothing is stamped unless the send succeeds."""
+    from alphahub.server import mail_config, send_mail
+    conn = _db()
+    rows = hubdb.list_unnotified(conn)
+    if not rows:
+        print('nothing waiting — every request has been announced')
+        return
+    print(f'{len(rows)} request(s) never announced:\n')
+    body = '\n\n'.join(_one_request(r) for r in rows)
+    print(body)
+    if a.dry_run:
+        print('\n(dry run — nothing sent, nothing stamped)')
+        return
+    if mail_config() is None:
+        sys.exit('\nmail is OFF — set ALPHAHUB_SMTP_HOST and ALPHAHUB_NOTIFY_TO '
+                 '(deploy/README.md, "Getting the requests by email")')
+    plural = 's' if len(rows) > 1 else ''
+    ok, detail = send_mail(f'AlphaNode: {len(rows)} early-access request{plural} waiting',
+                           body + '\n')
+    if not ok:
+        sys.exit(f'\nFAILED - {detail}\nnothing stamped; run this again once mail works')
+    hubdb.mark_notified(conn, [r['email'] for r in rows])
+    print(f'\nOK - {detail}; {len(rows)} marked as announced')
 
 
 def cmd_testmail(a):
@@ -159,6 +203,9 @@ def main(argv=None):
     tm = sub.add_parser('testmail')
     tm.add_argument('--reply-to', default=None, help='set Reply-To, as a real request would')
     tm.set_defaults(fn=cmd_testmail)
+    cu = sub.add_parser('catchup')
+    cu.add_argument('--dry-run', action='store_true', help='show the digest without sending it')
+    cu.set_defaults(fn=cmd_catchup)
     args = ap.parse_args(argv)
     args.fn(args)
 

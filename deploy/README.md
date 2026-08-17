@@ -293,10 +293,26 @@ them. The body carries name, email, phone, their note, and the exact `admin invi
 that address.
 
 A repeat submit from the same address does not mail again, and the honeypot field means bots
-never do. If the send fails the visitor still sees success (their row is saved either way) and
+never do. If the send fails the visitor still sees success — their row is saved either way — and
 the reason goes to the log:
 
 ```bash
 docker compose logs hub | grep '\[notify\]'
-docker compose exec hub python -m alphahub.admin requests --new
 ```
+
+### Nothing is lost while mail is off
+
+A request is stamped as *announced* only when a send actually succeeds. Anything that arrived
+before you configured SMTP, or while it was broken, is still sitting there unannounced, and
+`admin requests` marks each one `← never announced`. Clear the backlog with one digest:
+
+```bash
+docker compose exec hub python -m alphahub.admin catchup --dry-run   # see it first
+docker compose exec hub python -m alphahub.admin catchup
+```
+
+It sends one mail listing every unannounced request with the `admin invite` line for each, and
+stamps them only if that mail went out. A failure stamps nothing, so running it again is safe.
+
+**Run `catchup` the first time you switch mail on** — the form has been collecting since the day
+you deployed it, and those people are waiting.

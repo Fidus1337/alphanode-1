@@ -182,6 +182,25 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
         finally:
             conn.close()
 
+    def announce(email, name, phone, note):
+        """Mail one early-access request to the operator and, only if that worked, stamp it as
+        announced. Runs after the response has gone out, on a connection of its own — the
+        request-scoped one is already closed by then."""
+        body = (f'name:  {(name or "").strip() or "(not given)"}\n'
+                f'email: {email}\n'
+                f'phone: {(phone or "").strip() or "(not given)"}\n\n'
+                f'{(note or "").strip() or "(no note)"}\n\n'
+                f'-- invite them with:  admin invite {email} demo\n')
+        ok, _ = send_mail(f'AlphaNode early access: {(name or "").strip() or email}',
+                          body, reply_to=email)
+        if not ok:
+            return                                        # leave it in the backlog for `catchup`
+        c = hubdb.connect(db_path)
+        try:
+            hubdb.mark_notified(c, email)
+        finally:
+            c.close()
+
     def _account(conn, token):
         user = hubdb.get_user_by_token(conn, token)
         if user is None:
@@ -233,20 +252,17 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
         if body.website:                                  # honeypot filled -> a bot. Look like
             return {'ok': True}                           # success so it stops retrying.
         try:
-            first_time = hubdb.add_access_request(conn, body.email, name=body.name,
-                                                  phone=body.phone, note=body.note)
+            hubdb.add_access_request(conn, body.email, name=body.name,
+                                     phone=body.phone, note=body.note)
         except ValueError:
             raise HTTPException(status_code=422, detail='enter a valid email address')
-        if first_time:
-            email = body.email.strip()
-            name = (body.name or '').strip()
-            body_txt = (f'name:  {name or "(not given)"}\n'
-                        f'email: {email}\n'
-                        f'phone: {(body.phone or "").strip() or "(not given)"}\n\n'
-                        f'{(body.note or "").strip() or "(no note)"}\n\n'
-                        f'-- invite them with:  admin invite {email.lower()} demo\n')
-            bg.add_task(send_mail, f'AlphaNode early access: {name or email}',
-                        body_txt, reply_to=email)
+        row = hubdb.get_access_request(conn, body.email)
+        # Announce whenever this request has never been announced — not merely when it is new.
+        # Mail that was off, misconfigured or down when someone applied would otherwise lose them
+        # silently; this way a later submit gets another chance, and `admin catchup` clears the
+        # rest. The stamp is written only once a send actually succeeds.
+        if row is not None and not row['notified_at']:
+            bg.add_task(announce, row['email'], row['name'], row['phone'], row['note'])
         return {'ok': True}
 
     @app.post('/webhook/payment')

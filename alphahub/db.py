@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS access_requests (  -- early-access waitlist from the 
     phone      TEXT,                          -- optional on the form; a way to reach fast buyers
     note       TEXT,
     status     TEXT NOT NULL DEFAULT 'new',   -- new | invited
+    notified_at TEXT,                         -- NULL = the operator was never told about this one
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -103,7 +104,7 @@ def _migrate(conn):
     EXISTS is a no-op once the table exists, so a column added to SCHEMA never reaches a live
     hub without this — and the live hub is the one holding the waitlist."""
     have = {r['name'] for r in conn.execute('PRAGMA table_info(access_requests)')}
-    for col in ('name', 'phone'):
+    for col in ('name', 'phone', 'notified_at'):
         if col not in have:
             conn.execute(f'ALTER TABLE access_requests ADD COLUMN {col} TEXT')
 
@@ -286,6 +287,30 @@ def add_access_request(conn, email, name=None, phone=None, note=None):
         (email, name, phone, note, now, now))
     conn.commit()
     return first_time
+
+
+def get_access_request(conn, email):
+    return conn.execute('SELECT * FROM access_requests WHERE email = ?',
+                        ((email or '').strip().lower(),)).fetchone()
+
+
+def list_unnotified(conn):
+    """Requests the operator has never been told about — because SMTP was not configured yet when
+    they arrived, or because the send failed. This is the backlog `admin catchup` clears."""
+    return conn.execute('SELECT * FROM access_requests WHERE notified_at IS NULL '
+                        'ORDER BY created_at').fetchall()
+
+
+def mark_notified(conn, emails):
+    """Stamp requests as announced. Called only after a send actually succeeded, so a dead SMTP
+    server leaves the backlog intact instead of quietly swallowing it."""
+    if isinstance(emails, str):
+        emails = [emails]
+    now = iso_now()
+    for e in emails:
+        conn.execute('UPDATE access_requests SET notified_at = ? WHERE email = ?',
+                     (now, (e or '').strip().lower()))
+    conn.commit()
 
 
 def list_access_requests(conn, status=None):
