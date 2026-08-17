@@ -4836,10 +4836,11 @@ class App:
             status.configure(text='Error: ' + holder['err'], fg=NEG)
             return
         try:
-            status.destroy()
             self._embed_fig(body, holder['fig'])          # live canvas: wheel zoom / pan / reset
-        except Exception as e:                            # noqa: BLE001
-            status.configure(text=f'Failed to show the chart: {e}', fg=NEG)
+            status.destroy()                              # only AFTER a successful embed — the
+        except Exception as e:                            # noqa: BLE001    reversed order left a
+            status.configure(text=f'Failed to show the chart: {e}', fg=NEG)   # blank window with
+            #                                             the error written to a destroyed label
 
 
 def main():

@@ -24,6 +24,9 @@ hiddenimports = (
      # to daily annualization (config.py wraps it in try/except) — both must be forced in.
      'timeframe', 'configparser',
      'aiosonic', 'orjson', 'onecache', 'pytz',       # pytz: imported by quantpylib.wrappers.binance
+     'PIL.ImageTk', 'PIL._tkinter_finder',           # loaded DYNAMICALLY by PIL.ImageTk when the
+     #                              mpl Tk toolbar builds its icons — invisible to the import scan;
+     #                              without them every chart window dies on NavigationToolbar2Tk
      'customtkinter', 'darkdetect']                  # GUI toolkit (assets come from the contrib hook)
     + collect_submodules('quantpylib')
 )
@@ -99,7 +102,12 @@ a = Analysis(
     datas=datas,
     hiddenimports=hiddenimports,
     hookspath=[],
-    hooksconfig={},
+    # matplotlib backends are NOT auto-discovered correctly: the hook's automatic mode only sees
+    # the explicit matplotlib.use('Agg') calls (pdf_worker, report) and drops backend_tkagg —
+    # which the GUI imports lazily inside _embed_fig, so every equity/progress chart in the
+    # frozen app dies with ModuleNotFoundError. Pin both backends; selfcheck embeds a real
+    # TkAgg canvas so this can never regress silently again.
+    hooksconfig={'matplotlib': {'backends': ['Agg', 'TkAgg']}},
     runtime_hooks=[],
     excludes=['seaborn', 'statsmodels', 'IPython', 'pytest', 'notebook',
               'jupyterlab', 'tkinter.test'],

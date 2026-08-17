@@ -84,6 +84,11 @@ def _selfcheck_body(out):
 
     import numpy, pandas, matplotlib                      # noqa: F401
     out('numpy/pandas/mpl:', numpy.__version__, pandas.__version__, matplotlib.__version__)
+    # The GUI imports the INTERACTIVE backend lazily (only when a chart window opens), so a
+    # bundle can pass every import test above and still have no backend_tkagg — every equity/
+    # progress chart then dies blank. Import it here so a broken bundle fails in CI instead.
+    from matplotlib.backends import backend_tkagg         # noqa: F401
+    out('mpl tkagg   : importable')
 
     from config import load_config
     cfg = load_config()
@@ -187,6 +192,17 @@ def _selfcheck_body(out):
             alphanode_gui._child_cmd('node')[:2], '…')
         out('ctk         :', ctk.__version__, '· theme assets',
             os.path.isdir(os.path.join(os.path.dirname(ctk.__file__), 'assets', 'themes')))
+        # a REAL TkAgg canvas + toolbar — the exact path every equity/progress chart takes.
+        # Importing the backend proves collection; drawing into Tk and building the toolbar
+        # (its icons live in mpl-data/images) prove the whole _embed_fig chain works here.
+        from matplotlib.figure import Figure
+        from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+        _fig = Figure(figsize=(3, 2), dpi=72)
+        _fig.add_subplot(111).plot([1, 2, 3], [1, 4, 2])
+        _cv = FigureCanvasTkAgg(_fig, master=r)
+        _cv.draw()
+        NavigationToolbar2Tk(_cv, r, pack_toolbar=False)
+        out('tkagg canvas: ok (drawn into Tk, toolbar built)')
         r.destroy()
     else:
         out('gui build   : skipped (no DISPLAY)')
