@@ -96,8 +96,9 @@ def seal(text, server_pub, owner=None):
     only to the account that owns that node. owner=None keeps the legacy unbound 'v1:'."""
     if isinstance(server_pub, str):
         server_pub = load_pub(server_pub)
-    if owner is None:
-        payload, magic, info = text.encode(), MAGIC, _INFO
+    if not owner:                                        # falsy, not just None: owner='' would mint
+        payload, magic, info = text.encode(), MAGIC, _INFO   # a v2 box unseal_owned REJECTS as
+        #                                       malformed — sealed forever, openable by no one
     else:
         payload = json.dumps({'f': text, 'n': str(owner)},
                              separators=(',', ':')).encode()
