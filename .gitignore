@@ -13,6 +13,10 @@ venv/
 packaging/build/
 packaging/dist/
 packaging/deb/
+packaging/cyext/
+# never build the engine in-place: a stale extension would silently shadow edited sources
+evolution/*.so
+evolution/*.pyd
 packaging/AlphaNode.AppDir/
 packaging/appimagetool-x86_64.AppImage
 

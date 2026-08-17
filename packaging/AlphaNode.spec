@@ -19,6 +19,10 @@ hiddenimports = (
      'forward_track',
      'config', 'evolution', 'evaluator', 'fastsim', 'genome', 'primitives',
      'report', 'evolved_strategy', 'experiments',
+     # imports of the COMPILED core, which modulegraph can no longer scan (.so has no source):
+     # configparser is imported ONLY by config.py; timeframe would otherwise silently fall back
+     # to daily annualization (config.py wraps it in try/except) — both must be forced in.
+     'timeframe', 'configparser',
      'aiosonic', 'orjson', 'onecache', 'pytz',       # pytz: imported by quantpylib.wrappers.binance
      'customtkinter', 'darkdetect']                  # GUI toolkit (assets come from the contrib hook)
     + collect_submodules('quantpylib')
@@ -53,9 +57,31 @@ else:
 # evolution/ does. Shipped explicitly now that the source Tree below is gone.
 datas.append((os.path.join(PROJ, 'evolution', 'config.ini'), 'evolution'))
 
+# The engine core ships as NATIVE extensions (Cython), never bytecode: a .pyc decompiles back to
+# near-source in seconds, machine code does not. packaging/cythonize_engine.py builds the five
+# into packaging/cyext/; that dir goes FIRST on the search path, so Analysis resolves those names
+# to the extensions and their .py never reaches the PYZ. fastsim is deliberately NOT compiled —
+# numba must JIT its kernel from Python (see cythonize_engine.py). Like the vault key above, a
+# release build must not be allowed to silently fall back to the unprotected form.
+CYEXT = os.path.join(SPECPATH, 'cyext')
+_cy_need = ('primitives', 'genome', 'evolution', 'evaluator', 'config')
+_cy_have = {f.split('.')[0] for f in (os.listdir(CYEXT) if os.path.isdir(CYEXT) else [])
+            if f.endswith(('.so', '.pyd'))}
+if all(m in _cy_have for m in _cy_need):
+    pathex = [CYEXT, PROJ, APP, os.path.join(PROJ, 'evolution')]
+elif os.environ.get('ALPHANODE_ALLOW_BYTECODE_ENGINE') == '1':
+    print('AlphaNode.spec: no cyext/ — the engine ships as DECOMPILABLE bytecode (dev only)')
+    pathex = [PROJ, APP, os.path.join(PROJ, 'evolution')]
+else:
+    raise SystemExit(
+        'AlphaNode.spec: packaging/cyext/ is missing or incomplete — the engine would ship as\n'
+        'decompilable bytecode. Build the native extensions first:\n'
+        '  python packaging/cythonize_engine.py\n'
+        '  (or set ALPHANODE_ALLOW_BYTECODE_ENGINE=1 for a deliberately unprotected dev build)')
+
 a = Analysis(
     [os.path.join(APP, 'app_entry.py')],
-    pathex=[PROJ, APP, os.path.join(PROJ, 'evolution')],
+    pathex=pathex,
     binaries=[],
     datas=datas,
     hiddenimports=hiddenimports,
@@ -67,16 +93,32 @@ a = Analysis(
     noarchive=False,
 )
 
-# The engine ships as BYTECODE in the PYZ (see hiddenimports), never as source. It used to be
-# dumped here as raw .py via Tree('evolution') — which handed the entire search algorithm to
-# anyone who unzipped the AppImage. The mining path imports every engine module by name from the
-# PYZ; the only file it reads off disk is config.ini, shipped explicitly above. app_entry's
-# sys.path.insert for evolution/ is os.path.isdir-guarded, so the now-absent dir is a safe no-op.
+# The engine core rides in a.binaries as the cyext native extensions; the glue (fastsim, report,
+# evolved_strategy, experiments, timeframe) stays bytecode in the PYZ. It was once dumped here as
+# raw .py via Tree('evolution') — which handed the entire search algorithm to anyone who unzipped
+# the AppImage. The only evolution/ file on disk is config.ini, shipped explicitly above; a
+# frozen `import evolution` still finds the .so, because FileFinder prefers a module file over
+# the _internal/evolution data dir (a mere namespace-package candidate on the same path entry).
 #
 # quantpylib stays as source: it is a third-party dependency (throttler + exchange wrappers), not
 # our IP, and collect_submodules can miss its dynamic imports.
 a.datas += Tree(os.path.join(PROJ, 'quantpylib'), prefix='quantpylib',
                 excludes=['__pycache__', '*.pyc', '*.pyo'])
+
+# The no-source guarantee above rests on pathex ORDER, which nothing enforces at runtime — so
+# prove it at build time: every core module must be an extension in a.binaries and absent from
+# the PYZ. A regression here (a pathex reorder, a stray config.py in alphanode/, a package-style
+# import) would otherwise re-admit the algorithm as decompilable bytecode without any error.
+if pathex[0] == CYEXT:
+    _pure = {e[0] for e in a.pure}
+    _bins = {e[0] for e in a.binaries}
+    _leaked = [m for m in _cy_need if m in _pure]
+    _absent = [m for m in _cy_need
+               if not any(b == m or (b.startswith(m + '.') and b.endswith(('.so', '.pyd')))
+                          for b in _bins)]
+    if _leaked or _absent:
+        raise SystemExit(f'AlphaNode.spec: engine protection regressed — in PYZ: {_leaked}, '
+                         f'missing from binaries: {_absent}')
 
 pyz = PYZ(a.pure)
 

@@ -26,6 +26,9 @@ jobs:
       - name: Icon
         run: python packaging/make_icon.py
 
+      - name: Engine core -> native extensions (Cython)
+        run: python packaging/cythonize_engine.py
+
       - name: PyInstaller (onedir)
         run: pyinstaller --noconfirm --clean --distpath packaging/dist --workpath packaging/build packaging/AlphaNode.spec
 

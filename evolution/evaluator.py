@@ -14,9 +14,13 @@ import warnings
 import numpy as np
 import pandas as pd
 
-PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if PROJ not in sys.path:
-    sys.path.insert(0, PROJ)
+# Dev-only bootstrap so `import quantpylib` works when run straight from evolution/. In the
+# frozen build quantpylib ships inside _internal and this would instead put the USER-WRITABLE
+# app root at sys.path[0] — an invitation to shadow bundled modules with planted .py files.
+if not getattr(sys, 'frozen', False):
+    PROJ = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if PROJ not in sys.path:
+        sys.path.insert(0, PROJ)
 
 from quantpylib.simulator.alpha import Alpha           # noqa: E402
 import primitives as P                                  # noqa: E402

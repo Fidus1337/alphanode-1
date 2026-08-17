@@ -15,17 +15,24 @@ DIST="$HERE/dist"
 WORK="$HERE/build"
 APPDIR="$HERE/${APPNAME}.AppDir"
 
-echo "== [1/6] Checking PyInstaller =="
+echo "== [1/7] Checking PyInstaller =="
 if ! "$PY" -c "import PyInstaller" 2>/dev/null; then
   echo "  installing pyinstaller into venv ($PY)…"
   "$PY" -m pip install --quiet --upgrade pyinstaller
 fi
 "$PY" -c "import PyInstaller; print('  PyInstaller', PyInstaller.__version__)"
 
-echo "== [2/6] Icon =="
+echo "== [2/7] Icon =="
 "$PY" "$HERE/make_icon.py"
 
-echo "== [3/6] PyInstaller (onedir) =="
+echo "== [3/7] Engine core -> native extensions (Cython) =="
+if ! "$PY" -c "import Cython" 2>/dev/null; then
+  echo "  installing cython into venv ($PY)…"
+  "$PY" -m pip install --quiet --upgrade cython
+fi
+"$PY" "$HERE/cythonize_engine.py"
+
+echo "== [4/7] PyInstaller (onedir) =="
 rm -rf "$DIST" "$WORK" "$APPDIR"
 "$PY" -m PyInstaller --noconfirm --clean \
   --distpath "$DIST" --workpath "$WORK" \

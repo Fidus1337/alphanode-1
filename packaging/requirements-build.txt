@@ -17,3 +17,5 @@ orjson
 onecache
 pillow            # icon generation (make_icon.py)
 pyinstaller>=6.0
+cython>=3.0       # compiles the engine core to native extensions (cythonize_engine.py) — the
+setuptools        # .spec refuses to ship the engine as decompilable bytecode without them

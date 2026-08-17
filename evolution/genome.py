@@ -203,9 +203,16 @@ def _mutate_window(tree, rng):
 def parse(s):
     """canon() -> Node. The exact inverse of Node.canon() for all operators."""
     pos = 0
+    count = 0
 
     def node():
-        nonlocal pos
+        nonlocal pos, count
+        # a compiled build recurses on the C stack, where a pathologically nested string
+        # (library files are user-editable) is a hard crash, not a RecursionError — so bound
+        # the tree BEFORE recursing; real engine trees are two orders of magnitude smaller
+        count += 1
+        if count > 512:
+            raise ValueError('formula too large to parse (>512 nodes)')
         j = pos
         while j < len(s) and s[j] not in '(),:':
             j += 1

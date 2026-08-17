@@ -20,7 +20,9 @@ echo "== [1/4] Checking the PyInstaller build =="
 if [ ! -x "$ONEDIR/AlphaNode" ]; then
   echo "  onedir not found — building (PyInstaller)…"
   if ! "$PY" -c "import PyInstaller" 2>/dev/null; then "$PY" -m pip install --quiet --upgrade pyinstaller; fi
+  if ! "$PY" -c "import Cython" 2>/dev/null; then "$PY" -m pip install --quiet --upgrade cython; fi
   "$PY" "$HERE/make_icon.py"
+  "$PY" "$HERE/cythonize_engine.py"
   "$PY" -m PyInstaller --noconfirm --clean --distpath "$HERE/dist" --workpath "$HERE/build" "$HERE/AlphaNode.spec"
 fi
 [ -f "$HERE/alphanode-256.png" ] || "$PY" "$HERE/make_icon.py"
