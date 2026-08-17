@@ -35,12 +35,21 @@ mkdir -p "$PKG/DEBIAN" "$PKG/opt/alphanode" "$PKG/usr/bin" \
 
 cp -a "$ONEDIR/." "$PKG/opt/alphanode/"
 
-# terminal command -> launches the binary (GUI by default; supports --role cli …)
-cat > "$PKG/usr/bin/alphanode" <<'EOF'
-#!/bin/sh
-exec /opt/alphanode/AlphaNode "$@"
-EOF
+# terminal command -> launches the binary (GUI by default; supports --role cli …).
+# ALPHANODE_VAULT_URL is baked in at BUILD time (as in build_linux.sh's AppRun): a shipped node
+# must know its licence server, or the customer can never activate. Runtime env still overrides.
+#   ALPHANODE_VAULT_URL=https://api.yourdomain.com bash packaging/build_deb.sh
+{
+  echo '#!/bin/sh'
+  if [ -n "${ALPHANODE_VAULT_URL:-}" ]; then
+    echo "export ALPHANODE_VAULT_URL=\"\${ALPHANODE_VAULT_URL:-$ALPHANODE_VAULT_URL}\""
+  fi
+  echo 'exec /opt/alphanode/AlphaNode "$@"'
+} > "$PKG/usr/bin/alphanode"
 chmod 0755 "$PKG/usr/bin/alphanode"
+if [ -z "${ALPHANODE_VAULT_URL:-}" ]; then
+  echo "  WARNING: no ALPHANODE_VAULT_URL — this .deb talks to localhost, customers cannot activate"
+fi
 
 cp "$HERE/alphanode-256.png" "$PKG/usr/share/icons/hicolor/256x256/apps/alphanode.png"
 cat > "$PKG/usr/share/applications/alphanode.desktop" <<'EOF'
