@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="no-js">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -97,9 +97,16 @@ h1 .quiet{color:var(--mut);font-weight:500}
 .req-msg.ok{color:var(--green)}
 .req-msg.err{color:var(--red)}
 .req-done{background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:18px 20px;
-  margin-top:28px;max-width:46ch}
+  margin-top:28px;max-width:46ch;outline:none}
 .req-done b{display:block;margin-bottom:6px}
 .req-done p{margin:0;color:var(--mut);font-size:14px}
+.req-privacy{margin-top:16px;font-size:12.5px;line-height:1.55;color:var(--mut)}
+.req-privacy a{color:var(--mut)}
+/* a browser that cannot run the submit handler must never see the fields: with no handler the
+   form's only behaviour is a plain GET with the visitor's details in the URL */
+html.no-js .req{display:none}
+.req-noscript{background:var(--soft);border:1px solid var(--line);border-radius:4px;
+  padding:18px 20px;margin-top:28px;max-width:46ch;font-size:14px;color:var(--mut)}
 
 /* the product, as it actually looks: the node's status page, flat and chrome-free */
 .term{background:var(--dark);border:1px solid var(--darkline2);border-radius:4px;
@@ -235,7 +242,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
 }
 </style>
 </head>
-<body id="top">
+<body id="top" data-api="https://api.alphanode.tech">
 
 <nav>
   <div class="wrap nav-in">
@@ -425,6 +432,11 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
         <li><span class="m">license</span><span><b>Licensing:</b> one subscription key per account, entered once in the app. It activates a set number of machines and unlocks the formulas your node mined; the search itself runs locally either way.</span></li>
       </ul>
 
+      <noscript>
+        <p class="req-noscript">The request form needs JavaScript. Without it, just email
+          <a href="mailto:support@alphanode.tech">support@alphanode.tech</a> with your name and
+          what you would run the node on — same queue, same reply.</p>
+      </noscript>
       <form class="req" id="req-form" novalidate>
         <label for="req-name">Your name</label>
         <input id="req-name" name="name" type="text" autocomplete="name"
@@ -444,9 +456,18 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
           <textarea id="req-note" name="note" rows="3"
                     placeholder="Timeframe, pairs, the machine you'd run it on — anything that helps us prioritise."></textarea>
         </div>
-        <input class="hp" type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true">
+        <!-- honeypot. The name is deliberately meaningless: it used to be "website", which is a
+             real identity-manager field, so 1Password/Chrome autofill could fill it and a real
+             person's request would be silently dropped as a bot's. -->
+        <input class="hp" type="text" name="hp_ref2" tabindex="-1" autocomplete="off"
+               aria-hidden="true" data-1p-ignore data-lpignore="true">
         <button class="btn" type="submit" id="req-btn">Request early access</button>
         <p class="req-msg" id="req-msg" role="status" aria-live="polite"></p>
+        <p class="req-privacy">These details go to us and nowhere else, for one purpose: sending
+          your key and understanding what you would run it on. No mailing lists, no resale. We
+          keep them until early access ends; email
+          <a href="mailto:support@alphanode.tech">support@alphanode.tech</a> any time to be
+          removed.</p>
       </form>
       <p class="hero-note">Already have it? Follow the
         <a href="start.html">getting-started walkthrough</a> — five clicks from install
@@ -990,53 +1011,97 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   }, 3400);
 })();
 
-// Early-access form -> AlphaHub. Same-origin api.<host> in production; the localhost fallback
-// is for opening this file straight from disk while working on the page.
+</script>
+<script>
+// Early-access form -> AlphaHub. Its own <script> element on purpose: an exception anywhere in
+// the animation block above must not take this handler down with it — a form with no handler
+// falls back to a plain GET that puts the visitor's name, email and phone in the URL. Same
+// reason the fields are hidden until this line runs.
+document.documentElement.className = document.documentElement.className.replace(/\bno-js\b/, '');
 (function () {
   var form = document.getElementById('req-form');
   if (!form) return;
   var msg = document.getElementById('req-msg');
   var btn = document.getElementById('req-btn');
-  var API = (location.protocol === 'https:')
-    ? location.protocol + '//api.' + location.host.replace(/^www\./, '')
-    : 'http://127.0.0.1:8790';
+  // The production host is stated, not derived: deriving api.<host> sent every staging or
+  // preview copy to an address that resolves nowhere. The localhost fallback is for working on
+  // this file locally.
+  var local = location.protocol === 'file:' ||
+              /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  var API = local ? 'http://127.0.0.1:8790'
+                  : (document.body.getAttribute('data-api') || 'https://api.alphanode.tech');
 
   function say(text, kind) { msg.textContent = text; msg.className = 'req-msg' + (kind ? ' ' + kind : ''); }
   // form.elements[...], never form.<field>: HTMLFormElement already owns a `name` property, so
   // form.name is the form's own attribute and never the input we just added.
   function val(field) { return (form.elements[field].value || '').trim(); }
+  function fieldError(field, text) {
+    // the error lands on the field, not only on the shared line: the shared line differs from
+    // "Sending…" by colour alone, and colour is not a signal everyone receives
+    var el = form.elements[field];
+    el.setAttribute('aria-invalid', 'true');
+    el.setAttribute('aria-describedby', 'req-msg');
+    say('Error: ' + text, 'err');
+    el.focus();
+  }
 
   form.addEventListener('submit', function (e) {
     e.preventDefault();
+    for (var i = 0; i < form.elements.length; i++) form.elements[i].removeAttribute('aria-invalid');
     var name = val('name');
     var email = val('email');
     var phone = val('phone');
-    if (!name) { say('Enter your name.', 'err'); return; }
-    if (!email || email.indexOf('@') < 1) { say('Enter a valid email address.', 'err'); return; }
+    if (!name) { fieldError('name', 'Enter your name.'); return; }
+    if (!email || email.indexOf('@') < 1) { fieldError('email', 'Enter a valid email address.'); return; }
     // Optional, so an empty box is fine — but a stray "12" is a typo, not a number we can call.
     if (phone && (phone.match(/\d/g) || []).length < 5) {
-      say('Enter a full phone number, or leave it empty.', 'err'); return;
+      fieldError('phone', 'Enter a full phone number, or leave it empty.'); return;
     }
     btn.disabled = true;
     say('Sending…');
+    // a hung connection must not park the button on "Sending…" forever
+    var ctrl = ('AbortController' in window) ? new AbortController() : null;
+    var timer = ctrl && setTimeout(function () { ctrl.abort(); }, 15000);
     fetch(API + '/request-access', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: ctrl ? ctrl.signal : undefined,
       body: JSON.stringify({ name: name, email: email, phone: phone,
-                             note: val('note'), website: val('website') })
+                             note: val('note'), website: val('hp_ref2') })
     }).then(function (r) {
-      if (!r.ok) throw new Error(r.status === 422 ? 'Enter a valid email address.' : 'HTTP ' + r.status);
+      // two-argument then, not .catch: success and network failure are separate branches, so a
+      // hiccup while rendering the confirmation cannot report "could not reach the server"
+      // about a request the server already committed
+      if (timer) clearTimeout(timer);
+      if (r.status === 422) { btn.disabled = false; fieldError('email', 'Enter a valid email address.'); return; }
+      if (r.status === 429) {
+        btn.disabled = false;
+        say('Error: too many requests from your network right now. Try again in an hour, or ' +
+            'email support@alphanode.tech.', 'err');
+        return;
+      }
+      if (!r.ok) {
+        btn.disabled = false;
+        say('Error: the server had a problem (HTTP ' + r.status + '). Try again in a minute, ' +
+            'or email support@alphanode.tech.', 'err');
+        return;
+      }
       // Replace the form outright: a still-editable form after success invites a second submit.
+      // The confirmation takes focus and role=status itself — the original live region sits
+      // inside the form and leaves the page with it.
       var done = document.createElement('div');
       done.className = 'req-done';
-      done.innerHTML = '<b>You are on the list.</b><p>We read every request and reply from ' +
-                       'support@alphanode.tech with a key and the download. Check your spam folder ' +
-                       'if nothing arrives in a couple of days.</p>';
+      done.setAttribute('role', 'status');
+      done.setAttribute('tabindex', '-1');
+      done.innerHTML = '<b>You are on the list.</b><p>We read every request and reply by hand ' +
+                       'from support@alphanode.tech, usually within a few days.</p>';
       form.replaceWith(done);
-    }).catch(function (err) {
+      done.focus();
+    }, function () {
+      if (timer) clearTimeout(timer);
       btn.disabled = false;
-      say(String(err.message || err).indexOf('valid email') >= 0 ? err.message
-          : 'Could not reach the server. Email support@alphanode.tech and we will sort it out.', 'err');
+      say('Error: could not reach the server. Email support@alphanode.tech and we will sort ' +
+          'it out.', 'err');
     });
   });
 })();
