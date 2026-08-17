@@ -14,8 +14,14 @@ sealed-box DRM, which a debugger on the running miner already defeats).
 Written to alphanode/_build_stamp.json (gitignored — generated per build). Absent in dev
 runs, where buildinfo falls back to a 'dev' identity.
 
+Also bakes ALPHANODE_VAULT_URL into the stamp, so the shipped app knows its licence server on
+EVERY platform — the Linux launchers export the env var, but the Windows .exe runs with no
+wrapper, so the stamp is the only place a Windows build can carry it. The app prefers an
+explicit env var (self-host / dev), then the stamp, then the localhost default.
+
 Usage:  python packaging/make_build_stamp.py
-Env:    ALPHANODE_BUILD_ID (override; CI passes the run id), GITHUB_SHA (CI git sha).
+Env:    ALPHANODE_VAULT_URL (the hub the build talks to), ALPHANODE_BUILD_ID (override; CI
+        passes the run id), GITHUB_SHA (CI git sha).
 """
 import hashlib
 import json
@@ -62,11 +68,13 @@ def main():
         'git': _git_sha(),
         'built_at': datetime.now(timezone.utc).isoformat(timespec='seconds'),
         'vault_pub_fp': _vault_pub_fp(),
+        'vault_url': (os.environ.get('ALPHANODE_VAULT_URL') or '').strip() or None,
     }
     with open(STAMP, 'w', encoding='utf-8') as f:
         json.dump(stamp, f, indent=2, sort_keys=True)
     print(f'build stamp: v{stamp["version"]} build {stamp["build_id"]} '
-          f'git {stamp["git"]} key {stamp["vault_pub_fp"] or "UNSEALED"}')
+          f'git {stamp["git"]} key {stamp["vault_pub_fp"] or "UNSEALED"} '
+          f'hub {stamp["vault_url"] or "LOCALHOST (dev)"}')
 
 
 if __name__ == '__main__':

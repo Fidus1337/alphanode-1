@@ -124,6 +124,7 @@ def _selfcheck_body(out):
     else:
         out('vault key   : no fingerprint to check (dev / unsealed build)')
     out('licence     :', 'present' if os.path.exists(apppaths.license_file()) else 'MISSING')
+    out('hub url      :', bi.get('vault_url') or 'LOCALHOST (dev — customers cannot activate)')
 
     # The data fetcher role pulls the Binance wrapper (import pytz). Exercise it here so a missing
     # transitive dep (e.g. pytz) fails the build in CI instead of shipping a broken --role fetch.

@@ -140,31 +140,43 @@ cannot open your existing libraries — stop and redo step 3.
 
 ## 5. Point the desktop app at your hub
 
-The node reads the hub address from `ALPHANODE_VAULT_URL` (default is localhost, for dev) and
-seals mined formulas to the public key it finds at `alphanode/vault_server_key.pub`.
+The app resolves the hub address in this order: an explicit `ALPHANODE_VAULT_URL` env var (self-host
+/ dev) → the URL baked into the build stamp at build time → the localhost default. It seals mined
+formulas to the public key it finds at `alphanode/vault_server_key.pub`.
 
-**Both must be baked into a build you ship**, otherwise:
-* no URL → the customer's node talks to nothing and never unlocks;
-* no `.pub` file → **the node mines UNSEALED** — your protection silently disappears.
+**Both the URL and the `.pub` must be present at build time**, otherwise:
+* no URL → the customer's node talks to localhost and never unlocks;
+* no `.pub` file → the build **fails** (or, with `ALPHANODE_ALLOW_UNSEALED=1`, mines UNSEALED and
+  your protection silently disappears).
 
-Fetch the public half from the live hub before building:
+The public key is public — fetch it from the live hub before building (never commit it; it is
+gitignored):
 
 ```bash
 curl -s https://api.<DOMAIN>/pub.txt > alphanode/vault_server_key.pub
 ```
 
-and export the URL in the launcher (`packaging/AlphaNode.AppDir/AppRun`, the `.deb` wrapper, the
-Windows build):
+Then set `ALPHANODE_VAULT_URL` for the build. `make_build_stamp.py` writes it into the stamp, so it
+reaches **every** platform — including the wrapper-less Windows `.exe` — and the Linux launchers
+export it too:
 
-```
-ALPHANODE_VAULT_URL=https://api.<DOMAIN>
+```bash
+ALPHANODE_VAULT_URL=https://api.<DOMAIN> bash packaging/build_linux.sh   # AppImage
+ALPHANODE_VAULT_URL=https://api.<DOMAIN> bash packaging/build_deb.sh     # .deb
 ```
 
-For your own machine you can simply run:
+Verify a finished build points at the right hub: `--role selfcheck` prints `hub url : …` (and the
+vault-key fingerprint it was built with). For your own machine you can simply run:
 
 ```bash
 ALPHANODE_VAULT_URL=https://api.<DOMAIN> .venv/bin/python alphanode/alphanode_gui.py
 ```
+
+**Windows / release builds** come from CI: push a `vX.Y.Z` tag (or run the *build-desktop* workflow
+by hand). It fetches the public key from `${VAULT_API}/pub.txt`, bakes the URL, and produces the
+Windows installer + Linux AppImage as release artifacts. Point CI at a different hub by editing the
+`VAULT_API` / `ALPHANODE_VAULT_URL` env at the top of `.github/workflows/build.yml`. The `.deb` is
+built locally with the command above (CI ships the AppImage only).
 
 ---
 

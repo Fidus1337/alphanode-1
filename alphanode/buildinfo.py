@@ -26,7 +26,7 @@ def build_info():
     if _cache is not None:
         return _cache
     info = {'version': __version__, 'build_id': 'dev', 'git': 'dev',
-            'built_at': None, 'vault_pub_fp': None}
+            'built_at': None, 'vault_pub_fp': None, 'vault_url': None}
     try:
         with open(_stamp_path(), encoding='utf-8') as f:
             info.update({k: v for k, v in json.load(f).items() if k in info})
@@ -40,3 +40,9 @@ def build_label():
     """One-line human id for titles, logs and the status page: 'v1.0.0 · build ab12… · git …'."""
     i = build_info()
     return f'v{i["version"]} · build {i["build_id"]} · git {i["git"]}'
+
+
+def vault_url():
+    """The hub URL baked into this build, or None (dev). The Windows .exe has no launcher to
+    export ALPHANODE_VAULT_URL, so the stamp is where a cross-platform build carries it."""
+    return build_info().get('vault_url')

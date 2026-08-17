@@ -73,7 +73,24 @@ PORTFOLIO_PNG = os.path.join(STATE_DIR, 'portfolio_equity.png')
 SETTINGS = apppaths.settings_file()
 CORES = os.cpu_count() or 4
 # vault prototype: where locked formulas get revealed (subscription check lives server-side)
-VAULT_URL = os.environ.get('ALPHANODE_VAULT_URL', 'http://127.0.0.1:8790')
+def _resolve_vault_url():
+    """The hub URL, in precedence: an explicit env var (self-host / dev override) wins, then the
+    URL baked into the build stamp (the only channel a Windows .exe has — no launcher wrapper),
+    then the localhost default for a bare dev run."""
+    env = (os.environ.get('ALPHANODE_VAULT_URL') or '').strip()
+    if env:
+        return env
+    try:
+        import buildinfo
+        baked = buildinfo.vault_url()
+        if baked:
+            return baked
+    except Exception:                                    # noqa: BLE001
+        pass
+    return 'http://127.0.0.1:8790'
+
+
+VAULT_URL = _resolve_vault_url()
 
 
 def _vault_pub_path():

@@ -7,6 +7,14 @@ on:
   push:
     tags: ['v*']
 
+# The hub the shipped app talks to. Its PUBLIC key is fetched from ${VAULT_API}/pub.txt (public,
+# not a secret — do not commit the key, it is gitignored) and the URL is baked into the build
+# stamp so EVERY platform — including the wrapper-less Windows .exe — knows where to activate.
+# Change this one value to point a build at a different hub.
+env:
+  VAULT_API: https://api.alphanode.tech
+  ALPHANODE_VAULT_URL: https://api.alphanode.tech
+
 jobs:
   # ---------------------------------------------------------------- Windows
   windows:
@@ -23,13 +31,17 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r packaging/requirements-build.txt
 
+      - name: Vault public key (from the live hub; public, gitignored)
+        shell: bash
+        run: curl -fsSL "$VAULT_API/pub.txt" -o alphanode/vault_server_key.pub
+
       - name: Icon
         run: python packaging/make_icon.py
 
       - name: Engine core -> native extensions (Cython)
         run: python packaging/cythonize_engine.py
 
-      - name: Build stamp (provenance)
+      - name: Build stamp (provenance + hub URL)
         run: python packaging/make_build_stamp.py
 
       - name: PyInstaller (onedir)
@@ -93,10 +105,15 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r packaging/requirements-build.txt
 
+      - name: Vault public key (from the live hub; public, gitignored)
+        run: curl -fsSL "$VAULT_API/pub.txt" -o alphanode/vault_server_key.pub
+
       - name: Build AppImage
         env:
           PYTHON: python
           APPIMAGE_EXTRACT_AND_RUN: '1'      # runners without FUSE mounting -> extract-and-run
+          # ALPHANODE_VAULT_URL comes from the workflow-level env: build_linux.sh bakes it into
+          # AppRun, and make_build_stamp bakes it into the stamp (cross-platform channel).
         run: bash packaging/build_linux.sh
 
       - name: Selfcheck + smoke (frozen node round + PDF worker)
