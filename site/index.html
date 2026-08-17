@@ -150,9 +150,11 @@ h1 .quiet{color:var(--mut);font-weight:500}
   letter-spacing:.1em;text-transform:uppercase;color:var(--acctext)}
 .gp-step{margin-left:auto;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
   letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
-.gp-stage{background:var(--dark);border:1px solid var(--darkline2);border-radius:4px;
-  overflow:hidden}
-.gp-cv{display:block;width:100%;aspect-ratio:820/370}
+/* below ~520px the drawing shrinks into a smudge, so the frame pans instead — the same thing
+   the terminal tables do on a phone. resize() parks the view on the middle of it. */
+.gp-stage{background:var(--card);border:1px solid var(--line);border-radius:4px;
+  overflow-x:auto;overflow-y:hidden}
+.gp-cv{display:block;width:100%;min-width:520px;aspect-ratio:820/370}
 /* the same formula in the form the app prints it: the picture is the feeling, this is the fact.
    nowrap + scroll, never wrap — a second line here would resize the block mid-loop */
 .gp-expr{display:block;margin-top:12px;padding:9px 12px;background:var(--soft);border-radius:3px;
@@ -526,7 +528,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   var g = cv.getContext('2d');
 
   var W = 820, H = 370, LEAF = 190, LEVEL = 70;
-  var COL = {d: [90, 189, 140], t: [159, 180, 255], c: [198, 166, 242], o: [239, 233, 223]};
+  var COL = {d: [30, 127, 78], t: [82, 97, 214], c: [109, 74, 168], o: [70, 66, 62]};
   var RAD = {d: 6.2, t: 7, c: 7, o: 7.8};
 
   function n(id, k, l, kids) { return {id: id, k: k, l: l, c: kids || []}; }
@@ -663,8 +665,8 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
       ax = px(A); ay = py(A); bx = px(B); by = py(B);
       c1y = by + (ay - by) * .5; c2y = ay - (ay - by) * .5;
       var grad = g.createLinearGradient(bx, by, ax, ay);
-      grad.addColorStop(0, rgba(COL[B.k], .5 * alpha * (B.dim ? .35 : 1)));
-      grad.addColorStop(1, rgba(COL[A.k], .16 * alpha));
+      grad.addColorStop(0, rgba(COL[B.k], .72 * alpha * (B.dim ? .3 : 1)));
+      grad.addColorStop(1, rgba(COL[A.k], .3 * alpha));
       g.strokeStyle = grad;
       g.lineWidth = 1.35;
       g.beginPath();
@@ -690,16 +692,16 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
       if (s.a < .02) continue;
       var x = px(s), y = py(s), r = s.rr, col = COL[s.k], a = s.a * (s.dim ? .38 : 1);
       var bloom = g.createRadialGradient(x, y, 0, x, y, r * 4.6);
-      bloom.addColorStop(0, rgba(col, .34 * a));
-      bloom.addColorStop(.42, rgba(col, .1 * a));
+      bloom.addColorStop(0, rgba(col, .17 * a));
+      bloom.addColorStop(.42, rgba(col, .055 * a));
       bloom.addColorStop(1, rgba(col, 0));
       g.fillStyle = bloom;
       g.beginPath();
       g.arc(x, y, r * 4.6, 0, 6.283);
       g.fill();
       if (s.k === 'o') {                                 // a junction, not a source: ring only
-        g.strokeStyle = rgba(col, .8 * a);
-        g.lineWidth = 1.5;
+        g.strokeStyle = rgba(col, .95 * a);
+        g.lineWidth = s.depth === 0 ? 2.1 : 1.7;
         g.beginPath();
         g.arc(x, y, r, 0, 6.283);
         g.stroke();
@@ -710,7 +712,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
         g.fill();
       }
       if (s.hot) {                                       // just changed, or just arrived
-        g.strokeStyle = rgba([255, 255, 255], .55 * a);
+        g.strokeStyle = rgba([34, 33, 33], .5 * a);
         g.lineWidth = 1;
         g.beginPath();
         g.arc(x, y, r + 4.5, 0, 6.283);
@@ -725,7 +727,8 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
       for (id in live) {
         s = live[id];
         if (s.a < .25 || !(s.k === 'd' || s.hot)) continue;
-        g.fillStyle = rgba([246, 244, 240], (s.k === 'd' ? .5 : .78) * s.a * (s.dim ? .4 : 1));
+        g.fillStyle = rgba(s.k === 'd' ? [111, 107, 102] : [34, 33, 33],
+                          (s.k === 'd' ? .95 : .9) * s.a * (s.dim ? .4 : 1));
         if (s.k === 'd') {
           g.textAlign = 'center';
           g.fillText(s.l, px(s), py(s) - s.rr - 8);
@@ -736,7 +739,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
       }
       if (pairInfo) {
         g.textAlign = 'center';
-        g.fillStyle = rgba([165, 160, 154], .85);
+        g.fillStyle = rgba([111, 107, 102], .9);
         g.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
         g.fillText('PARENT  A', pairInfo[0], pairInfo[2] - 34);
         g.fillText('PARENT  B  ·  SAME  ROUND', pairInfo[1], pairInfo[2] - 34);
@@ -746,7 +749,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
 
     for (i = 0; i < pulses.length; i++) {
       var p = pulses[i];
-      g.strokeStyle = rgba(p.c, (1 - p.t) * .45);
+      g.strokeStyle = rgba(p.c, (1 - p.t) * .32);
       g.lineWidth = 1.6 * (1 - p.t) + .3;
       g.beginPath();
       g.arc(p.x, p.y, 7 + p.t * 40, 0, 6.283);
@@ -794,6 +797,8 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
     cv.width = Math.round(r.width * dpr);
     cv.height = Math.round(r.height * dpr);
     g.setTransform(dpr * S, 0, 0, dpr * S, 0, 0);        // draw in logical units, always
+    var st = cv.parentNode;                              // show the middle when it has to pan
+    if (st && st.scrollWidth > st.clientWidth) st.scrollLeft = (st.scrollWidth - st.clientWidth) / 2;
   }
 
   // The caption is the tallest thing that changes; reserve its worst case instead of letting the
