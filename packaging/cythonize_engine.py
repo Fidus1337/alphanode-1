@@ -37,14 +37,19 @@ _opts.docstrings = False
 from Cython.Build import cythonize
 from setuptools import setup
 
-setup(
-    ext_modules=cythonize(
-        {mods!r},
-        compiler_directives={{'language_level': 3}},
-        nthreads=4,
-    ),
-    script_args=['build_ext', '--build-lib', {out!r}],
-)
+# The __main__ guard is LOAD-BEARING on Windows/macOS: cythonize(nthreads=...) parallelizes
+# over multiprocessing, and both platforms spawn (re-import this file) instead of forking —
+# an unguarded setup() re-runs in every worker and the build dies bootstrapping. Linux (fork)
+# never noticed, which is exactly how it shipped broken for the other two.
+if __name__ == '__main__':
+    setup(
+        ext_modules=cythonize(
+            {mods!r},
+            compiler_directives={{'language_level': 3}},
+            nthreads=4,
+        ),
+        script_args=['build_ext', '--build-lib', {out!r}],
+    )
 """
 
 
@@ -67,9 +72,12 @@ def main():
     if missing:
         sys.exit(f'cythonize_engine: missing extensions for {missing}')
 
-    # Drop the ELF symbol/debug tables — less to read in a disassembler, smaller files.
+    # Drop the symbol/debug tables — less to read in a disassembler, smaller files.
+    # Apple's strip is not GNU binutils: it has no --strip-unneeded; -x (drop local
+    # symbols) is its closest equivalent for a shared object.
     if shutil.which('strip') and not sys.platform.startswith('win'):
-        subprocess.run(['strip', '--strip-unneeded', *built], check=True)
+        _flag = '-x' if sys.platform == 'darwin' else '--strip-unneeded'
+        subprocess.run(['strip', _flag, *built], check=True)
 
     # The compiled modules must be importable and self-identify as extensions BEFORE the
     # bundle build trusts them. Run in a child so this process never holds the imports.
