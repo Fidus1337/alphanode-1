@@ -54,7 +54,19 @@ DUST_W = 0.0005                                          # ignore weights below 
 # ---- shared state (the HTTP handler reads this; the refresh thread writes it) ----
 _STATE = {'lock': threading.Lock(), 'signal': None, 'updated': None, 'ts': 0.0,
           'error': None, 'computing': False, 'name': 'signal', 'formulas': [], 'n_tickers': 0,
-          'tf': '1d'}
+          'tf': '1d', 'progress': ''}
+
+
+def _progress(txt):
+    """One line of live progress served on /health — the GUI shows it while `computing` is up.
+    Without it a cold intraday start looks hung for minutes and users kill a working service."""
+    with _STATE['lock']:
+        _STATE['progress'] = txt
+
+
+# Cold-start fetch concurrency, per bar size — the same counts fetch_data.py settled on: MORE
+# workers trip Binance's request-weight cooldown and finish LATER in wall-clock, not sooner.
+_WORKERS = {'1d': 6, '4h': 4, '1h': 3, '15m': 2}
 
 
 # ---------------- live Binance klines (stdlib, no keys) ----------------
@@ -78,18 +90,80 @@ def fetch_klines(symbol, start_ms, end_ms, interval='1d'):
     return df[~df.index.duplicated()]
 
 
-def fetch_live_dfs(tickers, start, interval='1d'):
-    """{ticker: OHLCV df} of fresh closed candles from `start` to now (skips failures)."""
-    start_ms = int(pd.Timestamp(start, tz='UTC').timestamp() * 1000)
-    dfs = {}
-    for t in tickers:
+def _snapshot_dfs(data_path, tickers, start_ts):
+    """{ticker: OHLCV} seeded from the per-tf snapshot the GUI's data fetcher already wrote
+    (cfg['data'] — the ALPHANODE_DATA the GUI passes). Re-downloading years of intraday bars on
+    every cold start took ~17 min for 50 pairs of 1h — with the seed only the tail is paged.
+    The 'funding' column is dropped: live fetches never had it, so the served math stays
+    IDENTICAL to before, just fed faster. The (possibly still-open) last snapshot bar is
+    replaced by the tail fetch, which serves closed candles only."""
+    try:
+        import pickle
+        with open(data_path, 'rb') as f:
+            tk, ohlcvs = pickle.load(f)
+    except Exception:                                    # noqa: BLE001  no/bad snapshot -> full fetch
+        return {}
+    cols = ['open', 'high', 'low', 'close', 'volume']
+    out = {}
+    for t, df in zip(tk, ohlcvs):
         try:
-            df = fetch_klines(t, start_ms, _now_ms(), interval=interval)
+            if t in tickers and len(df):
+                d = df[cols].astype(float)
+                d = d[d.index >= start_ts]
+                if len(d):
+                    out[t] = d
+        except Exception:                                # noqa: BLE001  odd shape -> fetch this one
+            pass
+    return out
+
+
+def fetch_live_dfs(tickers, start, interval='1d', cache=None, data_path=None):
+    """{ticker: OHLCV df} of fresh CLOSED candles from `start` to now (skips failures).
+    `cache` (the previous call's result) turns a refresh into one tail request per pair; on a
+    cold start `data_path` seeds history from the local snapshot. Both empty -> the old
+    behavior: page everything, but in parallel (_WORKERS) with live progress on /health."""
+    start_ts = pd.Timestamp(start, tz='UTC')
+    start_ms = int(start_ts.timestamp() * 1000)
+    dfs = dict(cache) if cache else {}
+    if not dfs and data_path:
+        dfs = _snapshot_dfs(data_path, set(tickers), start_ts)
+        if dfs:
+            _progress(f'seeded {len(dfs)}/{len(tickers)} pairs from the local snapshot')
+    todo = [t for t in tickers if t not in dfs] + [t for t in tickers if t in dfs]
+    end_ms, total, done, out = _now_ms(), len(todo), 0, {}
+    lock = threading.Lock()
+
+    def _one(t):
+        nonlocal done
+        try:
+            base = dfs.get(t)
+            if base is not None:
+                # refetch from the second-to-last kept bar: the merge below then REPLACES the
+                # last cached row, so a partial bar from the snapshot/previous cycle never
+                # survives into the served signal (fetch_klines keeps closed candles only).
+                tail_from = base.index[-2] if len(base) > 1 else base.index[0]
+                fresh = fetch_klines(t, int(tail_from.timestamp() * 1000), end_ms,
+                                     interval=interval)
+                df = (pd.concat([base[base.index < fresh.index[0]], fresh])
+                      if len(fresh) else base.iloc[:-1])
+            else:
+                df = fetch_klines(t, start_ms, end_ms, interval=interval)
+            df = df[df.index >= start_ts]
             if len(df) > 60:
-                dfs[t] = df
+                with lock:
+                    out[t] = df
         except Exception:                                # noqa: BLE001
             pass
-    return dfs
+        finally:
+            with lock:
+                done += 1
+            _progress(f'fetching live {interval} bars · {done}/{total} pairs')
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=_WORKERS.get(interval, 3)) as ex:
+        list(ex.map(_one, todo))
+    _progress('')
+    return out
 
 
 # ---------------- compute the current signal (pure: no network) ----------------
@@ -167,13 +241,19 @@ def compute_from_dfs_fast(formulas, dfs, start, vol, exec_rate, tf):
             'n_assets': len(tk), 'positions': positions}
 
 
-def compute_signal(formulas, tickers, start, vol, exec_rate, tf='1d'):
-    dfs = fetch_live_dfs(tickers, start, interval=tf)
+def compute_signal(formulas, tickers, start, vol, exec_rate, tf='1d', cache=None, data_path=None):
+    """One full cycle: (signal, dfs). `dfs` goes back in as `cache` next cycle — a refresh then
+    costs one tail request per pair instead of re-paging the whole history."""
+    dfs = fetch_live_dfs(tickers, start, interval=tf, cache=cache, data_path=data_path)
     if not dfs:
         raise RuntimeError('could not fetch live data for any ticker')
-    if tf == '1d':
-        return compute_from_dfs(formulas, dfs, start, vol, exec_rate)
-    return compute_from_dfs_fast(formulas, dfs, start, vol, exec_rate, tf)
+    _progress('computing target weights…')
+    try:
+        if tf == '1d':
+            return compute_from_dfs(formulas, dfs, start, vol, exec_rate), dfs
+        return compute_from_dfs_fast(formulas, dfs, start, vol, exec_rate, tf), dfs
+    finally:
+        _progress('')
 
 
 # ---------------- background refresh loop ----------------
@@ -181,16 +261,22 @@ def _utcnow_iso():
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
-def refresh_loop(formulas, tickers, start, vol, exec_rate, refresh, stop, tf='1d'):
+def refresh_loop(formulas, tickers, start, vol, exec_rate, refresh, stop, tf='1d', data_path=None):
+    cache = {}                                            # {ticker: OHLCV} carried across cycles
     while not stop.is_set():
         with _STATE['lock']:
             _STATE['computing'] = True
         try:
-            sig = compute_signal(formulas, tickers, start, vol, exec_rate, tf=tf)
+            t0 = time.time()
+            sig, dfs = compute_signal(formulas, tickers, start, vol, exec_rate, tf=tf,
+                                      cache=cache, data_path=(None if cache else data_path))
+            # merge, don't replace: a pair whose fetch failed this cycle keeps its history in
+            # the cache (next cycle is a cheap tail request), it just sits out this signal
+            cache.update(dfs)
             with _STATE['lock']:
                 _STATE.update(signal=sig, updated=_utcnow_iso(), ts=time.time(), error=None)
             print(f'[signal] updated {sig["as_of"]} · {len(sig["positions"])} positions · '
-                  f'lev {sig["leverage"]:.2f}', flush=True)
+                  f'lev {sig["leverage"]:.2f} · {time.time() - t0:.1f}s', flush=True)
         except Exception as e:                            # noqa: BLE001
             with _STATE['lock']:
                 _STATE['error'] = f'{type(e).__name__}: {e}'
@@ -224,7 +310,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self._send(200, {'ok': sig is not None, 'name': name, 'pid': os.getpid(),
                              'n_formulas': len(forms), 'n_tickers': n_tick, 'tf': _STATE['tf'],
                              'updated_at': upd, 'age_secs': age, 'computing': computing,
-                             'error': err})
+                             'progress': _STATE['progress'], 'error': err})
         elif path in ('/', '/signal'):
             if sig is None:
                 self._send(503, {'ok': False, 'name': name, 'formulas': forms,
@@ -262,6 +348,12 @@ def main():
     refresh = max(30, int(os.environ.get('ALPHANODE_SIGNAL_REFRESH') or refresh_dflt))
     start_env = os.environ.get('ALPHANODE_SIGNAL_START')
     start = datetime.fromisoformat(start_env) if start_env else cfg['start']
+    if tf != '1d':
+        try:                                              # same clamp as forward-track enrollment:
+            from timeframe import resolve                 # paging YEARS of intraday klines is warm-up
+            start = max(start, datetime.fromisoformat(resolve(tf).history))   # nobody needs — the
+        except Exception:                                 # noqa: BLE001        tf's recommended
+            pass                                          # history is plenty
 
     def ev(k, fallback):
         raw_v = os.environ.get('ALPHANODE_' + k)
@@ -285,7 +377,8 @@ def main():
     _STATE['tf'] = tf
     stop = threading.Event()
     threading.Thread(target=refresh_loop,
-                     args=(formulas, tickers, start, vol, exec_rate, refresh, stop, tf),
+                     args=(formulas, tickers, start, vol, exec_rate, refresh, stop, tf,
+                           cfg['data']),                  # per-tf snapshot seeds the cold start
                      daemon=True).start()
 
     host = os.environ.get('ALPHANODE_SIGNAL_HOST') or '127.0.0.1'   # Docker: set 0.0.0.0 to expose it

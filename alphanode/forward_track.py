@@ -45,9 +45,12 @@ def _fmt_bar(ts, tf):
 
 
 def _state_dir():
-    d = os.environ.get('ALPHANODE_STATE_DIR') or os.path.join(HERE, 'state')
-    os.makedirs(d, exist_ok=True)
-    return d
+    d = os.environ.get('ALPHANODE_STATE_DIR')
+    if not d:
+        import apppaths                            # NOT "state next to the module": frozen, HERE is
+        d = apppaths.state_dir()                   # the read-only bundle (AppImage squashfs / deb's
+    os.makedirs(d, exist_ok=True)                  # /opt) — and the GUI imports us IN-PROCESS, where
+    return d                                       # ALPHANODE_STATE_DIR is not set (only children get it)
 
 
 def track_file():

@@ -29,7 +29,11 @@ warnings.filterwarnings('ignore'); np.seterr(all='ignore')
 
 
 def _state_dir():
-    return os.environ.get('ALPHANODE_STATE_DIR') or os.path.join(HERE, 'state')
+    d = os.environ.get('ALPHANODE_STATE_DIR')
+    if d:
+        return d
+    import apppaths                                # not HERE/state: frozen, that's the read-only bundle
+    return apppaths.state_dir()
 
 
 _G = {}

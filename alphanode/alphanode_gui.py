@@ -103,7 +103,11 @@ def _vault_pub_path():
     p = os.environ.get('ALPHANODE_VAULT_PUB')
     if p:
         return p
-    cand = os.path.join(PROJ, 'alphanode', 'vault_server_key.pub')
+    # RES_ROOT, not PROJ: frozen, the key ships INSIDE _internal (apppaths.RES_ROOT/alphanode/),
+    # while PROJ points one level ABOVE _internal — that miss made every shipped node silently
+    # mine IN THE OPEN (plaintext library_*.jsonl), the exact leak the vault exists to prevent.
+    # In dev RES_ROOT == PROJ, so the path is unchanged there. selfcheck asserts this resolves.
+    cand = os.path.join(apppaths.RES_ROOT, 'alphanode', 'vault_server_key.pub')
     return cand if os.path.isfile(cand) else ''
 
 
@@ -2204,6 +2208,11 @@ class App:
         # the vault is always on: seal every mined formula to the vendor's key. No user toggle —
         # the subscription decides what the customer can unlock, not whether the library is sealed.
         vault_pub = _vault_pub_path()
+        if apppaths.FROZEN and not vault_pub:            # a shipped build must NEVER mine open
+            messagebox.showerror(
+                'AlphaNode', 'The sealing key is missing from this installation, so mining '
+                'cannot start.\nPlease reinstall AlphaNode.', parent=self.root)
+            return
         # …unless this node is ACTIVATED: a live subscription means the customer sees everything
         # anyway, so an activated node mines in the open (checked against the hub at every Start —
         # instant revocation). Hub down or subscription lapsed -> fail CLOSED, seal as before;
@@ -2214,21 +2223,19 @@ class App:
             res = {}                                     # worker -> Tk handoff: ONE key, polled
 
             def check():                                 # (after() itself is NOT thread-safe, so
-                pub = vault_pub                          # the worker never touches Tk)
+                ok = False                               # the worker never touches Tk)
                 try:
                     act = self._hub_request('/activate', {'token': self.cfg['vault_license'],
                                                           'device_id': self._device_id()},
                                             timeout=3)
-                    if act.get('ok'):
-                        pub = ''
+                    ok = bool(act.get('ok'))
                 except RuntimeError:
                     pass                                 # hub unreachable -> fail closed: seal
-
-                res['pub'] = pub
+                res['open'] = ok
 
             def tick():
-                if 'pub' in res:
-                    self._start_node(res['pub'])
+                if 'open' in res:
+                    self._start_node(vault_pub, open_ok=res['open'])
                 else:
                     self.root.after(120, tick)
             threading.Thread(target=check, daemon=True).start()
@@ -2236,9 +2243,12 @@ class App:
             return
         self._start_node(vault_pub)
 
-    def _start_node(self, vault_pub):
+    def _start_node(self, vault_pub, open_ok=False):
         """The second half of Start — runs on the Tk thread after the (possibly async) vault
-        decision. vault_pub: '' = mine in the open, else the key to seal to."""
+        decision. vault_pub: the key to seal to ('' only in an unsealed DEV build). open_ok:
+        the hub confirmed an active subscription — ask the node to mine in the open; the node
+        RE-VERIFIES that with the hub itself, so plaintext mining is a server-side decision,
+        never a local env knob."""
         self._starting = False
         if self.proc and self.proc.poll() is None:       # re-check: the world may have moved
             return                                       # while the hub check was in flight
@@ -2249,7 +2259,13 @@ class App:
         if vault_pub:
             env['ALPHANODE_VAULT_PUB'] = vault_pub
         else:
-            env.pop('ALPHANODE_VAULT_PUB', None)         # no key available yet -> mine unsealed
+            env.pop('ALPHANODE_VAULT_PUB', None)         # unsealed DEV build (frozen refused above)
+        if open_ok and self.cfg.get('vault_license'):
+            env['ALPHANODE_VAULT_OPEN'] = '1'
+            env['ALPHANODE_VAULT_LICENSE'] = str(self.cfg['vault_license'])
+        else:
+            env.pop('ALPHANODE_VAULT_OPEN', None)
+            env.pop('ALPHANODE_VAULT_LICENSE', None)
         env.update(
             ALPHANODE_CPU_PERCENT=str(c['cpu']),
             ALPHANODE_UNIVERSE=('all' if c['universe_all'] else c['universe_list']),
@@ -2465,23 +2481,33 @@ class App:
                     continue
         return None
 
+    def _universe_tickers(self):
+        """universe_all -> tickers of the ACTIVE timeframe's snapshot (the basket the alphas
+        were mined on); an explicit list otherwise. Reading the 1d data.pickle here for an
+        intraday tf served/froze a 1h alpha on a DIFFERENT basket (50 pairs vs the 10 it was
+        mined on): cross-sectional normalization diverged from the leaderboard, and the signal
+        service cold-fetched 5x the klines. The 1d file stays as fallback only."""
+        c = self.cfg
+        if not c.get('universe_all', True):
+            return [x.strip().upper()
+                    for x in c.get('universe_list', '').split(',') if x.strip()] or None
+        for p in (self._data_file(), apppaths.data_path()):
+            try:
+                return list(pickle.load(open(p, 'rb'))[0])
+            except Exception:                             # noqa: BLE001  missing/odd -> fallback
+                continue
+        return None
+
     def _serve_signal(self, formulas, label):
         # tf-aware since the intraday branch landed in signal_service (fastsim math,
         # same numbers the forward track trades) — no daily-only gate here anymore
         formulas = [f for f in (formulas or []) if f and f.strip()]
         if not formulas:
             return
-        c = self.cfg
-        if c.get('universe_all', True):
-            try:
-                tickers = list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
-            except Exception as e:                        # noqa: BLE001
-                messagebox.showerror('Signal API', f'Cannot read the loaded data: {e}', parent=self.root)
-                return
-        else:
-            tickers = [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]
+        tickers = self._universe_tickers()
         if not tickers:
-            messagebox.showwarning('Signal API', 'The pairs universe is empty.', parent=self.root)
+            messagebox.showwarning('Signal API', 'The pairs universe is empty — download data '
+                                   f'for the {self._tf()} timeframe first.', parent=self.root)
             return
         if any(s['label'] == label for s in self._sigs):   # already serving this one — just show it
             self._render_signal_rows()
@@ -2651,8 +2677,8 @@ class App:
                        if age is not None else '● serving')
             elif h.get('error'):
                 txt = f'⚠ {h["error"]}'
-            else:
-                txt = 'computing the first signal…'
+            else:                                         # first compute: show the live progress
+                txt = '⏳ ' + (h.get('progress') or 'computing the first signal…')
         except Exception:                                 # noqa: BLE001
             txt = 'starting…'
         self._sig_health[port] = txt
@@ -4236,16 +4262,9 @@ class App:
         return forward_track
 
     def _fwd_universe(self):
-        """The universe to FREEZE into an enrollment — same resolution as the paper buttons."""
-        c = self.cfg
-        if c.get('universe_all', True):
-            try:
-                return list(pickle.load(open(apppaths.data_path(), 'rb'))[0])
-            except Exception as e:                             # noqa: BLE001
-                messagebox.showerror('Forward track', f'Cannot read the loaded data: {e}',
-                                     parent=self.root)
-                return None
-        return [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()] or None
+        """The universe to FREEZE into an enrollment — the active timeframe's basket, exactly
+        what the strategy was mined and leaderboarded on (see _universe_tickers)."""
+        return self._universe_tickers()
 
     def _fwd_enroll(self, formulas, name, kind):
         formulas = [f for f in (formulas or []) if f and f.strip()]

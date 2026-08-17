@@ -131,12 +131,37 @@ def _selfcheck_body(out):
     out('licence     :', 'present' if os.path.exists(apppaths.license_file()) else 'MISSING')
     out('hub url      :', bi.get('vault_url') or 'LOCALHOST (dev — customers cannot activate)')
 
+    # …and the GUI must actually FIND that key. _vault_pub_path once resolved a dev-only path,
+    # so every shipped node silently mined IN THE OPEN — plaintext library_*.jsonl, the exact
+    # leak the vault exists to prevent. Pure path logic, so it runs even on display-less CI.
+    if bi.get('vault_pub_fp'):
+        import alphanode_gui as _gui
+        _vp = _gui._vault_pub_path()
+        assert _vp and os.path.isfile(_vp), 'GUI cannot resolve the shipped sealing key'
+        _raw2 = bytes.fromhex(open(_vp, encoding='utf-8').read().strip())
+        assert hashlib.sha256(_raw2).hexdigest()[:16] == bi['vault_pub_fp'], (
+            'the GUI-resolved sealing key differs from the build stamp')
+        out('vault resolve: gui finds the shipped key (fp matches stamp)')
+    else:
+        out('vault resolve: skipped (unsealed dev build)')
+
     # The data fetcher role pulls the Binance wrapper (import pytz). Exercise it here so a missing
     # transitive dep (e.g. pytz) fails the build in CI instead of shipping a broken --role fetch.
     import fetch_data                                      # noqa: F401
     import signal_service                                  # noqa: F401
     import pdf_worker                                       # noqa: F401  (--role pdfreport worker)
     out('fetch/signal/pdf imports: ok')
+
+    # Forward-track state must land in the WRITABLE user dir, never inside the bundle: the GUI
+    # imports forward_track IN-PROCESS (ALPHANODE_STATE_DIR is only set for child processes), and
+    # frozen __file__ points into the read-only AppImage/deb — the old "state next to the module"
+    # fallback made every "Forward track ➕" click die silently inside the Tk callback.
+    import forward_track
+    _fd = forward_track._state_dir()
+    if apppaths.FROZEN and not os.environ.get('ALPHANODE_STATE_DIR'):
+        assert not _fd.startswith(apppaths.RES_ROOT), f'forward state dir inside the bundle: {_fd}'
+    assert os.access(_fd, os.W_OK), f'forward state dir not writable: {_fd}'
+    out('forward dir :', _fd)
 
     # render a REAL 4-page analytics PDF on synthetic data: exercises matplotlib Agg + FreeType
     # (incl. Cyrillic labels) + PdfPages inside the frozen bundle — the same code path the GUI's

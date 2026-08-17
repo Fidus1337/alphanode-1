@@ -52,7 +52,15 @@ PAUSE = float(env('PAUSE', '5'))
 MAX_ROUNDS = int(env('MAX_ROUNDS', '0'))               # 0 = infinite
 SEED_FROM_LIB = env('SEED_FROM_LIBRARY', '1') not in ('0', 'false', 'no', 'off')
 EXPLORE_EVERY = max(1, int(env('EXPLORE_EVERY', '4')))  # every Nth round — pure exploration
-STATE_DIR = env('STATE_DIR', os.path.join(HERE, 'state'))
+def _default_state_dir():
+    try:
+        import apppaths                                # not HERE/state: frozen, HERE is the read-only
+        return apppaths.state_dir()                    # bundle — a direct `<exe> --role node` (cron,
+    except Exception:                                  # noqa: BLE001   docker) died on makedirs; the
+        return os.path.join(HERE, 'state')             # GUI masked it by always passing the env
+
+
+STATE_DIR = env('STATE_DIR', '') or _default_state_dir()
 STATUS_PORT = int(env('STATUS_PORT', '8787'))
 KEEP = int(env('LEADERBOARD', '20'))
 TF = (env('TF', '') or '1d').strip().lower()           # bar size; also read by load_config (ALPHANODE_TF)
@@ -121,22 +129,85 @@ LIB = os.path.join(STATE_DIR, f'library{_SUF}.jsonl')
 HIST = os.path.join(STATE_DIR, f'history{_SUF}.jsonl')  # one line per round (for the progress chart)
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 
-# vault mode (prototype): ALPHANODE_VAULT_PUB = server public key (path or hex). When set,
-# every formula is SEALED before it reaches disk or status.json — plaintext stays only in
-# this process's memory (refine seeding needs it). Off by default: no env var, no sealing.
-# vault (and its `cryptography` dependency) is imported ONLY when the user opts in, so a
-# vault-off node has exactly its previous imports.
+# vault mode: every formula is SEALED before it reaches disk or status.json — plaintext stays
+# only in this process's memory (refine seeding needs it). The key comes from
+# ALPHANODE_VAULT_PUB (dev/self-host override) or the key SHIPPED IN THE BUNDLE — the node
+# resolves the bundled key ITSELF, so wiping the env is not an unseal button. vault (and its
+# `cryptography` dependency) is imported only when a key exists, so a dev source tree with no
+# key runs with exactly its previous imports.
 VAULT_PUB = None
 VAULT_OWNER = None
-if os.environ.get('ALPHANODE_VAULT_PUB'):
+
+
+def _bundled_pub():
+    """The vendor key shipped with the app (RES_ROOT/alphanode/, where the spec puts it)."""
+    try:
+        import apppaths
+        p = os.path.join(apppaths.RES_ROOT, 'alphanode', 'vault_server_key.pub')
+        return p if os.path.isfile(p) else None
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
+def _vault_open_ok():
+    """OPEN (plaintext) mining is a privilege of an ACTIVE subscription, and the node verifies
+    that with the hub ITSELF — the GUI's request alone is not enough, or plaintext mining
+    would be one exported env var away for anyone. Fail CLOSED: no flag, no licence, hub
+    unreachable or refusing -> seal as usual."""
+    if os.environ.get('ALPHANODE_VAULT_OPEN') != '1':
+        return False
+    tok = (os.environ.get('ALPHANODE_VAULT_LICENSE') or '').strip()
+    if not tok:
+        return False
+    try:
+        import urllib.request
+        import buildinfo
+        url = ((os.environ.get('ALPHANODE_VAULT_URL') or '').strip()
+               or buildinfo.vault_url() or 'http://127.0.0.1:8790')
+        req = urllib.request.Request(
+            url.rstrip('/') + '/activate',
+            data=json.dumps({'token': tok, 'device_id': _device_id() or ''}).encode(),
+            headers={'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=5) as r:
+            ok = bool(json.load(r).get('ok'))
+        print(f'[vault] open-mining check: {"subscription active" if ok else "REFUSED"}',
+              flush=True)
+        return ok
+    except Exception as e:                               # noqa: BLE001
+        print(f'[vault] open-mining check failed ({type(e).__name__}) — sealing', flush=True)
+        return False
+
+
+_VAULT_OPEN = _vault_open_ok()
+_pub_src = os.environ.get('ALPHANODE_VAULT_PUB') or _bundled_pub()
+_fp = None
+if _pub_src and not _VAULT_OPEN:
     import vault
-    VAULT_PUB = vault.load_pub(os.environ['ALPHANODE_VAULT_PUB'])
+    VAULT_PUB = vault.load_pub(_pub_src)
     VAULT_OWNER = _device_id() or None                   # '' (unwritable state) -> unbound v1
     # tamper-evidence: name the key we seal to (fp) and the build, so a swapped key or an
     # unexpected build is visible in the node's own log, not just the hub's.
     import hashlib as _hl
     _fp = _hl.sha256(VAULT_PUB).hexdigest()[:16]
     print(f'[vault] sealing to key {_fp} as owner {VAULT_OWNER or "none/v1"}', flush=True)
+
+# A SHIPPED build must never quietly mine in the open, and must seal to the key STAMPED at
+# build time: a missing key (the resolver bug that shipped plaintext libraries) and a
+# substituted keypair (seal-to-self, unseal locally) both die HERE instead of downgrading.
+# Dev builds carry no stamped fingerprint, so nothing changes outside a release.
+if getattr(sys, 'frozen', False) and not _VAULT_OPEN:
+    try:
+        import buildinfo
+        _want_fp = buildinfo.build_info().get('vault_pub_fp')
+    except Exception:                                    # noqa: BLE001
+        _want_fp = None
+    if _want_fp and _fp is None:
+        print('[vault] FATAL: sealing key not found in this installation', flush=True)
+        sys.exit(3)
+    if _want_fp and _fp != _want_fp:
+        print(f'[vault] FATAL: sealing key {_fp} does not match the build stamp {_want_fp}',
+              flush=True)
+        sys.exit(3)
 
 
 def _id_key(formula):
