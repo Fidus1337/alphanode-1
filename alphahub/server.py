@@ -19,8 +19,10 @@ the whole JSON body before any auth check runs, so the proxy is the real pre-aut
 import os
 import re
 import sys
+import threading
+import time
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
@@ -182,6 +184,28 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
         finally:
             conn.close()
 
+    # /request-access is the one unauthenticated write reachable from the internet, and nothing
+    # in front of it can gate it: stock Caddy has no rate-limit module and CORS is a browser
+    # courtesy, not a wall. Five per IP per hour is generous for a person and nothing for a
+    # script. In-memory on purpose — state that resets on restart is fine for a throttle.
+    rl_lock = threading.Lock()
+    rl_hits = {}                                          # ip -> [monotonic timestamps]
+
+    def rate_limited(ip, limit=5, window=3600.0):
+        now = time.monotonic()
+        with rl_lock:
+            if len(rl_hits) > 4096:                       # a scan across many IPs must not grow
+                for k in [k for k, v in rl_hits.items()   # this dict without bound
+                          if not v or now - v[-1] > window]:
+                    del rl_hits[k]
+            hits = [t for t in rl_hits.get(ip, []) if now - t < window]
+            if len(hits) >= limit:
+                rl_hits[ip] = hits
+                return True
+            hits.append(now)
+            rl_hits[ip] = hits
+            return False
+
     def announce(email, name, phone, note):
         """Mail one early-access request to the operator and, only if that worked, stamp it as
         announced. Runs after the response has gone out, on a connection of its own — the
@@ -190,7 +214,7 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
                 f'email: {email}\n'
                 f'phone: {(phone or "").strip() or "(not given)"}\n\n'
                 f'{(note or "").strip() or "(no note)"}\n\n'
-                f'-- invite them with:  admin invite {email} demo\n')
+                f'-- invite them with:  admin invite {email} demo --days 14\n')
         ok, _ = send_mail(f'AlphaNode early access: {(name or "").strip() or email}',
                           body, reply_to=email)
         if not ok:
@@ -242,20 +266,31 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
         return {'ok': True, 'token': token, 'plan': 'demo'}
 
     @app.post('/request-access')
-    def request_access(body: AccessRequestIn, bg: BackgroundTasks, conn=Depends(get_db)):
+    def request_access(body: AccessRequestIn, request: Request, bg: BackgroundTasks,
+                       conn=Depends(get_db)):
         """The site's early-access form. Stores the request and (if SMTP is configured) mails it
         to the operator. The DB is the source of truth on purpose — mail gets spam-filtered and
         lost, a row does not, and `admin requests` can always list the waitlist.
 
         Answers 200 for a repeat submit as well: whether an address is already on the list is not
-        something a public form should reveal, and the visitor did nothing wrong either way."""
+        something a public form should reveal, and the visitor did nothing wrong either way.
+
+        Every outcome leaves a log line. Without one, the row is the only evidence a person ever
+        existed — and a honeypot false positive (autofill loves filling hidden fields) would be
+        invisible to both sides forever."""
+        ip = request.client.host if request.client else ''
+        if rate_limited(ip):
+            raise HTTPException(status_code=429, detail='too many requests; try again later')
         if body.website:                                  # honeypot filled -> a bot. Look like
+            print(f'[waitlist] honeypot drop from {ip}: {body.email!r}', flush=True)
             return {'ok': True}                           # success so it stops retrying.
         try:
             hubdb.add_access_request(conn, body.email, name=body.name,
-                                     phone=body.phone, note=body.note)
+                                     phone=body.phone, note=body.note, ip=ip)
         except ValueError:
+            print(f'[waitlist] rejected email from {ip}: {body.email!r}', flush=True)
             raise HTTPException(status_code=422, detail='enter a valid email address')
+        print(f'[waitlist] request: {body.email.strip().lower()} ({ip})', flush=True)
         row = hubdb.get_access_request(conn, body.email)
         # Announce whenever this request has never been announced — not merely when it is new.
         # Mail that was off, misconfigured or down when someone applied would otherwise lose them

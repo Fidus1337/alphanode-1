@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS access_requests (  -- early-access waitlist from the 
     name       TEXT,
     phone      TEXT,                          -- optional on the form; a way to reach fast buyers
     note       TEXT,
+    ip         TEXT,                          -- submitting client, for abuse forensics
     status     TEXT NOT NULL DEFAULT 'new',   -- new | invited
     notified_at TEXT,                         -- NULL = the operator was never told about this one
     created_at TEXT NOT NULL,
@@ -104,7 +105,7 @@ def _migrate(conn):
     EXISTS is a no-op once the table exists, so a column added to SCHEMA never reaches a live
     hub without this — and the live hub is the one holding the waitlist."""
     have = {r['name'] for r in conn.execute('PRAGMA table_info(access_requests)')}
-    for col in ('name', 'phone', 'notified_at'):
+    for col in ('name', 'phone', 'ip', 'notified_at'):
         if col not in have:
             conn.execute(f'ALTER TABLE access_requests ADD COLUMN {col} TEXT')
 
@@ -254,22 +255,28 @@ def log_reveal(conn, user_id, device_id, formula_id):
 
 
 # ---- early-access waitlist (the site's request form) ----
-def add_access_request(conn, email, name=None, phone=None, note=None):
+def add_access_request(conn, email, name=None, phone=None, note=None, ip=None):
     """Record an early-access request. One row per address — a re-submit refreshes the details and
     the timestamp instead of piling up duplicates, so the list stays a list of PEOPLE. Returns
     True when this is a first-time request (worth a notification), False for a repeat.
 
     Only the email is validated: name and phone are free text people type in a hurry, and losing a
-    prospective buyer over a phone format we did not anticipate costs more than a messy string."""
+    prospective buyer over a phone format we did not anticipate costs more than a messy string.
+    The email is different — it becomes a Reply-To header, an `admin invite` argument and
+    eventually an account identity, so it must be ONE address: no whitespace, and none of the
+    separators that would smuggle a second recipient into a header ("bob@x.io, evil@attacker.tld"
+    passed the old contains-@ check and made every reply a CC to the attacker)."""
     # lowercased like every other email in this module: the UNIQUE index is case-sensitive, so
     # without it "Yurii@Gmail.com" is a second person, and `invite` (which grants against the
     # lowercased address) would never find the row to mark.
     email = (email or '').strip().lower()
-    if len(email) < 3 or '@' not in email or len(email) > 320:
+    if (len(email) < 3 or '@' not in email[1:] or len(email) > 320
+            or any(c in ',<>;' or c.isspace() for c in email)):
         raise ValueError('invalid email')
     name = (name or '').strip()[:200] or None
     phone = (phone or '').strip()[:64] or None
     note = (note or '').strip()[:2000] or None
+    ip = (ip or '').strip()[:64] or None
     now = iso_now()
     # asked BEFORE the write: an upsert reports rowcount 1 either way, so it cannot tell a new
     # person from someone submitting twice — and that distinction is what gates the notification
@@ -278,13 +285,14 @@ def add_access_request(conn, email, name=None, phone=None, note=None):
     # COALESCE per field: a second submit that leaves the phone blank must not erase the number
     # given the first time round.
     conn.execute(
-        'INSERT INTO access_requests(email, name, phone, note, created_at, updated_at) '
-        'VALUES (?,?,?,?,?,?) '
+        'INSERT INTO access_requests(email, name, phone, note, ip, created_at, updated_at) '
+        'VALUES (?,?,?,?,?,?,?) '
         'ON CONFLICT(email) DO UPDATE SET name  = COALESCE(excluded.name,  access_requests.name), '
         '                                 phone = COALESCE(excluded.phone, access_requests.phone), '
         '                                 note  = COALESCE(excluded.note,  access_requests.note), '
+        '                                 ip    = COALESCE(excluded.ip,    access_requests.ip), '
         '                                 updated_at = excluded.updated_at',
-        (email, name, phone, note, now, now))
+        (email, name, phone, note, ip, now, now))
     conn.commit()
     return first_time
 
@@ -311,6 +319,15 @@ def mark_notified(conn, emails):
         conn.execute('UPDATE access_requests SET notified_at = ? WHERE email = ?',
                      (now, (e or '').strip().lower()))
     conn.commit()
+
+
+def delete_access_request(conn, email):
+    """The removal path the site's privacy note promises. An actual DELETE — a row that merely
+    changes status is still someone's name and phone number sitting in the database."""
+    cur = conn.execute('DELETE FROM access_requests WHERE email = ?',
+                       ((email or '').strip().lower(),))
+    conn.commit()
+    return cur.rowcount > 0
 
 
 def list_access_requests(conn, status=None):

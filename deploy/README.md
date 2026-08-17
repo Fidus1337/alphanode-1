@@ -170,16 +170,21 @@ ALPHANODE_VAULT_URL=https://api.<DOMAIN> .venv/bin/python alphanode/alphanode_gu
 
 ## 6. Accounts, keys and money
 
-**A free demo account** (3 nodes) is created by the site's signup form:
+**Every key is minted by you, in a terminal.** The site has no self-service signup — its only
+form is the early-access waitlist (section 9). `POST /signup` exists on the hub and would mint a
+free demo account, but no page calls it; that is deliberate while the demo has real value to
+give away. The path for a waitlisted person:
 
-```
-POST https://api.<DOMAIN>/signup   {"email": "buyer@x.io"}
- -> 200 {"ok":true,"token":"<the subscription key>","plan":"demo"}
- -> 409 {"detail":"account_exists"}     (the key is shown ONCE, at creation)
+```bash
+docker compose exec hub python -m alphahub.admin invite buyer@x.io demo   # 14-day demo
 ```
 
-That `token` **is** the subscription key — the customer pastes it into the app's *Activate node*
-dialog. One key per account, forever; paying only changes the plan attached to it.
+`invite` refuses an address that is not on the waitlist (typo protection), grants the plan,
+prints the `token:` line — that **is** the subscription key, paste it into your reply — and
+marks the request invited. The default 14-day expiry is the point: activation unseals formulas
+irreversibly, so an unexpiring demo would simply be the product. Run `invite` again (or `grant`)
+to extend someone who turns out to be real. One key per account, forever; paying only changes
+the plan attached to it.
 
 **Paid plans** arrive through the webhook your payment provider calls:
 
@@ -203,8 +208,9 @@ docker compose exec hub python -m alphahub.admin list
 ```
 
 **Not built yet:** a buyer who pays gets no key automatically — you read the `token:` line and
-send it yourself. Signup does not verify the email address either, so a customer who loses their
-key cannot recover it without you. (Early-access requests *are* mailed to you — section 9.)
+send it yourself. Nothing verifies email addresses either, so a customer who loses their key
+cannot recover it without you. (Early-access requests are mailed to you once section 9 is
+configured; until then they only land in the database, so check `admin requests` weekly.)
 
 ---
 
@@ -213,14 +219,33 @@ key cannot recover it without you. (Early-access requests *are* mailed to you �
 Two files in `/srv/alphahub` are the whole business:
 
 * **`vault_key`** — irreplaceable. Every sealed formula in every customer's library dies with it.
-* **`hub.db`** — accounts, subscriptions, seats.
+* **`hub.db`** — accounts, subscriptions, seats, and the early-access waitlist.
 
 ```bash
+docker compose exec hub python -m alphahub.admin backup /data/hub-backup.db
 tar czf ~/alphahub-$(date +%F).tgz -C /srv alphahub
+rm /srv/alphahub/hub-backup.db
 ```
 
-Copy that off the server today, and put it on a nightly cron. The container runs as your user
-(`UID`/`GID` in `.env`), so no `sudo` is needed.
+`admin backup` first: it snapshots through SQLite's own backup API, so the copy is consistent
+even while the hub is writing. tar-ing the live `hub.db` alone can capture a torn file that
+only fails on the day you restore it — the tar is for carrying the folder (key included), the
+snapshot inside it is the database you would actually restore.
+
+Copy the tarball off the server today, and put the three lines on a nightly cron. The container
+runs as your user (`HUB_UID`/`HUB_GID` in `.env`), so no `sudo` is needed.
+
+**Restoring** (the part backup guides skip):
+
+```bash
+cd ~/alphanode/deploy && docker compose down
+tar xzf ~/alphahub-<date>.tgz -C /srv                 # brings back vault_key + the snapshot
+mv /srv/alphahub/hub-backup.db /srv/alphahub/hub.db   # the snapshot IS the database
+docker compose up -d
+```
+
+Anyone who joined the waitlist after that backup was taken is gone from it — one more reason
+the nightly cron matters.
 
 ---
 
@@ -292,12 +317,21 @@ Subject is the person's name, `Reply-To` is their address — hit Reply and you 
 them. The body carries name, email, phone, their note, and the exact `admin invite` command for
 that address.
 
-A repeat submit from the same address does not mail again, and the honeypot field means bots
-never do. If the send fails the visitor still sees success — their row is saved either way — and
-the reason goes to the log:
+A repeat submit re-mails only when the earlier announcement never went out — that is the retry
+path, not a bug. Once a request has been announced, further submits are silent. The honeypot
+stops bots that scrape the HTML form; a script that posts JSON straight at the endpoint skips
+it entirely by omitting the field, which is what the per-IP rate limit (5 requests/hour) is
+for. If a send fails the visitor still sees success — their row is saved either way — and every
+request, drop and failure leaves a `[waitlist]`/`[notify]` line:
 
 ```bash
-docker compose logs hub | grep '\[notify\]'
+docker compose logs hub | grep -E '\[waitlist\]|\[notify\]'
+```
+
+Someone asks to be removed (the form promises this):
+
+```bash
+docker compose exec hub python -m alphahub.admin forget their@address.io
 ```
 
 ### Nothing is lost while mail is off

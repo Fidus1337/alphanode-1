@@ -19,4 +19,7 @@ VOLUME /data
 EXPOSE 8790
 # ALPHAHUB_WEBHOOK_SECRET must come from the environment — the server refuses to start without
 # it (fail closed: the webhook grants paid plans).
-CMD ["uvicorn", "alphahub.server:app", "--host", "0.0.0.0", "--port", "8790"]
+# --forwarded-allow-ips '*': the only route in is Caddy on the compose network (the hub
+# publishes no port), and without this uvicorn discards X-Forwarded-For — every request would
+# log and rate-limit as Caddy's bridge IP instead of the visitor's.
+CMD ["uvicorn", "alphahub.server:app", "--host", "0.0.0.0", "--port", "8790", "--forwarded-allow-ips", "*"]

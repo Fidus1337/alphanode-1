@@ -9,8 +9,10 @@ apply_payment (exactly what the payment webhook does) so grants/cancels are cons
     python -m alphahub.admin list                               # all accounts
     python -m alphahub.admin requests [--new]                   # early-access waitlist
     python -m alphahub.admin invite <email> <plan> [--days N]   # grant + mark the request invited
+    python -m alphahub.admin forget <email>                     # delete a waitlist row (privacy)
     python -m alphahub.admin testmail                           # prove the notification mail works
     python -m alphahub.admin catchup                            # mail every request never announced
+    python -m alphahub.admin backup <path>                      # consistent snapshot of the DB
 
 Config: ALPHAHUB_DB (default alphahub/hub.db).
 """
@@ -112,7 +114,7 @@ def _one_request(r):
         out.append(f'      tel: {r["phone"]}')
     if r['note']:
         out.append(f'      {r["note"]}')
-    out.append(f'      invite: admin invite {r["email"]} demo')
+    out.append(f'      invite: admin invite {r["email"]} demo --days 14')
     return '\n'.join(out)
 
 
@@ -169,11 +171,45 @@ def cmd_testmail(a):
 
 def cmd_invite(a):
     """Grant the plan and take the address off the waitlist in one step — the token it prints
-    is what you paste into the reply."""
+    is what you paste into the reply.
+
+    Looks the request up FIRST: with addresses retyped off `requests` output, a typo used to
+    sail through cmd_grant, mint a token for an address nobody owns, and leave the real request
+    sitting in the list to be invited twice. The only signal was a line that did not print."""
+    conn = _db()
+    if hubdb.get_access_request(conn, a.email) is None:
+        sys.exit(f'no waitlist request for {a.email} — check `admin requests` for the exact '
+                 f'address, or use `grant` if a hand-made account is what you want')
     cmd_grant(a)
     conn = _db()
     if hubdb.mark_access_request(conn, a.email, 'invited'):
         print('waitlist: marked invited')
+
+
+def cmd_forget(a):
+    """Delete someone's waitlist row outright — the removal the site's privacy note promises."""
+    conn = _db()
+    if hubdb.delete_access_request(conn, a.email):
+        print(f'forgotten: {a.email}')
+    else:
+        sys.exit(f'no waitlist request for {a.email}')
+
+
+def cmd_backup(a):
+    """A consistent snapshot of the live database via SQLite's own backup API. tar-ing hub.db
+    while uvicorn is mid-write can capture a torn image that only fails on the day it is needed;
+    this always yields a database that opens."""
+    import sqlite3
+    if os.path.exists(a.path):
+        sys.exit(f'{a.path} already exists — refusing to overwrite a backup')
+    conn = _db()
+    dest = sqlite3.connect(a.path)
+    try:
+        with dest:
+            conn.backup(dest)
+    finally:
+        dest.close()
+    print(f'{a.path}: {os.path.getsize(a.path)} bytes')
 
 
 def cmd_list(_a):
@@ -199,13 +235,20 @@ def main(argv=None):
                                                      help='only the ones not invited yet')
     rq.set_defaults(fn=cmd_requests)
     iv = sub.add_parser('invite'); iv.add_argument('email'); iv.add_argument('plan')
-    iv.add_argument('--days', type=int, default=0); iv.set_defaults(fn=cmd_invite)
+    # 14 days, not forever: an invite unseals formulas irreversibly (the node rewrites its
+    # library in plaintext), so an unexpiring demo IS the paid product minus two seats. An
+    # expiry makes the demo a trial; extending a good prospect is one more `invite`.
+    iv.add_argument('--days', type=int, default=14,
+                    help='subscription length (default 14; 0 = never expires)')
+    iv.set_defaults(fn=cmd_invite)
+    fg = sub.add_parser('forget'); fg.add_argument('email'); fg.set_defaults(fn=cmd_forget)
     tm = sub.add_parser('testmail')
     tm.add_argument('--reply-to', default=None, help='set Reply-To, as a real request would')
     tm.set_defaults(fn=cmd_testmail)
     cu = sub.add_parser('catchup')
     cu.add_argument('--dry-run', action='store_true', help='show the digest without sending it')
     cu.set_defaults(fn=cmd_catchup)
+    bk = sub.add_parser('backup'); bk.add_argument('path'); bk.set_defaults(fn=cmd_backup)
     args = ap.parse_args(argv)
     args.fn(args)
 
