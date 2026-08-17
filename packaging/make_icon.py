@@ -67,7 +67,14 @@ def main():
     img.save(ico, sizes=[(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
     # downscaled 256 png for .desktop
     img.resize((256, 256)).save(os.path.join(HERE, 'alphanode-256.png'))
-    print('done:', png, ico)
+    # macOS .icns for the .app bundle (Pillow writes ICNS cross-platform; a failure here must
+    # never break the Linux/Windows legs, which don't use it)
+    try:
+        icns = os.path.join(HERE, 'alphanode.icns')
+        img.resize((512, 512)).save(icns)
+        print('done:', png, ico, icns)
+    except Exception as e:                               # noqa: BLE001
+        print('done:', png, ico, '· icns skipped:', e)
 
 
 if __name__ == '__main__':

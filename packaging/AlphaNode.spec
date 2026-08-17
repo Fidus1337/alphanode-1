@@ -6,6 +6,8 @@ We build onedir (a folder) — for AppImage this is optimal (the AppImage itself
 On Windows CI, the .exe and installer are assembled from this same folder.
 """
 import os
+import re
+import sys
 from PyInstaller.utils.hooks import collect_submodules
 
 PROJ = os.path.dirname(SPECPATH)                     # packaging/ -> repository root
@@ -167,3 +169,26 @@ coll = COLLECT(
     upx=False,
     name='AlphaNode',
 )
+
+# macOS: wrap the onedir into a proper .app bundle (Finder/Dock/Gatekeeper all want one).
+# The plain onedir stays alongside it — CI runs selfcheck/smoke against that binary directly.
+# The bundle ships UNSIGNED until an Apple Developer ID exists: first launch is
+# right-click -> Open (Gatekeeper), which the download page must say.
+if sys.platform == 'darwin':
+    _ver = '0.0.0'
+    try:
+        _ver = re.search(r"__version__\s*=\s*'([^']+)'",
+                         open(os.path.join(APP, 'version.py'), encoding='utf-8').read()).group(1)
+    except Exception:                                    # noqa: BLE001
+        pass
+    _icns = os.path.join(SPECPATH, 'alphanode.icns')
+    app = BUNDLE(
+        coll,
+        name='AlphaNode.app',
+        icon=(_icns if os.path.exists(_icns) else None),
+        bundle_identifier='tech.alphanode.app',
+        info_plist={
+            'CFBundleShortVersionString': _ver,
+            'NSHighResolutionCapable': True,
+        },
+    )

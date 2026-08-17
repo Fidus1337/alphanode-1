@@ -128,9 +128,63 @@ jobs:
           path: packaging/dist/AlphaNode-x86_64.AppImage
           if-no-files-found: error
 
+  # ---------------------------------------------------------------- macOS (Apple Silicon)
+  # arm64-only for now: covers every Mac since 2020. Intel Macs would need a twin job on
+  # macos-13 (x86_64) — add it if a customer actually shows up with one. The bundle is
+  # UNSIGNED until an Apple Developer ID exists ($99/yr + notarytool): first launch is
+  # right-click -> Open, and the download page must say so.
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r packaging/requirements-build.txt
+
+      - name: Vault public key (from the live hub; public, gitignored)
+        run: curl -fsSL "$VAULT_API/pub.txt" -o alphanode/vault_server_key.pub
+
+      - name: Icon
+        run: python packaging/make_icon.py
+
+      - name: Engine core -> native extensions (Cython)
+        run: python packaging/cythonize_engine.py
+
+      - name: Build stamp (provenance + hub URL)
+        run: python packaging/make_build_stamp.py
+
+      - name: PyInstaller (onedir + .app)
+        run: pyinstaller --noconfirm --clean --distpath packaging/dist --workpath packaging/build packaging/AlphaNode.spec
+
+      # the GUI-widget section of selfcheck self-skips without a DISPLAY; everything else
+      # (engine form, key vs stamp, GUI key resolve, forward dir, PDF render) still runs
+      - name: Selfcheck (frozen)
+        run: |
+          BIN=packaging/dist/AlphaNode/AlphaNode
+          "$BIN" --role selfcheck || (cat packaging/dist/AlphaNode/selfcheck.log; exit 1)
+          cat packaging/dist/AlphaNode/selfcheck.log
+
+      - name: Smoke (frozen node round + PDF worker)
+        run: python packaging/ci_smoke.py packaging/dist/AlphaNode/AlphaNode
+
+      - name: Zip the app bundle (ditto keeps bundle metadata)
+        run: ditto -c -k --keepParent packaging/dist/AlphaNode.app packaging/dist/AlphaNode-macos-arm64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: alphanode-macos
+          path: packaging/dist/AlphaNode-macos-arm64.zip
+          if-no-files-found: error
+
   # ---------------------------------------------------------------- Release (on tag)
   release:
-    needs: [windows, linux]
+    needs: [windows, linux, macos]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     permissions:
