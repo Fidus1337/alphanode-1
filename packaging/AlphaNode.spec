@@ -47,6 +47,12 @@ else:
         '  curl -s https://api.<YOUR-DOMAIN>/pub.txt > alphanode/vault_server_key.pub\n'
         '  (or set ALPHANODE_ALLOW_UNSEALED=1 for a deliberately unprotected dev build)')
 
+# The ONE engine data file read at runtime: config.ini (the shipped defaults the ALPHANODE_*
+# overrides layer over). load_config hard-fails on a missing path (config.py), and the GUI/node
+# point ALPHANODE_CONFIG_INI here (apppaths.py), so it must ship — but nothing else from
+# evolution/ does. Shipped explicitly now that the source Tree below is gone.
+datas.append((os.path.join(PROJ, 'evolution', 'config.ini'), 'evolution'))
+
 a = Analysis(
     [os.path.join(APP, 'app_entry.py')],
     pathex=[PROJ, APP, os.path.join(PROJ, 'evolution')],
@@ -61,9 +67,14 @@ a = Analysis(
     noarchive=False,
 )
 
-# We ship the raw engine and quantpylib sources as DATA — the engine imports them at runtime.
-a.datas += Tree(os.path.join(PROJ, 'evolution'), prefix='evolution',
-                excludes=['__pycache__', '*.pyc', '*.pyo'])
+# The engine ships as BYTECODE in the PYZ (see hiddenimports), never as source. It used to be
+# dumped here as raw .py via Tree('evolution') — which handed the entire search algorithm to
+# anyone who unzipped the AppImage. The mining path imports every engine module by name from the
+# PYZ; the only file it reads off disk is config.ini, shipped explicitly above. app_entry's
+# sys.path.insert for evolution/ is os.path.isdir-guarded, so the now-absent dir is a safe no-op.
+#
+# quantpylib stays as source: it is a third-party dependency (throttler + exchange wrappers), not
+# our IP, and collect_submodules can miss its dynamic imports.
 a.datas += Tree(os.path.join(PROJ, 'quantpylib'), prefix='quantpylib',
                 excludes=['__pycache__', '*.pyc', '*.pyo'])
 
