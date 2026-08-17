@@ -23,6 +23,7 @@ if [ ! -x "$ONEDIR/AlphaNode" ]; then
   if ! "$PY" -c "import Cython" 2>/dev/null; then "$PY" -m pip install --quiet --upgrade cython; fi
   "$PY" "$HERE/make_icon.py"
   "$PY" "$HERE/cythonize_engine.py"
+  "$PY" "$HERE/make_build_stamp.py"
   "$PY" -m PyInstaller --noconfirm --clean --distpath "$HERE/dist" --workpath "$HERE/build" "$HERE/AlphaNode.spec"
 fi
 [ -f "$HERE/alphanode-256.png" ] || "$PY" "$HERE/make_icon.py"

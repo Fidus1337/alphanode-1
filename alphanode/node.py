@@ -132,6 +132,11 @@ if os.environ.get('ALPHANODE_VAULT_PUB'):
     import vault
     VAULT_PUB = vault.load_pub(os.environ['ALPHANODE_VAULT_PUB'])
     VAULT_OWNER = _device_id() or None                   # '' (unwritable state) -> unbound v1
+    # tamper-evidence: name the key we seal to (fp) and the build, so a swapped key or an
+    # unexpected build is visible in the node's own log, not just the hub's.
+    import hashlib as _hl
+    _fp = _hl.sha256(VAULT_PUB).hexdigest()[:16]
+    print(f'[vault] sealing to key {_fp} as owner {VAULT_OWNER or "none/v1"}', flush=True)
 
 
 def _id_key(formula):
@@ -170,11 +175,18 @@ def _sig(*_a):
 for _s in (signal.SIGTERM, signal.SIGINT):
     signal.signal(_s, _sig)
 
+try:
+    import buildinfo as _bi
+    _BUILD = _bi.build_info()
+except Exception:                                          # noqa: BLE001 — never block the node
+    _BUILD = {'version': '?', 'build_id': 'dev'}
+
 status = {'app': 'AlphaNode', 'state': 'starting', 'started': iso(), 'updated': iso(),
           'rounds': 0, 'trials_total': 0, 'found': 0, 'cpu_percent': CPU_PERCENT, 'n_jobs': N_JOBS,
           'cores': CORES, 'universe': UNIVERSE, 'tf': TF, 'pop': POP, 'gens': GENS,
           'explore_every': EXPLORE_EVERY, 'seed_from_lib': SEED_FROM_LIB,
           'node_id': NODE_ID, 'seed_base': BASE_SEED, 'seed_auto': SEED_AUTO,
+          'version': _BUILD.get('version'), 'build_id': _BUILD.get('build_id'),
           'current': '', 'gen': '', 'best': []}
 
 
@@ -420,6 +432,7 @@ white-space:pre-wrap;word-break:break-word;color:var(--mut)}}
 {fwd_card}
 <div class=card><div class=k style="margin-bottom:8px">best by fitness min(train,val) · TEST — honest held-out (read-only, does NOT enter selection)</div>
 <div class=tw><table><thead><tr><th>#</th><th>fitness</th><th>TEST (OOS)</th><th class=f>formula</th></tr></thead><tbody>{rows}</tbody></table></div></div>
+<p class=sub style="margin-top:14px">AlphaNode v{status.get('version','?')} · build {status.get('build_id','dev')}</p>
 <script>setTimeout(()=>location.reload(),4000)</script>"""
 
 

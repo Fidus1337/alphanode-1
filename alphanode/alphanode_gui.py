@@ -90,6 +90,15 @@ def _vault_pub_path():
     return cand if os.path.isfile(cand) else ''
 
 
+def _build_id():
+    """This build's id (provenance), sent to the hub on activate. 'dev' outside a release."""
+    try:
+        import buildinfo
+        return buildinfo.build_info()['build_id']
+    except Exception:                                    # noqa: BLE001 — never block activation
+        return 'dev'
+
+
 TF_CHOICES = ('1d', '4h', '1h', '15m')
 
 def _tf_suffix(tf):
@@ -299,6 +308,7 @@ class App:
             self._boot_arm()                             # With a splash up its dialog must not pop
         #                                                  mid-intro — finish() arms it instead.
         root.protocol('WM_DELETE_WINDOW', self._on_close)
+        self.root.after(400, self._eula_gate)            # one-time licence acceptance (post-splash)
 
     # ---------- settings (persist) ----------
     def _load(self):
@@ -383,7 +393,11 @@ class App:
         ctk.set_widget_scaling(self.SCALE)
         ctk.set_window_scaling(self.SCALE)
         _fix_corner_rendering()                          # must precede the first CTk widget
-        self.root.title('AlphaNode')
+        try:
+            import buildinfo
+            self.root.title(f'AlphaNode  {buildinfo.build_label()}')
+        except Exception:                                # noqa: BLE001
+            self.root.title('AlphaNode')
         self.root.geometry('1100x860')                   # CTk scales this by window_scaling
         self.root.minsize(980, 680)                      # raw, like geometry: CTk scales it too, and
         #                                                  pre-scaling made the floor 1.75x too big
@@ -2105,6 +2119,54 @@ class App:
             'is the next phase.', parent=self.root)
         return True
 
+    # ---------- licence gate (first run) ----------
+    def _eula_gate(self):
+        """Show the EULA once and require acceptance. Secondary to the Windows installer's own
+        accept page — this covers the AppImage/mac paths, which have no installer. Declining
+        quits the app. Re-prompts only if the accepted version string changes."""
+        import buildinfo
+        ver = buildinfo.build_info().get('version', '')
+        if self.cfg.get('eula_accepted') == ver:
+            return
+        if getattr(self, '_splash_on', False):           # let the intro finish first
+            self.root.after(300, self._eula_gate)
+            return
+        try:
+            text = open(apppaths.license_file(), encoding='utf-8').read()
+        except OSError:
+            text = ('The AlphaNode End User License Agreement applies to your use of this '
+                    'software. A copy is available from support@alphanode.tech. By clicking '
+                    '"I Agree" you accept its terms.')
+        win = ctk.CTkToplevel(self.root)
+        win.title('AlphaNode — License Agreement')
+        win.geometry('720x560')
+        win.transient(self.root)
+        win.protocol('WM_DELETE_WINDOW', lambda: None)   # a choice is required
+        self.root.after(200, win.grab_set)               # ctk toplevels need a beat before grab
+        ctk.CTkLabel(win, text='Please read and accept the License Agreement to continue'
+                     ).pack(padx=16, pady=(14, 6), anchor='w')
+        box = ctk.CTkTextbox(win, wrap='word')
+        box.pack(fill='both', expand=True, padx=16, pady=(0, 10))
+        box.insert('1.0', text)
+        box.configure(state='disabled')
+        row = ctk.CTkFrame(win, fg_color='transparent')
+        row.pack(fill='x', padx=16, pady=(0, 14))
+
+        def accept():
+            self.cfg['eula_accepted'] = ver
+            self._save()
+            win.grab_release()
+            win.destroy()
+
+        def decline():
+            win.grab_release()
+            win.destroy()
+            self.root.after(0, self.root.destroy)
+
+        ctk.CTkButton(row, text='Decline & Quit', fg_color='transparent', border_width=1,
+                      width=140, command=decline).pack(side='left')
+        ctk.CTkButton(row, text='I Agree', width=140, command=accept).pack(side='right')
+
     # ---------- start/stop ----------
     def start(self):
         if self.proc and self.proc.poll() is None:
@@ -3720,7 +3782,8 @@ class App:
         if not account_token:
             raise RuntimeError('enter your subscription key first')
         device_id = self._device_id()
-        act = self._hub_request('/activate', {'token': account_token, 'device_id': device_id})
+        act = self._hub_request('/activate', {'token': account_token, 'device_id': device_id,
+                                              'build': _build_id()})
         if not act.get('ok'):                            # seat / subscription problem
             raise RuntimeError(str(act.get('detail') or 'activation denied'))
         out = self._hub_request('/reveal', {'token': account_token, 'device_id': device_id,
@@ -3759,7 +3822,8 @@ class App:
         if not account_token:
             raise RuntimeError('enter your subscription key first')
         device_id = self._device_id()
-        act = self._hub_request('/activate', {'token': account_token, 'device_id': device_id})
+        act = self._hub_request('/activate', {'token': account_token, 'device_id': device_id,
+                                              'build': _build_id()})
         if not act.get('ok'):
             raise RuntimeError(str(act.get('detail') or 'activation denied'))
         n_open = n_fail = 0

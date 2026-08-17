@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS devices (
     user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     device_id  TEXT NOT NULL,
     label      TEXT,
+    last_build TEXT,                          -- build_id last seen activating (leak provenance)
     first_seen TEXT NOT NULL,
     last_seen  TEXT NOT NULL,
     UNIQUE(user_id, device_id)
@@ -113,6 +114,9 @@ def _migrate(conn):
     for col in ('name', 'phone', 'ip', 'notified_at'):
         if col not in have:
             conn.execute(f'ALTER TABLE access_requests ADD COLUMN {col} TEXT')
+    dev_cols = {r['name'] for r in conn.execute('PRAGMA table_info(devices)')}
+    if 'last_build' not in dev_cols:
+        conn.execute('ALTER TABLE devices ADD COLUMN last_build TEXT')
     # ownership backfill: every seat that existed before the claims ledger belongs to the
     # account that held it (earliest first_seen wins if one device_id somehow sits under two
     # accounts). OR IGNORE makes the backfill idempotent across restarts.
@@ -216,10 +220,11 @@ def get_device(conn, user_id, device_id):
                         (user_id, device_id)).fetchone()
 
 
-def register_device(conn, user_id, device_id, node_limit, label=None):
+def register_device(conn, user_id, device_id, node_limit, label=None, build=None):
     """Seat gate. An already-registered device is always allowed (just bumps last_seen). A new
     device is allowed only while count < node_limit. Returns (ok, reason). The count check and the
-    insert run in one IMMEDIATE transaction so two nodes racing for the last seat can't both win."""
+    insert run in one IMMEDIATE transaction so two nodes racing for the last seat can't both win.
+    `build` is the reporting node's build_id, recorded for leak provenance."""
     if not device_id:
         return False, 'device_id required'
     now = iso_now()
@@ -236,8 +241,9 @@ def register_device(conn, user_id, device_id, node_limit, label=None):
         row = conn.execute('SELECT id FROM devices WHERE user_id = ? AND device_id = ?',
                            (user_id, device_id)).fetchone()
         if row is not None:
-            conn.execute('UPDATE devices SET last_seen = ?, label = COALESCE(?, label) '
-                         'WHERE id = ?', (now, label, row['id']))
+            conn.execute('UPDATE devices SET last_seen = ?, label = COALESCE(?, label), '
+                         'last_build = COALESCE(?, last_build) WHERE id = ?',
+                         (now, label, build, row['id']))
             conn.execute('INSERT OR IGNORE INTO device_claims(device_id, user_id, claimed_at) '
                          'VALUES (?,?,?)', (device_id, user_id, now))
             conn.commit()
@@ -247,8 +253,9 @@ def register_device(conn, user_id, device_id, node_limit, label=None):
         if n >= node_limit:
             conn.rollback()
             return False, f'node limit reached ({n}/{node_limit})'
-        conn.execute('INSERT INTO devices(user_id, device_id, label, first_seen, last_seen) '
-                     'VALUES (?,?,?,?,?)', (user_id, device_id, label, now, now))
+        conn.execute('INSERT INTO devices(user_id, device_id, label, last_build, '
+                     'first_seen, last_seen) VALUES (?,?,?,?,?,?)',
+                     (user_id, device_id, label, build, now, now))
         conn.execute('INSERT OR IGNORE INTO device_claims(device_id, user_id, claimed_at) '
                      'VALUES (?,?,?)', (device_id, user_id, now))
         conn.commit()
@@ -266,7 +273,7 @@ def remove_device(conn, user_id, device_id):
 
 
 def list_devices(conn, user_id):
-    return conn.execute('SELECT device_id, label, first_seen, last_seen FROM devices '
+    return conn.execute('SELECT device_id, label, last_build, first_seen, last_seen FROM devices '
                         'WHERE user_id = ? ORDER BY first_seen', (user_id,)).fetchall()
 
 

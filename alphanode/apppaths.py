@@ -93,6 +93,12 @@ def config_ini():
     return os.path.join(RES_ROOT, 'evolution', 'config.ini')
 
 
+def license_file():
+    """The bundled EULA (LICENSE.txt). In the bundle it sits at the resource root; in dev it is
+    the repo-root LICENSE.txt. Returns the path whether or not it exists — callers check."""
+    return os.path.join(RES_ROOT, 'LICENSE.txt') if FROZEN else os.path.join(PROJ, 'LICENSE.txt')
+
+
 def engine_dir():
     """Directory with the formula-engine sources (imported at runtime via sys.path)."""
     return os.path.join(RES_ROOT, 'evolution')

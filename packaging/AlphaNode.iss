@@ -14,6 +14,8 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; show the EULA and require acceptance before install (the repo-root LICENSE.txt, also bundled)
+LicenseFile=..\LICENSE.txt
 OutputDir=Output
 OutputBaseFilename=AlphaNode-Setup
 SetupIconFile=alphanode.ico

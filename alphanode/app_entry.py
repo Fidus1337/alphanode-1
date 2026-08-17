@@ -106,6 +106,25 @@ def _selfcheck_body(out):
         raise AssertionError('engine must ship as native extensions, got bytecode: '
                              + ','.join(_soft))
 
+    # build identity + tamper-evidence: the stamp records the fingerprint of the vault key the
+    # build shipped with; a bundle whose key was swapped or corrupted fails HERE (tamper-EVIDENT,
+    # not tamper-proof — the honest limit). The licence must ship too.
+    import hashlib
+    import buildinfo
+    bi = buildinfo.build_info()
+    out('build       :', buildinfo.build_label(), '·', bi.get('built_at') or 'dev')
+    _pubf = os.path.join(apppaths.RES_ROOT, 'alphanode', 'vault_server_key.pub')
+    if bi.get('vault_pub_fp') and os.path.exists(_pubf):
+        raw = bytes.fromhex(open(_pubf, encoding='utf-8').read().strip())
+        got = hashlib.sha256(raw).hexdigest()[:16]
+        assert got == bi['vault_pub_fp'], (
+            f'vault key fingerprint mismatch: bundle {got} != stamp {bi["vault_pub_fp"]} '
+            '(the shipped vault key was swapped or corrupted)')
+        out('vault key   : matches build stamp', got)
+    else:
+        out('vault key   : no fingerprint to check (dev / unsealed build)')
+    out('licence     :', 'present' if os.path.exists(apppaths.license_file()) else 'MISSING')
+
     # The data fetcher role pulls the Binance wrapper (import pytz). Exercise it here so a missing
     # transitive dep (e.g. pytz) fails the build in CI instead of shipping a broken --role fetch.
     import fetch_data                                      # noqa: F401

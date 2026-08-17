@@ -63,6 +63,7 @@ class ActivateIn(BaseModel):
     token: str
     device_id: str
     label: str | None = None
+    build: str | None = None                             # reporting node's build_id (provenance)
 
 
 class RevealIn(BaseModel):
@@ -343,9 +344,13 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
             raise HTTPException(status_code=402,
                                 detail=f'subscription not active ({st["status"]})')
         ok, reason = hubdb.register_device(conn, user['id'], body.device_id,
-                                           st['node_limit'], body.label)
+                                           st['node_limit'], body.label,
+                                           build=header_safe(body.build or '', 64) or None)
         if not ok:
             raise HTTPException(status_code=409, detail=reason)   # 409: seat conflict
+        # provenance: build_id activating under this account — the trace tie-in for a leaked binary
+        print(f'[activate] {user["email"]} device {body.device_id} '
+              f'build {body.build or "?"} ({reason})', flush=True)
         st = hubdb.subscription_state(conn, user['id'])           # refresh used count
         return {'ok': True, 'plan': st['plan'], 'node_limit': st['node_limit'],
                 'used': st['used'], 'expires_at': st['expires_at']}

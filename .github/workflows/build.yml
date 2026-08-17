@@ -29,6 +29,9 @@ jobs:
       - name: Engine core -> native extensions (Cython)
         run: python packaging/cythonize_engine.py
 
+      - name: Build stamp (provenance)
+        run: python packaging/make_build_stamp.py
+
       - name: PyInstaller (onedir)
         run: pyinstaller --noconfirm --clean --distpath packaging/dist --workpath packaging/build packaging/AlphaNode.spec
 

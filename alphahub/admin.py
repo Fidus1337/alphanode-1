@@ -69,7 +69,8 @@ def cmd_show(a):
     print(f'  plan={st["plan"]} status={st["status"]} active={st["active"]} '
           f'seats={st["used"]}/{st["node_limit"]} expires={st["expires_at"] or "never"}')
     for d in hubdb.list_devices(conn, row['id']):
-        print(f'  device {d["device_id"]}  {d["label"] or ""}  last_seen={d["last_seen"]}')
+        print(f'  device {d["device_id"]}  {d["label"] or ""}  '
+              f'build={d["last_build"] or "?"}  last_seen={d["last_seen"]}')
 
 
 def cmd_unseat(a):

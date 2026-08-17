@@ -16,7 +16,7 @@ APP = os.path.join(PROJ, 'alphanode')
 hiddenimports = (
     ['fetch_data', 'apppaths', 'node', 'alphanode_gui', 'portfolio_build', 'cli',
      'signal_service', 'metrics_worker', 'pdf_report', 'pdf_worker', 'rescore_library',
-     'forward_track',
+     'forward_track', 'version', 'buildinfo',
      'config', 'evolution', 'evaluator', 'fastsim', 'genome', 'primitives',
      'report', 'evolved_strategy', 'experiments',
      # imports of the COMPILED core, which modulegraph can no longer scan (.so has no source):
@@ -56,6 +56,19 @@ else:
 # point ALPHANODE_CONFIG_INI here (apppaths.py), so it must ship — but nothing else from
 # evolution/ does. Shipped explicitly now that the source Tree below is gone.
 datas.append((os.path.join(PROJ, 'evolution', 'config.ini'), 'evolution'))
+
+# Build identity (packaging/make_build_stamp.py) + the EULA. The stamp ships beside buildinfo
+# (bundle root == _internal, where buildinfo.__file__ resolves) so the app can report its
+# build_id and the hub can log it; the licence ships at the bundle root so the app can show it.
+_stamp = os.path.join(APP, '_build_stamp.json')
+if os.path.exists(_stamp):
+    datas.append((_stamp, '.'))
+else:
+    print('AlphaNode.spec: no _build_stamp.json — run packaging/make_build_stamp.py first '
+          '(building with a dev build identity)')
+_license = os.path.join(PROJ, 'LICENSE.txt')
+if os.path.exists(_license):
+    datas.append((_license, '.'))
 
 # The engine core ships as NATIVE extensions (Cython), never bytecode: a .pyc decompiles back to
 # near-source in seconds, machine code does not. packaging/cythonize_engine.py builds the five

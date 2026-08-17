@@ -1,0 +1,116 @@
+AlphaNode — End User License Agreement
+======================================
+
+Last updated: 2026-08-17
+
+This End User License Agreement ("Agreement") is a binding agreement between you
+("You") and AlphaNode ("Licensor") for the AlphaNode desktop application and the
+accompanying licence/vault service (together, the "Software"). By installing,
+activating, or using the Software you agree to this Agreement. If you do not
+agree, do not install or use the Software.
+
+
+1. Licence grant
+----------------
+The Software is licensed, not sold. Subject to Your compliance with this
+Agreement and, where applicable, an active subscription, the Licensor grants You
+a personal, non-exclusive, non-transferable, revocable licence to install and
+run the Software on the number of devices permitted by Your subscription tier,
+for Your own use.
+
+
+2. Subscription and activation
+------------------------------
+Certain features — including unsealing (revealing) the strategies the Software
+discovers — require an active subscription and device activation through the
+licence service. Discovered strategies are stored in a sealed form that only the
+licence service can open, and only for the account that mined them. The number
+of concurrent devices ("nodes") is limited by Your subscription tier. Sharing,
+reselling, or sub-licensing Your subscription credentials or account token is
+prohibited.
+
+
+3. Restrictions
+---------------
+You shall NOT, and shall not permit any third party to:
+
+  (a) reverse engineer, decompile, disassemble, or otherwise attempt to derive
+      the source code, algorithms, or internal design of the Software, except
+      and only to the extent that this restriction is expressly prohibited by
+      applicable law (for example, mandatory interoperability rights);
+
+  (b) circumvent, disable, or tamper with any licensing, activation, sealing,
+      metering, or integrity mechanism of the Software, or the binding of a
+      discovered strategy to an account or device;
+
+  (c) copy, redistribute, publish, rent, lease, lend, sell, or otherwise make
+      the Software (or any part of it, including bundled engine components) available
+      to any third party;
+
+  (d) remove, alter, or obscure any proprietary notice, build identifier, or
+      watermark embedded in the Software or its output;
+
+  (e) use the Software to build or assist in building a competing product, or
+      to extract its strategy-search engine for use outside the Software.
+
+
+4. Ownership
+------------
+The Software, including its strategy-search engine, its sealed-formula scheme,
+and all intellectual property therein, is and remains the property of the
+Licensor. Strategies that You discover with the Software and unseal under an
+active subscription are Yours to use for Your own trading; this Agreement grants
+You no rights in the Software's engine or code beyond the licence in Section 1.
+
+
+5. No investment advice; trading risk
+-------------------------------------
+The Software is a research tool. It does not provide investment, financial,
+legal, or tax advice, and nothing it produces is a recommendation to buy or sell
+any instrument. Trading and investing carry substantial risk of loss. Past or
+simulated performance — including any backtest, forward test, or metric shown by
+the Software — is not indicative of future results and may not reflect real
+trading conditions, fees, slippage, or liquidity. You are solely responsible for
+Your trading decisions and their outcomes.
+
+
+6. Disclaimer of warranty
+-------------------------
+THE SOFTWARE IS PROVIDED "AS IS" AND "AS AVAILABLE", WITHOUT WARRANTY OF ANY
+KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE IMPLIED WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. THE
+LICENSOR DOES NOT WARRANT THAT THE SOFTWARE WILL BE UNINTERRUPTED, ERROR-FREE, OR
+THAT ANY STRATEGY IT PRODUCES WILL BE PROFITABLE.
+
+
+7. Limitation of liability
+--------------------------
+TO THE MAXIMUM EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSOR SHALL NOT BE
+LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR EXEMPLARY
+DAMAGES, OR FOR ANY LOSS OF PROFITS, TRADING LOSSES, DATA, OR GOODWILL, ARISING
+OUT OF OR RELATED TO THE SOFTWARE OR THIS AGREEMENT, EVEN IF ADVISED OF THE
+POSSIBILITY OF SUCH DAMAGES. THE LICENSOR'S TOTAL AGGREGATE LIABILITY SHALL NOT
+EXCEED THE AMOUNT YOU PAID FOR THE SOFTWARE IN THE TWELVE MONTHS PRECEDING THE
+CLAIM. Nothing in this Agreement excludes liability that cannot be excluded
+under applicable law.
+
+
+8. Termination
+--------------
+This Agreement and Your licence terminate automatically if You breach any of its
+terms, in particular Section 3. On termination You must stop using the Software
+and delete all copies. The Licensor may suspend or revoke activation and
+subscription access for a breach. Sections 4 through 7, 9, and 10 survive
+termination.
+
+
+9. Governing law
+----------------
+This Agreement is governed by the laws of [JURISDICTION], without regard to its
+conflict-of-laws rules. The courts of [JURISDICTION] shall have exclusive
+jurisdiction over any dispute arising out of or relating to this Agreement.
+
+
+10. Contact
+-----------
+Questions about this Agreement: support@alphanode.tech

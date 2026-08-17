@@ -377,6 +377,13 @@ NEXT account to activate that device_id owns it — and everything it ever seale
 story before releasing. A customer seeing `node is registered to another account` on
 activation either restored someone else's state directory or is using a copied one.
 
+**Build provenance.** Every activation logs the node's build id (`[activate] … build <id>`) and
+`admin show <email>` prints the last build each device reported. One binary serves everyone, so
+the build id identifies a *release*, not a person — but combined with the ownership ledger above
+(build id on a leaked artifact × the account that activated it) it is the trace tie-in. The
+shipped bundle also self-verifies its vault key against the build stamp; a swapped or corrupted
+key fails `--role selfcheck` (tamper-evident, not tamper-proof).
+
 **Legacy v1 boxes** (mined before ownership existed) carry no owner. They keep opening while
 `ALPHAHUB_V1_REVEAL=allow` (the default; every such reveal is logged `[vault] legacy v1`).
 Once every client has updated and re-mined — the log going quiet is the tell — set

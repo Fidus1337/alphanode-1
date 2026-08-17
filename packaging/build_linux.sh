@@ -31,6 +31,7 @@ if ! "$PY" -c "import Cython" 2>/dev/null; then
   "$PY" -m pip install --quiet --upgrade cython
 fi
 "$PY" "$HERE/cythonize_engine.py"
+"$PY" "$HERE/make_build_stamp.py"
 
 echo "== [4/7] PyInstaller (onedir) =="
 rm -rf "$DIST" "$WORK" "$APPDIR"
