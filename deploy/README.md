@@ -350,3 +350,35 @@ stamps them only if that mail went out. A failure stamps nothing, so running it 
 
 **Run `catchup` the first time you switch mail on** — the form has been collecting since the day
 you deployed it, and those people are waiting.
+
+## 10. Formula ownership — a stolen library is dead weight
+
+Every formula a current client mines is sealed together with the id of the node that minted
+it, and the hub keeps a permanent ledger of which account each node belongs to (the first
+account to activate it). `/reveal` opens a box only for that account — mining on the desktop
+and unlocking on the laptop works (both seats are yours), but a copied `library_*.jsonl` on
+someone else's subscription returns `403 formula was mined by another account's node`, and the
+hub log prints every refusal: watch for `[vault] reveal refused` / the batch summary line —
+that IS the stolen-library signal.
+
+Ownership survives seat changes on purpose. Freeing a seat (`admin unseat`, a plan downgrade)
+does NOT free the node's identity — nobody else can activate that device_id or open its boxes,
+ever, unless you explicitly release it.
+
+Support flows:
+
+```bash
+docker compose exec hub python -m alphahub.admin nodes                  # the ledger
+docker compose exec hub python -m alphahub.admin release-node <device_id>
+```
+
+`release-node` is for a customer who legitimately moved to a new account: after release, the
+NEXT account to activate that device_id owns it — and everything it ever sealed. Verify the
+story before releasing. A customer seeing `node is registered to another account` on
+activation either restored someone else's state directory or is using a copied one.
+
+**Legacy v1 boxes** (mined before ownership existed) carry no owner. They keep opening while
+`ALPHAHUB_V1_REVEAL=allow` (the default; every such reveal is logged `[vault] legacy v1`).
+Once every client has updated and re-mined — the log going quiet is the tell — set
+`ALPHAHUB_V1_REVEAL=deny` in `deploy/.env` and `docker compose up -d` to close the unbound
+loophole for good.

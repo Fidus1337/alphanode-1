@@ -53,6 +53,9 @@ services:
       - ALPHAHUB_SMTP_PASS=${ALPHAHUB_SMTP_PASS:-}
       - ALPHAHUB_SMTP_FROM=${ALPHAHUB_SMTP_FROM:-}
       - ALPHAHUB_NOTIFY_TO=${ALPHAHUB_NOTIFY_TO:-}
+      # legacy unbound (v1) sealed formulas: allow (default) or deny. Flip to deny once every
+      # client mints owned v2 boxes — see runbook §10.
+      - ALPHAHUB_V1_REVEAL=${ALPHAHUB_V1_REVEAL:-allow}
     volumes:
       # HUBDATA lives OUTSIDE the git clone on purpose: hub.db and the vault key must survive
       # `git clean -xdf`, a re-clone, or a wiped checkout. Default /srv/alphahub.

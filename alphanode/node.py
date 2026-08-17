@@ -87,6 +87,32 @@ def _resolve_seed():
 
 BASE_SEED, NODE_ID, SEED_AUTO = _resolve_seed()
 
+
+def _device_id():
+    """The hub-facing id of this install (state/device_id) — the SAME file the GUI's
+    _device_id mints for /activate, so the boxes this node seals are owned by the seat this
+    machine occupies. File semantics must stay in lockstep with alphanode_gui._device_id.
+    O_EXCL + re-read: if the GUI and a freshly spawned node mint concurrently, exactly one
+    write wins and BOTH processes come away holding the winner's value."""
+    path = os.path.join(STATE_DIR, 'device_id')
+    try:
+        did = open(path, encoding='utf-8').read().strip()
+        if did:
+            return did
+    except OSError:
+        pass
+    import secrets
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            f.write(secrets.token_hex(8) + '\n')
+    except OSError:
+        pass                                             # someone else minted first — fine
+    try:
+        return open(path, encoding='utf-8').read().strip()
+    except OSError:
+        return ''                                        # unwritable state dir: seal unbound
+
 # per-timeframe library/history: alphas mined on different bar sizes are NOT comparable
 # (different annualization, different dynamics) and must never mix in one leaderboard.
 # 1d keeps the historical file names.
@@ -101,9 +127,11 @@ STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 # vault (and its `cryptography` dependency) is imported ONLY when the user opts in, so a
 # vault-off node has exactly its previous imports.
 VAULT_PUB = None
+VAULT_OWNER = None
 if os.environ.get('ALPHANODE_VAULT_PUB'):
     import vault
     VAULT_PUB = vault.load_pub(os.environ['ALPHANODE_VAULT_PUB'])
+    VAULT_OWNER = _device_id() or None                   # '' (unwritable state) -> unbound v1
 
 
 def _id_key(formula):
@@ -121,7 +149,7 @@ def _disk_doc(c):
     d = {k: v for k, v in c.items() if k != 'formula'}
     d['locked'] = True
     d['id'] = vault.formula_id(c['formula'])
-    d['formula_enc'] = vault.seal(c['formula'], VAULT_PUB)
+    d['formula_enc'] = vault.seal(c['formula'], VAULT_PUB, owner=VAULT_OWNER)
     return d
 CORES = os.cpu_count() or 4
 N_JOBS = max(1, round(CPU_PERCENT / 100 * CORES))      # resources -> number of parallel workers

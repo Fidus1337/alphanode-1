@@ -8,9 +8,15 @@
 Plus /signup (free demo account), /webhook/payment (provider-agnostic; Paddle/crypto call it),
 /me (account status for the app + web dashboard), /pub (the key the node seals to), /health.
 
+A v2 sealed box also names the node that MINTED it (inside the ciphertext): /reveal opens it
+only for the account that owns that node per the device_claims ledger — a stolen library file
+is dead weight on any other subscription. ALPHAHUB_V1_REVEAL=deny turns off legacy unbound
+v1 boxes once every client has re-mined.
+
 Run:  uvicorn alphahub.server:app --host 127.0.0.1 --port 8790
 Config (env): ALPHAHUB_DB, ALPHAHUB_VAULT_KEY, ALPHAHUB_WEBHOOK_SECRET, ALPHAHUB_SITE_ORIGIN,
-and the optional ALPHAHUB_SMTP_* / ALPHAHUB_NOTIFY_TO block that mails early-access requests
+ALPHAHUB_V1_REVEAL (allow|deny, default allow), and the optional ALPHAHUB_SMTP_* /
+ALPHAHUB_NOTIFY_TO block that mails early-access requests
 to the operator (off unless both HOST and NOTIFY_TO are set; `admin testmail` proves it works).
 NOTE: terminate TLS in front of this (a reverse proxy) — /reveal returns plaintext formulas.
 Cap request bodies at that proxy too (e.g. Caddy `request_body max_size 2MB`): FastAPI parses
@@ -344,10 +350,32 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
         return {'ok': True, 'plan': st['plan'], 'node_limit': st['node_limit'],
                 'used': st['used'], 'expires_at': st['expires_at']}
 
+    # v2 boxes carry their minting node INSIDE the AEAD ciphertext; a box may be revealed only
+    # by the account that owns that node (the permanent device_claims ledger). Legacy v1 boxes
+    # carry no owner — allowed while ALPHAHUB_V1_REVEAL != 'deny' (flip it once every client
+    # has re-mined; the runbook tracks this), and always logged so the residual volume shows.
+    v1_reveal_ok = os.environ.get('ALPHAHUB_V1_REVEAL', 'allow').strip().lower() != 'deny'
+
+    def owner_refusal(conn, user, owner):
+        """None if this account may open a box minted by `owner`, else the refusal detail."""
+        if owner is None:                                # legacy unbound v1
+            if v1_reveal_ok:
+                return None
+            return 'legacy unbound formula (v1) — re-mine with the current app to unlock'
+        claim = hubdb.get_claim(conn, owner)
+        if claim is None:
+            return ('formula was mined by a node that was never activated — '
+                    'activate the mining node on this account first')
+        if claim['user_id'] != user['id']:
+            return "formula was mined by another account's node"
+        return None
+
     @app.post('/reveal')
     def reveal(body: RevealIn, conn=Depends(get_db)):
-        """Subscription gate + the actual unseal. Requires a live subscription AND that this
-        device already holds a seat (activate first) — so reveals can't dodge the node count."""
+        """Subscription gate + the actual unseal. Requires a live subscription, a seat for the
+        requesting device (activate first — reveals can't dodge the node count), AND — for v2
+        boxes — that the MINTING node belongs to this account (mine here, reveal on any of
+        your machines; never on someone else's)."""
         user = _account(conn, body.token)
         st = hubdb.subscription_state(conn, user['id'])
         if not st['active']:
@@ -356,9 +384,16 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
         if hubdb.get_device(conn, user['id'], body.device_id) is None:
             raise HTTPException(status_code=409, detail='node not activated on this account')
         try:
-            formula = vault.unseal(body.formula_enc, priv)
+            formula, owner = vault.unseal_owned(body.formula_enc, priv)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))   # tampered / wrong key
+        refusal = owner_refusal(conn, user, owner)
+        if refusal is not None:
+            print(f'[vault] reveal refused for {user["email"]} '
+                  f'(owner node {owner or "none/v1"}): {refusal}', flush=True)
+            raise HTTPException(status_code=403, detail=refusal)
+        if owner is None:
+            print(f'[vault] legacy v1 reveal by {user["email"]}', flush=True)
         hubdb.log_reveal(conn, user['id'], body.device_id, vault.formula_id(formula))
         return {'ok': True, 'formula': formula}
 
@@ -376,19 +411,28 @@ def create_app(db_path, key_path, webhook_secret, site_origins=()):
             raise HTTPException(status_code=409, detail='node not activated on this account')
         if len(body.formulas) > 2000:
             raise HTTPException(status_code=400, detail='too many formulas in one batch (max 2000)')
-        out, opened = [], 0
+        out, opened, refused, legacy = [], 0, 0, 0
         for enc in body.formulas:
             if len(enc) > 16384:                         # a real sealed formula is ~1-2 KB; don't
                 out.append({'error': 'token too large'})  # base64-decode arbitrary megabytes
                 continue
             try:
-                formula = vault.unseal(enc, priv)
+                formula, owner = vault.unseal_owned(enc, priv)
             except ValueError as e:
                 out.append({'error': str(e)})
                 continue
+            refusal = owner_refusal(conn, user, owner)
+            if refusal is not None:
+                refused += 1
+                out.append({'error': refusal})
+                continue
+            legacy += owner is None
             hubdb.log_reveal(conn, user['id'], body.device_id, vault.formula_id(formula))
             out.append({'formula': formula})
             opened += 1
+        if refused or legacy:                            # one summary line, not 2000 — a batch
+            print(f'[vault] batch by {user["email"]}: {opened} opened, '   # full of refusals IS
+                  f'{refused} ownership-refused, {legacy} legacy v1', flush=True)  # the theft signal
         return {'ok': True, 'count': opened, 'formulas': out}
 
     @app.post('/me')
@@ -436,6 +480,10 @@ def _env_app():
     else:
         print('[notify] OFF: set ALPHAHUB_SMTP_HOST and ALPHAHUB_NOTIFY_TO to get mail. '
               'Requests are still stored — see `admin requests`.', flush=True)
+    v1 = os.environ.get('ALPHAHUB_V1_REVEAL', 'allow').strip().lower()
+    print(f'[vault] legacy v1 (unbound) reveals: '
+          f'{"DENIED" if v1 == "deny" else "allowed (set ALPHAHUB_V1_REVEAL=deny to stop)"}',
+          flush=True)
     return create_app(db_path, key_path, secret, site_origins=origins)
 
 

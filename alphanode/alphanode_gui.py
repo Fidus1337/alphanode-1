@@ -3667,7 +3667,10 @@ class App:
     # ---------- vault: the locked card + the Unlock flow (talks to AlphaHub) ----------
     def _device_id(self):
         """A stable per-install id — one of this account's seats. Minted once and kept next to
-        the state; the hub counts distinct device_ids against the plan's node limit."""
+        the state; the hub counts distinct device_ids against the plan's node limit, and the
+        miner seals every formula with this id as its OWNER (node._device_id reads the same
+        file — keep the semantics in lockstep). O_EXCL + re-read: if the GUI and a freshly
+        spawned node mint concurrently, one write wins and both end up with the winner."""
         path = os.path.join(STATE_DIR, 'device_id')
         try:
             did = open(path, encoding='utf-8').read().strip()
@@ -3678,8 +3681,13 @@ class App:
         import secrets
         did = secrets.token_hex(8)
         try:
-            with open(path, 'w', encoding='utf-8') as f:
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+            with os.fdopen(fd, 'w', encoding='utf-8') as f:
                 f.write(did + '\n')
+        except OSError:
+            pass                                         # lost the race (or read-only state)
+        try:
+            did = open(path, encoding='utf-8').read().strip() or did
         except OSError:
             pass
         return did

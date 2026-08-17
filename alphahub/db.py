@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS devices (
     last_seen  TEXT NOT NULL,
     UNIQUE(user_id, device_id)
 );
+CREATE TABLE IF NOT EXISTS device_claims (    -- permanent ownership ledger: which account FIRST
+    device_id  TEXT PRIMARY KEY,              -- activated a node. v2 sealed boxes name their
+    user_id    INTEGER NOT NULL,              -- minting node, and /reveal refuses every other
+    claimed_at TEXT NOT NULL                  -- account. Survives seat pruning and downgrades on
+);                                            -- purpose: ownership is not a billing artifact.
 CREATE TABLE IF NOT EXISTS reveals (          -- audit: which account/device opened which formula
     id         INTEGER PRIMARY KEY,
     user_id    INTEGER NOT NULL,
@@ -108,6 +113,11 @@ def _migrate(conn):
     for col in ('name', 'phone', 'ip', 'notified_at'):
         if col not in have:
             conn.execute(f'ALTER TABLE access_requests ADD COLUMN {col} TEXT')
+    # ownership backfill: every seat that existed before the claims ledger belongs to the
+    # account that held it (earliest first_seen wins if one device_id somehow sits under two
+    # accounts). OR IGNORE makes the backfill idempotent across restarts.
+    conn.execute('INSERT OR IGNORE INTO device_claims(device_id, user_id, claimed_at) '
+                 'SELECT device_id, user_id, first_seen FROM devices ORDER BY first_seen, id')
 
 
 def new_token():
@@ -215,11 +225,21 @@ def register_device(conn, user_id, device_id, node_limit, label=None):
     now = iso_now()
     try:
         conn.execute('BEGIN IMMEDIATE')
+        # ownership first: a device_id already claimed by ANOTHER account can never be
+        # re-registered — otherwise a stolen state dir (library + device_id ride together)
+        # could be re-homed and its sealed boxes revealed under the thief's subscription.
+        claim = conn.execute('SELECT user_id FROM device_claims WHERE device_id = ?',
+                             (device_id,)).fetchone()
+        if claim is not None and claim['user_id'] != user_id:
+            conn.rollback()
+            return False, 'node is registered to another account (contact support)'
         row = conn.execute('SELECT id FROM devices WHERE user_id = ? AND device_id = ?',
                            (user_id, device_id)).fetchone()
         if row is not None:
             conn.execute('UPDATE devices SET last_seen = ?, label = COALESCE(?, label) '
                          'WHERE id = ?', (now, label, row['id']))
+            conn.execute('INSERT OR IGNORE INTO device_claims(device_id, user_id, claimed_at) '
+                         'VALUES (?,?,?)', (device_id, user_id, now))
             conn.commit()
             return True, 'known device'
         n = conn.execute('SELECT COUNT(*) AS n FROM devices WHERE user_id = ?',
@@ -229,6 +249,8 @@ def register_device(conn, user_id, device_id, node_limit, label=None):
             return False, f'node limit reached ({n}/{node_limit})'
         conn.execute('INSERT INTO devices(user_id, device_id, label, first_seen, last_seen) '
                      'VALUES (?,?,?,?,?)', (user_id, device_id, label, now, now))
+        conn.execute('INSERT OR IGNORE INTO device_claims(device_id, user_id, claimed_at) '
+                     'VALUES (?,?,?)', (device_id, user_id, now))
         conn.commit()
         return True, 'registered'
     except Exception:                                    # noqa: BLE001 — never leave a txn open
@@ -246,6 +268,27 @@ def remove_device(conn, user_id, device_id):
 def list_devices(conn, user_id):
     return conn.execute('SELECT device_id, label, first_seen, last_seen FROM devices '
                         'WHERE user_id = ? ORDER BY first_seen', (user_id,)).fetchall()
+
+
+# ---- ownership ledger (formula <-> account binding) ----
+def get_claim(conn, device_id):
+    return conn.execute('SELECT * FROM device_claims WHERE device_id = ?',
+                        (device_id,)).fetchone()
+
+
+def release_claim(conn, device_id):
+    """Support path only (admin release-node): frees a device_id for re-claim — e.g. a customer
+    who legitimately moved their node to a new account. Boxes minted by that node become
+    revealable by whichever account claims it NEXT, so verify the story before releasing."""
+    cur = conn.execute('DELETE FROM device_claims WHERE device_id = ?', (device_id,))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+def list_claims(conn):
+    return conn.execute(
+        'SELECT c.device_id, c.claimed_at, u.email FROM device_claims c '
+        'LEFT JOIN users u ON u.id = c.user_id ORDER BY c.claimed_at, c.device_id').fetchall()
 
 
 def log_reveal(conn, user_id, device_id, formula_id):

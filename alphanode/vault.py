@@ -14,9 +14,20 @@ Construction (over the `cryptography` package — no new dependency):
 Binding both public keys into the KDF means a token unseals only with the exact server key
 it was sealed to. Every seal uses a fresh ephemeral key and nonce — identical formulas
 produce unrelated tokens, so the library file leaks no equality information either.
+
+v2 adds OWNERSHIP: the plaintext becomes {"f": formula, "n": <device_id of the minting
+node>}, so the hub can refuse to reveal a box to any account that does not own that node —
+a stolen library file is worthless to other subscribers. The owner id rides INSIDE the
+AEAD ciphertext (unforgeable after sealing), and v2 uses its own HKDF info string: a v2
+token relabeled 'v1:' (or vice versa) derives a different key and fails authentication,
+so the ownership check cannot be stripped by downgrading the version prefix. Sealing is
+client-side with a public key, so a hostile client can always mint boxes claiming any
+owner it wants — that forges nothing: reveal still demands the OWNER's account token, so
+the only thing you can do with a forged owner id is give your formulas away to them.
 """
 import base64
 import hashlib
+import json
 import os
 
 from cryptography.hazmat.primitives import hashes, serialization
@@ -25,8 +36,10 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (X25519PrivateKey,
 from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-MAGIC = 'v1:'
+MAGIC = 'v1:'                                            # legacy: plaintext is the bare formula
+MAGIC2 = 'v2:'                                           # owned: plaintext is {"f":…, "n":…}
 _INFO = b'alphanode-vault-v1'
+_INFO2 = b'alphanode-vault-v2'                           # domain separation kills prefix swaps
 
 
 def formula_id(formula):
@@ -71,33 +84,47 @@ def load_pub(path_or_hex):
     return raw
 
 
-def _derive(shared, eph_pub, srv_pub):
+def _derive(shared, eph_pub, srv_pub, info=_INFO):
     return HKDF(algorithm=hashes.SHA256(), length=32, salt=None,
-                info=_INFO + eph_pub + srv_pub).derive(shared)
+                info=info + eph_pub + srv_pub).derive(shared)
 
 
-def seal(text, server_pub):
-    """Plaintext formula -> 'v1:...' token that only the holder of the server PRIVATE key
-    can open. server_pub: raw 32 bytes (see load_pub)."""
+def seal(text, server_pub, owner=None):
+    """Plaintext formula -> token only the holder of the server PRIVATE key can open.
+    server_pub: raw 32 bytes (see load_pub). With `owner` (the minting node's device_id)
+    the token is 'v2:' and carries the owner INSIDE the ciphertext — the hub reveals it
+    only to the account that owns that node. owner=None keeps the legacy unbound 'v1:'."""
     if isinstance(server_pub, str):
         server_pub = load_pub(server_pub)
+    if owner is None:
+        payload, magic, info = text.encode(), MAGIC, _INFO
+    else:
+        payload = json.dumps({'f': text, 'n': str(owner)},
+                             separators=(',', ':')).encode()
+        magic, info = MAGIC2, _INFO2
     eph = X25519PrivateKey.generate()
     eph_pub = eph.public_key().public_bytes(serialization.Encoding.Raw,
                                             serialization.PublicFormat.Raw)
     shared = eph.exchange(X25519PublicKey.from_public_bytes(server_pub))
     nonce = os.urandom(12)
-    ct = ChaCha20Poly1305(_derive(shared, eph_pub, server_pub)).encrypt(
-        nonce, text.encode(), None)
-    return MAGIC + base64.b64encode(eph_pub + nonce + ct).decode()
+    ct = ChaCha20Poly1305(_derive(shared, eph_pub, server_pub, info)).encrypt(
+        nonce, payload, None)
+    return magic + base64.b64encode(eph_pub + nonce + ct).decode()
 
 
-def unseal(token, server_priv):
-    """'v1:...' token -> plaintext formula. Raises ValueError on a malformed, tampered,
-    or wrong-key token (AEAD authentication catches all three)."""
-    if not token.startswith(MAGIC):
+def unseal_owned(token, server_priv):
+    """Token -> (formula, owner). owner is None for legacy 'v1:' boxes, the minting node's
+    device_id for 'v2:'. Raises ValueError on a malformed, tampered, or wrong-key token
+    (AEAD authentication catches all three) — including a version-prefix swap, because each
+    version derives its key with its own HKDF info string."""
+    if token.startswith(MAGIC):
+        magic, info = MAGIC, _INFO
+    elif token.startswith(MAGIC2):
+        magic, info = MAGIC2, _INFO2
+    else:
         raise ValueError('not a vault token')
     try:
-        blob = base64.b64decode(token[len(MAGIC):], validate=True)
+        blob = base64.b64decode(token[len(magic):], validate=True)
     except Exception as e:                               # noqa: BLE001
         raise ValueError('bad token encoding') from e
     if len(blob) < 32 + 12 + 16:                         # eph_pub + nonce + AEAD tag minimum
@@ -107,7 +134,23 @@ def unseal(token, server_priv):
                                                     serialization.PublicFormat.Raw)
     shared = server_priv.exchange(X25519PublicKey.from_public_bytes(eph_pub))
     try:
-        return ChaCha20Poly1305(_derive(shared, eph_pub, srv_pub)).decrypt(
+        payload = ChaCha20Poly1305(_derive(shared, eph_pub, srv_pub, info)).decrypt(
             nonce, ct, None).decode()
     except Exception as e:                               # noqa: BLE001
         raise ValueError('token does not open with this key (tampered or wrong server)') from e
+    if magic == MAGIC:
+        return payload, None
+    try:
+        doc = json.loads(payload)
+        formula, owner = doc['f'], doc['n']
+        if not (isinstance(formula, str) and isinstance(owner, str) and owner):
+            raise ValueError
+    except (ValueError, KeyError, TypeError) as e:
+        raise ValueError('v2 envelope is malformed') from e
+    return formula, owner
+
+
+def unseal(token, server_priv):
+    """Token -> plaintext formula, either version, ownership ignored — for the dev mock and
+    vendor-side tools that hold the private key anyway. The hub uses unseal_owned."""
+    return unseal_owned(token, server_priv)[0]

@@ -89,6 +89,30 @@ def cmd_rotate(a):
     print('new token:', hubdb.rotate_token(conn, row['id']))
 
 
+def cmd_nodes(_a):
+    """The ownership ledger: which account each known node (device_id) belongs to. This — not
+    the seats table — is what /reveal consults for v2 boxes."""
+    conn = _db()
+    rows = hubdb.list_claims(conn)
+    if not rows:
+        print('no claimed nodes')
+        return
+    for r in rows:
+        print(f'{r["device_id"]}  {r["email"] or "<deleted account>"}  since {r["claimed_at"]}')
+
+
+def cmd_release_node(a):
+    """Free a device_id for re-claim by the NEXT account that activates it — the support path
+    for a customer who legitimately moved to a new account. Everything that node ever sealed
+    becomes revealable by the new claimant, so verify the story first."""
+    conn = _db()
+    claim = hubdb.get_claim(conn, a.device_id)
+    if claim is None:
+        sys.exit(f'no claim on node {a.device_id}')
+    ok = hubdb.release_claim(conn, a.device_id)
+    print(f'node {a.device_id} released' if ok else 'release failed')
+
+
 def cmd_requests(a):
     conn = _db()
     rows = hubdb.list_access_requests(conn, 'new' if a.new else None)
@@ -249,6 +273,9 @@ def main(argv=None):
     cu.add_argument('--dry-run', action='store_true', help='show the digest without sending it')
     cu.set_defaults(fn=cmd_catchup)
     bk = sub.add_parser('backup'); bk.add_argument('path'); bk.set_defaults(fn=cmd_backup)
+    nd = sub.add_parser('nodes'); nd.set_defaults(fn=cmd_nodes)
+    rn = sub.add_parser('release-node'); rn.add_argument('device_id')
+    rn.set_defaults(fn=cmd_release_node)
     args = ap.parse_args(argv)
     args.fn(args)
 
