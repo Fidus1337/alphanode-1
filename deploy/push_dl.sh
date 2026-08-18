@@ -21,7 +21,7 @@ VER="$(sed -n "s/.*'\(.*\)'.*/\1/p" "$PROJ/alphanode/version.py" | head -1)"
 declare -A SRC=(
   ["AlphaNode-Setup.exe"]="$PROJ/packaging/Output/AlphaNode-Setup.exe"
   ["AlphaNode-windows-portable.zip"]="$PROJ/packaging/dist/AlphaNode-windows-portable.zip"
-  ["AlphaNode-macos-arm64.zip"]="$PROJ/packaging/dist/AlphaNode-macos-arm64.zip"
+  ["AlphaNode-arm64.dmg"]="$PROJ/packaging/dist/AlphaNode-arm64.dmg"
   ["alphanode_amd64.deb"]="$PROJ/packaging/dist/alphanode_${VER}_amd64.deb"
   ["AlphaNode-x86_64.AppImage"]="$PROJ/packaging/dist/AlphaNode-x86_64.AppImage"
   ["docker-compose.yml"]="$HERE/dl/docker-compose.yml"
@@ -30,7 +30,7 @@ declare -A SRC=(
 rm -rf "$STAGE"; mkdir -p "$STAGE"
 manifest="{\"version\": \"$VER\", \"files\": {"
 sep=""
-for name in "AlphaNode-Setup.exe" "AlphaNode-windows-portable.zip" "AlphaNode-macos-arm64.zip" \
+for name in "AlphaNode-Setup.exe" "AlphaNode-windows-portable.zip" "AlphaNode-arm64.dmg" \
             "alphanode_amd64.deb" "AlphaNode-x86_64.AppImage" "docker-compose.yml"; do
   src="${SRC[$name]}"
   if [ -f "$src" ]; then
