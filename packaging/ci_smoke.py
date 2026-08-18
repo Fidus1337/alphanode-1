@@ -62,7 +62,10 @@ hang_file = os.path.join(tmp, 'hang_dump.txt')
 env = dict(os.environ, ALPHANODE_DATA=data,
            ALPHANODE_MAX_ROUNDS='1', ALPHANODE_POP='20', ALPHANODE_GENS='2',
            ALPHANODE_PAUSE='0', ALPHANODE_STATE_DIR=tmp, ALPHANODE_STATUS_PORT='8799',
-           ALPHANODE_HANG_DUMP='240', ALPHANODE_HANG_DUMP_FILE=hang_file)
+           # dump-and-die at 1380s: just UNDER the 1500s watchdog kill, so a wedged node
+           # leaves stacks behind instead of a silent TimeoutExpired — but far ABOVE any
+           # honest slow round (240s here once shot a healthy node right after the DNS fix)
+           ALPHANODE_HANG_DUMP='1380', ALPHANODE_HANG_DUMP_FILE=hang_file)
 # Popen + a status-HTTP watchdog instead of a blind run: a windowed exe's stdout is invisible
 # on Windows (GUI subsystem — the handles never attach), so a slow round and a hung round both
 # looked like 900 silent seconds. The node's own status server is the channel that always works.

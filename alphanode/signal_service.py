@@ -34,6 +34,7 @@ import json
 import time
 import threading
 import http.server
+import socketserver
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -288,6 +289,18 @@ def refresh_loop(formulas, tickers, start, vol, exec_rate, refresh, stop, tf='1d
 
 
 # ---------------- HTTP server (localhost) ----------------
+
+class _NoDNSHTTPServer(http.server.ThreadingHTTPServer):
+    """server_bind without socket.getfqdn() — the reverse-DNS lookup the stock HTTPServer
+    does at bind time hangs for minutes on Windows boxes with broken PTR resolution, and
+    the /health endpoint must come up instantly (same fix as the node status server)."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def _send(self, code, obj):
         body = json.dumps(obj, ensure_ascii=False).encode('utf-8')
@@ -382,7 +395,7 @@ def main():
                      daemon=True).start()
 
     host = os.environ.get('ALPHANODE_SIGNAL_HOST') or '127.0.0.1'   # Docker: set 0.0.0.0 to expose it
-    srv = http.server.ThreadingHTTPServer((host, port), Handler)
+    srv = _NoDNSHTTPServer((host, port), Handler)
     print(f'[signal] "{name}" · {len(formulas)} formula(s) · {len(tickers)} pairs · tf {tf} · '
           f'refresh {refresh}s · serving http://{host}:{port}/signal', flush=True)
     try:

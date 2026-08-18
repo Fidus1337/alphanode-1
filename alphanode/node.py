@@ -17,6 +17,7 @@ import hashlib
 import signal
 import threading
 import http.server
+import socketserver
 from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -525,9 +526,22 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
+
+class _NoDNSHTTPServer(http.server.ThreadingHTTPServer):
+    """server_bind WITHOUT socket.getfqdn(): the stock HTTPServer reverse-DNS-resolves the
+    bind address, which hangs for minutes on hosts with broken PTR lookup (every Windows CI
+    runner, plenty of customer desktops). The GUI and the CI watchdog poll this server, so
+    it must bind instantly; nothing here needs the FQDN."""
+
+    def server_bind(self):
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = self.server_address[0]
+        self.server_port = self.server_address[1]
+
+
 def serve():
     try:
-        http.server.ThreadingHTTPServer(('0.0.0.0', STATUS_PORT), Handler).serve_forever()
+        _NoDNSHTTPServer(('0.0.0.0', STATUS_PORT), Handler).serve_forever()
     except OSError as e:
         print('status server off:', e)
 
