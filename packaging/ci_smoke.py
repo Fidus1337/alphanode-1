@@ -59,39 +59,79 @@ print(f'synthetic  : {os.path.getsize(data) // 1024} KB market snapshot -> {data
 
 # ---- 1. one search round in a scratch state dir ----
 hang_file = os.path.join(tmp, 'hang_dump.txt')
+node_log = os.path.join(tmp, 'node_log.txt')
 env = dict(os.environ, ALPHANODE_DATA=data,
            ALPHANODE_MAX_ROUNDS='1', ALPHANODE_POP='20', ALPHANODE_GENS='2',
            ALPHANODE_PAUSE='0', ALPHANODE_STATE_DIR=tmp, ALPHANODE_STATUS_PORT='8799',
+           # 100% CPU -> n_jobs=2 on the 2-core runners: the round goes through the REAL
+           # multiprocessing spawn pool — the frozen-exe breakage this smoke exists to catch.
+           # The default 50% gave n_jobs=1, whose in-process path keeps the GIL inside the
+           # cythonized engine for a whole generation: the status thread never got scheduled,
+           # so the HTTP watchdog was blind on EVERY platform (green runs just outran it).
+           ALPHANODE_CPU_PERCENT='100',
            # dump-and-die at 1380s: just UNDER the 1500s watchdog kill, so a wedged node
            # leaves stacks behind instead of a silent TimeoutExpired — but far ABOVE any
            # honest slow round (240s here once shot a healthy node right after the DNS fix)
            ALPHANODE_HANG_DUMP='1380', ALPHANODE_HANG_DUMP_FILE=hang_file)
-# Popen + a status-HTTP watchdog instead of a blind run: a windowed exe's stdout is invisible
-# on Windows (GUI subsystem — the handles never attach), so a slow round and a hung round both
-# looked like 900 silent seconds. The node's own status server is the channel that always works.
 import time
 import urllib.request
 NODE_TIMEOUT = 1500
-proc = subprocess.Popen(cmd + ['--role', 'node'], env=env, cwd=cwd)
-_t0, _last = time.time(), 'no status yet'
-while proc.poll() is None:
-    if time.time() - _t0 > NODE_TIMEOUT:
-        proc.kill()
-        raise SystemExit(f'node round did not finish in {NODE_TIMEOUT}s; last status: {_last}')
-    time.sleep(20)
+
+
+def _peek_status():
+    # HTTP first (also proves the server answers); the on-disk heartbeat as fallback — while
+    # the engine crunches inside native code the server thread can starve for GIL time, but
+    # save_status() still lands status.json about once a second from the engine callback.
     try:
         with urllib.request.urlopen('http://127.0.0.1:8799/status.json', timeout=3) as r:
-            st = json.load(r)
-        _last = f"round={st.get('rounds')} gen={st.get('gen')!r} found={st.get('found')}"
-        print(f'[watch {int(time.time() - _t0):4d}s] {_last}', flush=True)
-    except Exception as e:                                # noqa: BLE001
-        print(f'[watch {int(time.time() - _t0):4d}s] status not up yet ({type(e).__name__})',
-              flush=True)
+            return 'http', json.load(r)
+    except Exception:                                     # noqa: BLE001
+        pass
+    try:
+        with open(os.path.join(tmp, 'status.json'), encoding='utf-8') as f:
+            return 'disk', json.load(f)
+    except Exception:                                     # noqa: BLE001
+        return None, None
+
+
+def _dump_file(path, title, tail=0):
+    if os.path.exists(path) and os.path.getsize(path):
+        text = open(path, encoding='utf-8', errors='replace').read()
+        if tail:
+            text = '\n'.join(text.splitlines()[-tail:])
+        print(f'--- {title} ---', flush=True)
+        print(text, flush=True)
+
+
+# stdout/stderr -> file: a windowed exe prints into the void unless the parent hands it real
+# handles; with the redirect the node's own narrative (banner, rounds, tracebacks) survives.
+with open(node_log, 'w', encoding='utf-8', errors='replace') as _nl:
+    proc = subprocess.Popen(cmd + ['--role', 'node'], env=env, cwd=cwd,
+                            stdout=_nl, stderr=subprocess.STDOUT)
+    _t0, _last = time.time(), 'no status yet'
+    while proc.poll() is None:
+        if time.time() - _t0 > NODE_TIMEOUT:
+            proc.kill()
+            proc.wait()
+            _dump_file(node_log, 'node stdout/stderr')
+            _dump_file(os.path.join(tmp, 'status.json'), 'status.json at kill time')
+            raise SystemExit(f'node round did not finish in {NODE_TIMEOUT}s; last: {_last}')
+        time.sleep(20)
+        src, st = _peek_status()
+        if st is None:
+            _last = 'no status yet'
+            print(f'[watch {int(time.time() - _t0):4d}s] status not up yet', flush=True)
+        else:
+            _last = (f"{src}: state={st.get('state')} round={st.get('rounds')} "
+                     f"gen={st.get('gen')!r} found={st.get('found')} "
+                     f"current={st.get('current')!r}")
+            print(f'[watch {int(time.time() - _t0):4d}s] {_last}', flush=True)
 if proc.returncode != 0:
-    if os.path.exists(hang_file) and os.path.getsize(hang_file):
-        print('--- hang dump (all thread stacks at the moment the watchdog fired) ---', flush=True)
-        print(open(hang_file, encoding='utf-8', errors='replace').read(), flush=True)
+    _dump_file(hang_file, 'hang dump (all thread stacks at the moment the watchdog fired)')
+    _dump_file(node_log, 'node stdout/stderr')
+    _dump_file(os.path.join(tmp, 'status.json'), 'status.json post-mortem')
     raise SystemExit(f'node exited with {proc.returncode}')
+_dump_file(node_log, 'node stdout/stderr (last 15 lines)', tail=15)
 lib = os.path.join(tmp, 'library.jsonl')
 rows = [json.loads(l) for l in open(lib, encoding='utf-8') if l.strip()]
 assert rows, 'node round produced an empty library'
