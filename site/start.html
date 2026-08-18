@@ -48,7 +48,19 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset
 nav{border-bottom:1px solid var(--line)}
 .nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
 .logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none}
-.dot{width:9px;height:9px;border-radius:50%;background:var(--acc)}
+.dot{width:9px;height:9px;overflow:visible;flex:none}
+.dot circle{fill:var(--acc);transform-box:fill-box;transform-origin:center}
+.dot rect{fill:var(--acc);transform-box:fill-box;transform-origin:center;transform:scaleX(0);
+  animation:dot-link 6s ease-in-out infinite}
+.dot .da{animation:dot-split-a 6s ease-in-out infinite}
+.dot .db{animation:dot-split-b 6s ease-in-out infinite}
+/* the brand dot lives the roadmap: one node divides, a link forms between the pair, and they
+   merge back into one with a pulse — mitosis of a network, on loop. The global reduced-motion
+   rule parks all three parts, which lands as the plain still dot. */
+@keyframes dot-split-a{0%,74%{transform:translateX(0) scale(1)}18%,58%{transform:translateX(-5.5px) scale(.82)}82%,100%{transform:scale(1)}88%{transform:scale(1.22)}}
+@keyframes dot-split-b{0%,74%{transform:translateX(0) scale(1)}18%,58%{transform:translateX(5.5px) scale(.82)}82%,100%{transform:scale(1)}88%{transform:scale(1.22)}}
+@keyframes dot-link{0%,20%{transform:scaleX(0)}32%,54%{transform:scaleX(1)}66%,100%{transform:scaleX(0)}}
+@media (prefers-reduced-motion: reduce){.dot .da,.dot .db,.dot rect{animation:none}}
 .nav-links{display:flex;gap:22px;margin-left:auto}
 .nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
 .nav-links a:hover{color:var(--ink)}
@@ -199,7 +211,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
 
 <nav>
   <div class="wrap nav-in">
-    <a class="logo" href="index.html"><span class="dot" aria-hidden="true"></span>AlphaNode</a>
+    <a class="logo" href="index.html"><svg class="dot" viewBox="0 0 9 9" aria-hidden="true"><rect x="-1.5" y="3.75" width="12" height="1.5" rx=".75"/><circle class="da" cx="4.5" cy="4.5" r="4.5"/><circle class="db" cx="4.5" cy="4.5" r="4.5"/></svg>AlphaNode</a>
     <div class="nav-links">
       <a href="#walk">The walkthrough</a>
       <a href="#rules">Three rules</a>
@@ -272,7 +284,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
            <span class="ui">▶ Start node</span> do the same thing.</p>
         <div class="shot" role="img" aria-label="Simplified AlphaNode window in Simple mode: power presets, status, and a highlighted Start node button">
           <div class="whead">
-            <span class="t"><span class="dot" aria-hidden="true"></span>AlphaNode</span>
+            <span class="t"><svg class="dot" viewBox="0 0 9 9" aria-hidden="true"><rect x="-1.5" y="3.75" width="12" height="1.5" rx=".75"/><circle class="da" cx="4.5" cy="4.5" r="4.5"/><circle class="db" cx="4.5" cy="4.5" r="4.5"/></svg>AlphaNode</span>
             <span class="sp"></span>
             <span class="uibtn">Advanced</span>
             <span class="uibtn">■&nbsp; Stop</span>

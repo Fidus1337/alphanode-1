@@ -35,7 +35,19 @@ a{color:var(--acctext)}
 
 header{padding:72px 0 56px;border-bottom:1px solid var(--line)}
 .logo{display:flex;align-items:center;gap:11px;font-weight:650;font-size:18px;margin-bottom:48px}
-.dot{width:10px;height:10px;border-radius:50%;background:var(--acc)}
+.dot{width:10px;height:10px;overflow:visible;flex:none}
+.dot circle{fill:var(--acc);transform-box:fill-box;transform-origin:center}
+.dot rect{fill:var(--acc);transform-box:fill-box;transform-origin:center;transform:scaleX(0);
+  animation:dot-link 6s ease-in-out infinite}
+.dot .da{animation:dot-split-a 6s ease-in-out infinite}
+.dot .db{animation:dot-split-b 6s ease-in-out infinite}
+/* the brand dot lives the roadmap: one node divides, a link forms between the pair, and they
+   merge back into one with a pulse — mitosis of a network, on loop. The global reduced-motion
+   rule parks all three parts, which lands as the plain still dot. */
+@keyframes dot-split-a{0%,74%{transform:translateX(0) scale(1)}18%,58%{transform:translateX(-5.5px) scale(.82)}82%,100%{transform:scale(1)}88%{transform:scale(1.22)}}
+@keyframes dot-split-b{0%,74%{transform:translateX(0) scale(1)}18%,58%{transform:translateX(5.5px) scale(.82)}82%,100%{transform:scale(1)}88%{transform:scale(1.22)}}
+@keyframes dot-link{0%,20%{transform:scaleX(0)}32%,54%{transform:scaleX(1)}66%,100%{transform:scaleX(0)}}
+@media (prefers-reduced-motion: reduce){.dot .da,.dot .db,.dot rect{animation:none}}
 .eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
   letter-spacing:.14em;text-transform:uppercase;color:var(--acctext);margin:0 0 16px}
 h1{font-size:clamp(36px,5.5vw,58px);font-weight:680;letter-spacing:-.025em;line-height:1.07;
@@ -118,7 +130,7 @@ nav{border-bottom:1px solid var(--line)}
 <body>
 <nav>
   <div class="wrap nav-in">
-    <a class="nav-logo" href="index.html"><span class="dot" aria-hidden="true"></span>AlphaNode</a>
+    <a class="nav-logo" href="index.html"><svg class="dot" viewBox="0 0 9 9" aria-hidden="true"><rect x="-1.5" y="3.75" width="12" height="1.5" rx=".75"/><circle class="da" cx="4.5" cy="4.5" r="4.5"/><circle class="db" cx="4.5" cy="4.5" r="4.5"/></svg>AlphaNode</a>
     <div class="nav-links">
       <a href="index.html">About AlphaNode</a>
       <a href="start.html">Getting started</a>

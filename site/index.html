@@ -48,22 +48,19 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset
 nav{border-bottom:1px solid var(--line)}
 .nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
 .logo{display:flex;align-items:center;gap:11px;font-weight:650;font-size:19px;letter-spacing:-.01em;text-decoration:none}
-/* a status LED: the node reporting in with a green double-tick every few seconds, then back to
-   rest. The expanding halo is what makes it read at this size — the fill stays on the page's own
-   green rather than inventing a brighter one. The global reduced-motion rule parks it at rest. */
-.dot{width:10px;height:10px;flex:none;border-radius:50%;background:var(--acc);
-  animation:heartbeat 4.4s ease-in-out infinite}
-/* two shadows on every frame so they interpolate pairwise: a steady bloom that holds for the
-   whole green phase, and a ring that expands twice. The ring alone is nearly invisible — its
-   alpha falls as fast as it grows. */
-@keyframes heartbeat{
-  0%,70%   {background:var(--acc);   box-shadow:0 0 0 0 rgba(30,127,78,0),   0 0 0 0 rgba(30,127,78,0)}
-  73%      {background:var(--green); box-shadow:0 0 0 0 rgba(30,127,78,.32), 0 0 7px 1px rgba(30,127,78,.42)}
-  79%      {background:var(--green); box-shadow:0 0 0 6px rgba(30,127,78,0), 0 0 7px 1px rgba(30,127,78,.42)}
-  82%      {background:var(--green); box-shadow:0 0 0 0 rgba(30,127,78,.32), 0 0 7px 1px rgba(30,127,78,.42)}
-  88%      {background:var(--green); box-shadow:0 0 0 6px rgba(30,127,78,0), 0 0 7px 1px rgba(30,127,78,.42)}
-  92%,100% {background:var(--acc);   box-shadow:0 0 0 0 rgba(30,127,78,0),   0 0 0 0 rgba(30,127,78,0)}
-}
+.dot{width:10px;height:10px;overflow:visible;flex:none}
+.dot circle{fill:var(--acc);transform-box:fill-box;transform-origin:center}
+.dot rect{fill:var(--acc);transform-box:fill-box;transform-origin:center;transform:scaleX(0);
+  animation:dot-link 6s ease-in-out infinite}
+.dot .da{animation:dot-split-a 6s ease-in-out infinite}
+.dot .db{animation:dot-split-b 6s ease-in-out infinite}
+/* the brand dot lives the roadmap: one node divides, a link forms between the pair, and they
+   merge back into one with a pulse — mitosis of a network, on loop. The global reduced-motion
+   rule parks all three parts, which lands as the plain still dot. */
+@keyframes dot-split-a{0%,74%{transform:translateX(0) scale(1)}18%,58%{transform:translateX(-5.5px) scale(.82)}82%,100%{transform:scale(1)}88%{transform:scale(1.22)}}
+@keyframes dot-split-b{0%,74%{transform:translateX(0) scale(1)}18%,58%{transform:translateX(5.5px) scale(.82)}82%,100%{transform:scale(1)}88%{transform:scale(1.22)}}
+@keyframes dot-link{0%,20%{transform:scaleX(0)}32%,54%{transform:scaleX(1)}66%,100%{transform:scaleX(0)}}
+@media (prefers-reduced-motion: reduce){.dot .da,.dot .db,.dot rect{animation:none}}
 .nav-links{display:flex;gap:22px;margin-left:auto}
 .nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
 .nav-links a:hover{color:var(--ink)}
@@ -256,7 +253,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
 
 <nav>
   <div class="wrap nav-in">
-    <a class="logo" href="#top"><span class="dot" aria-hidden="true"></span>AlphaNode</a>
+    <a class="logo" href="#top"><svg class="dot" viewBox="0 0 9 9" aria-hidden="true"><rect x="-1.5" y="3.75" width="12" height="1.5" rx=".75"/><circle class="da" cx="4.5" cy="4.5" r="4.5"/><circle class="db" cx="4.5" cy="4.5" r="4.5"/></svg>AlphaNode</a>
     <div class="nav-links">
       <a href="#how">How it works</a>
       <a href="#honesty">Honesty</a>
