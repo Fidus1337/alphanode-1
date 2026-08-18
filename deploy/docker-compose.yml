@@ -29,6 +29,12 @@ services:
   site:
     build: ../site
     restart: unless-stopped
+    volumes:
+      # release artifacts, served by nginx at /dl/ (the download page's buttons). A separate
+      # host dir on purpose: uploading a new build is an scp/rsync into $DLDIR — no image
+      # rebuild, and 150 MB binaries never bloat the site image. See deploy/dl/README-ish
+      # header in dl/docker-compose.yml for what belongs there.
+      - ${DLDIR:-/srv/alphanode-dl}:/usr/share/nginx/html/dl:ro
 
   hub:
     build:

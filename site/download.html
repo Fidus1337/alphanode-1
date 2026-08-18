@@ -1,0 +1,275 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Download — AlphaNode</title>
+<meta name="description" content="Download AlphaNode for Windows, macOS or Linux, or run the headless node on a server with one compose file. The app installs and mines without a key; your key unlocks the formulas it finds.">
+<meta name="robots" content="noindex">
+<style>
+/* Same visual language as index.html / start.html: warm paper, near-black ink, hairline
+   borders, uppercase mono micro-labels, periwinkle + orange accents, one dark graphite band.
+   Single-theme on purpose (the paper IS the brand); every surface paints its own color.
+   Self-contained: system font stacks only, zero external requests. */
+:root{
+  --paper:#f6f4f0; --card:#ffffff; --ink:#222121; --mut:#6f6b66;
+  --line:#dedddd; --soft:#eae9e6;
+  --acc:#7d8cff; --acctext:#5261d6; --orange:#f99c00;
+  --green:#1e7f4e; --red:#c14b36;
+  --dark:#2e2b27; --darkline:#3f3b36; --darkline2:#57524b;
+  --darkink:#f6f4f0; --darkmut:#a5a09a; --darkacc:#bfd1ff;
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+@media (prefers-reduced-motion: reduce){
+  html{scroll-behavior:auto}
+  *,*::before,*::after{animation:none!important;transition:none!important}
+}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:1080px;margin:0 auto;padding:0 28px}
+a{color:var(--ink)}
+a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+
+nav{border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
+.logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none}
+.dot{width:9px;height:9px;border-radius:50%;background:var(--acc)}
+.nav-links{display:flex;gap:22px;margin-left:auto}
+.nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
+.nav-links a:hover{color:var(--ink)}
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:1px solid var(--ink);
+  border-radius:3px;padding:10px 20px;font-size:14px;font-weight:550;text-decoration:none;cursor:pointer}
+.btn:hover{opacity:.85}
+
+.eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--mut);margin:0 0 14px}
+section{padding:72px 0;border-bottom:1px solid var(--line)}
+h1,h2{letter-spacing:-.025em;text-wrap:balance;margin:0}
+h1{font-size:clamp(34px,4.6vw,50px);font-weight:680;line-height:1.08}
+h2{font-size:30px;font-weight:650;margin-bottom:14px}
+.lead{color:var(--mut);font-size:18px;max-width:62ch;margin:0}
+
+/* the "you are on the list" strip — only shown when the form just sent (?ok=1) */
+.onlist{display:none;border:1px solid var(--line);border-left:3px solid var(--green);
+  border-radius:3px;background:var(--card);padding:16px 20px;margin:0 0 34px;
+  font-size:14.5px;line-height:1.6;color:var(--mut)}
+.onlist b{color:var(--ink)}
+
+/* ---------- build cards ---------- */
+.builds{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:44px}
+.build{background:var(--card);border:1px solid var(--line);border-radius:4px;
+  padding:26px 24px 24px;display:flex;flex-direction:column;gap:0}
+.build .os{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--acctext)}
+.build h3{margin:10px 0 4px;font-size:21px;font-weight:650;letter-spacing:-.015em}
+.build .req{color:var(--mut);font-size:13.5px;margin:0 0 18px}
+.build .btn{text-align:center;padding:12px 18px}
+.build .meta{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+  color:var(--mut);margin:10px 0 0;min-height:18px}
+.build .alt{margin-top:14px;padding-top:14px;border-top:1px solid var(--soft);
+  font-size:13.5px;color:var(--mut)}
+.build .alt a{color:var(--acctext)}
+.build .note{font-size:12.5px;line-height:1.55;color:var(--mut);margin:14px 0 0}
+.build .spacer{flex:1}
+
+/* ---------- server / docker band ---------- */
+.band{background:var(--dark);color:var(--darkink);border-bottom:1px solid var(--darkline)}
+.band .eyebrow{color:var(--orange)}
+.band h2{color:var(--darkink)}
+.band .lead{color:var(--darkmut)}
+.band a{color:var(--darkacc)}
+.srv{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:40px;margin-top:40px;align-items:start}
+.shell{background:#262421;border:1px solid var(--darkline);border-radius:4px;padding:20px 22px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:13.5px;line-height:1.75;
+  overflow-x:auto;white-space:pre;color:var(--darkink)}
+.shell .c{color:var(--darkmut)}
+.shell .p{color:var(--orange)}
+.srv-notes{display:flex;flex-direction:column;gap:16px;font-size:14.5px;color:var(--darkmut);line-height:1.65}
+.srv-notes b{color:var(--darkink);font-weight:600}
+.srv-notes .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--orange)}
+
+/* ---------- licence strip ---------- */
+.lic{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(0,1fr);gap:40px;align-items:start}
+.lic .card{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:22px 24px;
+  font-size:14.5px;color:var(--mut);line-height:1.65}
+.lic .card b{color:var(--ink)}
+
+footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
+.disclaimer{border:1px solid var(--line);border-left:3px solid var(--orange);border-radius:3px;
+  background:var(--card);padding:18px 22px;margin-bottom:28px;font-size:13px;line-height:1.65;color:var(--mut)}
+.foot-row{display:flex;gap:24px;flex-wrap:wrap;align-items:center}
+.foot-row a{color:var(--mut)}
+
+@media (max-width: 900px){
+  section{padding:56px 0}
+  .builds{grid-template-columns:1fr}
+  .srv,.lic{grid-template-columns:1fr}
+}
+@media (max-width: 560px){
+  .nav-links{display:none}
+  .nav-in > .btn{margin-left:auto}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="logo" href="index.html"><span class="dot" aria-hidden="true"></span>AlphaNode</a>
+    <div class="nav-links">
+      <a href="#builds">Desktop builds</a>
+      <a href="#server">Run it on a server</a>
+      <a href="start.html">Getting started</a>
+      <a href="index.html">About AlphaNode</a>
+    </div>
+    <a class="btn" href="start.html">First hour, step by step</a>
+  </div>
+</nav>
+
+<section id="builds" style="padding-top:64px">
+  <div class="wrap">
+    <div class="onlist" id="onlist" role="status">
+      <b>You are on the list.</b> We read every request and reply by hand from
+      support@alphanode.tech, usually within a few days — your subscription key arrives in that
+      email. Meanwhile, install the app: it mines from the first minute, and the key later
+      unlocks everything it has found.
+    </div>
+    <p class="eyebrow">Early access · downloads</p>
+    <h1>Pick your machine.</h1>
+    <p class="lead" style="margin-top:18px">Every build is the same application: the full
+      evolutionary search, the leaderboard, the forward track. No key is needed to install or
+      to mine — formulas stay sealed until a subscription key from your early-access email
+      unlocks them in the app.</p>
+
+    <div class="builds">
+      <div class="build">
+        <span class="os">exe · windows</span>
+        <h3>Windows</h3>
+        <p class="req">Windows 10/11 · x64</p>
+        <a class="btn" href="/dl/AlphaNode-Setup.exe" download>Download the installer</a>
+        <p class="meta" data-size="AlphaNode-Setup.exe"></p>
+        <div class="alt">Prefer no installer? <a href="/dl/AlphaNode-windows-portable.zip" download>Portable .zip</a> — unzip and run <span class="mono">AlphaNode.exe</span>.</div>
+        <div class="spacer"></div>
+        <p class="note">The build is not code-signed yet, so SmartScreen will warn on first
+          run: choose “More info” → “Run anyway”. One click, once.</p>
+      </div>
+
+      <div class="build">
+        <span class="os">app · macos</span>
+        <h3>macOS</h3>
+        <p class="req">Apple Silicon (M1 and newer) · macOS 14+</p>
+        <a class="btn" href="/dl/AlphaNode-macos-arm64.zip" download>Download for Mac</a>
+        <p class="meta" data-size="AlphaNode-macos-arm64.zip"></p>
+        <div class="alt">Unzip, drag <span class="mono">AlphaNode.app</span> to Applications.</div>
+        <div class="spacer"></div>
+        <p class="note">Unsigned until our Apple Developer ID lands: on first launch
+          right-click the app → “Open” → “Open” again. After that it opens normally.</p>
+      </div>
+
+      <div class="build">
+        <span class="os">deb · linux</span>
+        <h3>Linux</h3>
+        <p class="req">Ubuntu 22.04+ · Debian 12+ · x64</p>
+        <a class="btn" href="/dl/alphanode_amd64.deb" download>Download the .deb</a>
+        <p class="meta" data-size="alphanode_amd64.deb"></p>
+        <div class="alt"><span class="mono">sudo apt install ./alphanode_amd64.deb</span> — menu
+          entry plus an <span class="mono">alphanode</span> terminal command. Any other distro:
+          <a href="/dl/AlphaNode-x86_64.AppImage" download>AppImage</a>, a single portable file.</div>
+        <div class="spacer"></div>
+        <p class="note">Python is not needed on the machine — the interpreter and every
+          dependency ship inside, on all three platforms.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="band" id="server">
+  <div class="wrap">
+    <p class="eyebrow">docker · headless</p>
+    <h2>Run the node on a server.</h2>
+    <p class="lead">The same search without the desktop: one compose file builds the image on
+      your box straight from the .deb above — no registry account, nothing extra to trust —
+      and runs a capped background node with the live status page.</p>
+    <div class="srv">
+      <div class="shell"><span class="c"># any Linux server with Docker Compose v2.17+</span>
+<span class="p">$</span> curl -fsSLO https://alphanode.tech/dl/docker-compose.yml
+<span class="p">$</span> docker compose up -d --build
+<span class="c"># live leaderboard + forward track:</span>
+<span class="p">$</span> open http://your-server:8787</div>
+      <div class="srv-notes">
+        <div><span class="k">first start</span><br>The node bootstraps its own market data —
+          ten liquid majors at the configured timeframe — and starts round one by itself.</div>
+        <div><span class="k">resources</span><br>The compose caps CPU (<span class="mono">cpus:</span>)
+          and the node keeps its background priority; edit the file to give it more or fewer cores.</div>
+        <div><span class="k">your formulas</span><br>Everything it mines lands sealed in a named
+          volume. Open them from the desktop app with your key — a server never holds plaintext alpha.</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="wrap lic">
+    <div>
+      <p class="eyebrow">licensing</p>
+      <h2>The key comes to your inbox.</h2>
+      <p class="lead">One subscription key per account, entered once in the app. It activates a
+        set number of machines and unlocks the formulas your nodes mined; the search itself runs
+        locally either way.</p>
+    </div>
+    <div class="card"><b>New here?</b> Downloads are open during early access, but keys are sent
+      by hand — <a href="index.html#get">request access</a> and tell us what you would point the
+      node at. Already installed? The
+      <a href="start.html">getting-started walkthrough</a> takes you from first launch to a
+      formula on the forward track in five clicks.</div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="disclaimer">
+      <b>Risk disclosure.</b> AlphaNode is research software, not investment advice. All
+      numbers on this page are illustrative and simulated. Hypothetical and simulated
+      performance has inherent limitations and no representation is made that any account
+      will achieve similar results. Read the full
+      <a href="index.html#disclosure">risk disclosure</a> before trading anything.
+    </div>
+    <div class="foot-row">
+      <span>© 2026 AlphaNode</span>
+      <a href="index.html">About AlphaNode</a>
+      <a href="start.html">Getting started</a>
+      <a href="index.html#get">Early access</a>
+      <span style="margin-left:auto" class="mono">your hardware · your formulas</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+/* Two small progressive touches; the page is complete without either. */
+(function () {
+  // 1. arriving from the request form (?ok=1) → show the "you are on the list" strip
+  if (/[?&]ok=1/.test(location.search)) {
+    var s = document.getElementById('onlist');
+    if (s) { s.style.display = 'block'; }
+  }
+  // 2. version + sizes from the manifest the upload script writes next to the files.
+  //    Absent manifest (or old cache) = empty mono line, never an error.
+  if (location.protocol === 'file:') return;   // local preview: no /dl to ask
+  fetch('/dl/manifest.json', { cache: 'no-store' }).then(function (r) {
+    return r.ok ? r.json() : null;
+  }).then(function (m) {
+    if (!m || !m.files) return;
+    var els = document.querySelectorAll('[data-size]');
+    for (var i = 0; i < els.length; i++) {
+      var f = m.files[els[i].getAttribute('data-size')];
+      if (f) els[i].textContent = (m.version ? 'v' + m.version + ' · ' : '') + f;
+    }
+  }, function () {});
+})();
+</script>
+</body>
+</html>

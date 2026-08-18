@@ -1,0 +1,41 @@
+# AlphaNode — headless search node for a server.
+#
+#   curl -fsSLO https://alphanode.tech/dl/docker-compose.yml
+#   docker compose up -d --build          # Docker Compose v2.17+ (dockerfile_inline)
+#   http://your-server:8787               # live status: leaderboard, rounds, forward track
+#
+# The image is built ON YOUR BOX from the same .deb the download page serves — there is no
+# registry account and nothing to trust beyond alphanode.tech itself. Rebuild to update:
+#   docker compose build --no-cache && docker compose up -d
+#
+# First start bootstraps its own market data (10 liquid majors at the configured timeframe)
+# and begins round one unattended. Everything the node mines lands SEALED in the named volume
+# below; open formulas from the desktop app with your subscription key — the server never
+# holds plaintext alpha.
+services:
+  alphanode:
+    build:
+      context: .
+      dockerfile_inline: |
+        FROM debian:bookworm-slim
+        ADD https://alphanode.tech/dl/alphanode_amd64.deb /tmp/alphanode.deb
+        RUN apt-get update \
+         && apt-get install -y --no-install-recommends /tmp/alphanode.deb ca-certificates \
+         && rm -rf /var/lib/apt/lists/* /tmp/alphanode.deb
+        CMD ["alphanode", "--role", "node"]
+    restart: unless-stopped
+    # hard ceiling for the container; the node also niced itself into the background.
+    # Give it more cores and it mines faster — the search scales linearly.
+    cpus: "4.0"
+    mem_limit: 6g
+    ports:
+      - "8787:8787"                        # status page; bind "127.0.0.1:8787:8787" to keep it private
+    environment:
+      - ALPHANODE_STATUS_PORT=8787
+      # - ALPHANODE_TF=4h                  # timeframe: 1d (default) / 4h / 1h / 15m
+      # - ALPHANODE_CPU_PERCENT=80         # share of the cores above the node actually uses
+    volumes:
+      - alphanode_state:/root/.local/share/AlphaNode
+
+volumes:
+  alphanode_state:

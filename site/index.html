@@ -1093,10 +1093,14 @@ document.documentElement.className = document.documentElement.className.replace(
       done.className = 'req-done';
       done.setAttribute('role', 'status');
       done.setAttribute('tabindex', '-1');
-      done.innerHTML = '<b>You are on the list.</b><p>We read every request and reply by hand ' +
-                       'from support@alphanode.tech, usually within a few days.</p>';
+      done.innerHTML = '<b>You are on the list.</b><p>Taking you to the downloads — the app ' +
+                       'installs and mines right away; your key arrives by email and unlocks ' +
+                       'what it finds. <a href="download.html?ok=1">Continue now</a>.</p>';
       form.replaceWith(done);
       done.focus();
+      // The flash of confirmation before the redirect is deliberate: an instant jump reads
+      // as "did my request even send?". The link above is the no-JS-timers fallback.
+      setTimeout(function () { location.href = 'download.html?ok=1'; }, 1600);
     }, function () {
       if (timer) clearTimeout(timer);
       btn.disabled = false;
