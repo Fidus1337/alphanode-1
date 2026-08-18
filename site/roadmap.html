@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Roadmap — AlphaNode</title>
+<meta name="description" content="From one honest node to a network that breeds alpha: AlphaNode's 2026–2028 plan — the Evolution Agent, the AlphaHub network and credits economy, the network-scale Mutator, and tokenomics last.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AlphaNode">
+<meta property="og:title" content="Roadmap — AlphaNode">
+<meta property="og:description" content="From one honest node to a network that breeds alpha: the 2026–2028 plan — Evolution Agent, AlphaHub network, the Mutator, tokenomics.">
+<meta property="og:image" content="https://alphanode.tech/og-card.png">
+<meta property="og:url" content="https://alphanode.tech/roadmap.html">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+/* AlphaNode brand: warm paper, near-black ink, hairline rules, uppercase mono micro-labels,
+   periwinkle + orange, graphite bands. Single-theme by design — the paper IS the brand. */
+:root{
+  --paper:#f6f4f0; --card:#ffffff; --ink:#222121; --mut:#6f6b66;
+  --line:#dedddd; --soft:#eae9e6;
+  --acc:#7d8cff; --acctext:#5261d6; --orange:#f99c00;
+  --green:#1e7f4e; --dark:#2e2b27; --darkline:#3f3b36;
+  --darkink:#f6f4f0; --darkmut:#a5a09a;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:960px;margin:0 auto;padding:0 28px}
+a{color:var(--acctext)}
+
+header{padding:72px 0 56px;border-bottom:1px solid var(--line)}
+.logo{display:flex;align-items:center;gap:11px;font-weight:650;font-size:18px;margin-bottom:48px}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--acc)}
+.eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--acctext);margin:0 0 16px}
+h1{font-size:clamp(36px,5.5vw,58px);font-weight:680;letter-spacing:-.025em;line-height:1.07;
+  margin:0;text-wrap:balance}
+h1 .quiet{color:var(--mut);font-weight:500}
+.lead{color:var(--mut);font-size:18.5px;max-width:60ch;margin:22px 0 0}
+
+/* principles strip */
+.princ{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;padding:40px 0;border-bottom:1px solid var(--line)}
+.princ .p{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:20px 22px}
+.princ .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--acctext)}
+.princ h3{margin:10px 0 6px;font-size:16.5px;font-weight:650}
+.princ p{margin:0;color:var(--mut);font-size:14px;line-height:1.6}
+
+/* timeline */
+.tl{padding:64px 0 80px}
+.stop{display:grid;grid-template-columns:150px 26px minmax(0,1fr);gap:0 30px;position:relative}
+.stop .when{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+  letter-spacing:.1em;text-transform:uppercase;color:var(--mut);text-align:right;padding-top:6px}
+.stop .when b{display:block;color:var(--acctext);font-weight:600;font-size:12.5px}
+.rail{position:relative}
+.rail::before{content:'';position:absolute;left:12px;top:34px;bottom:-14px;width:1px;background:var(--line)}
+.stop:last-child .rail::before{display:none}
+.knot{position:relative;z-index:1;width:25px;height:25px;border-radius:50%;
+  border:1px solid var(--line);background:var(--card);display:flex;align-items:center;justify-content:center;margin-top:2px}
+.knot::after{content:'';width:9px;height:9px;border-radius:50%;background:var(--acc)}
+.stop.now .knot{border-color:var(--green)}
+.stop.now .knot::after{background:var(--green)}
+.stop.far .knot::after{background:var(--orange)}
+.body{padding-bottom:58px}
+.body h2{margin:0 0 6px;font-size:26px;font-weight:660;letter-spacing:-.018em}
+.body .sub{color:var(--mut);margin:0 0 18px;font-size:15.5px;max-width:60ch}
+.ship{margin:0;padding:0;list-style:none;display:flex;flex-direction:column}
+.ship li{padding:12px 0;border-top:1px solid var(--soft);color:var(--mut);font-size:15px;
+  display:grid;grid-template-columns:86px 1fr;gap:18px;align-items:baseline}
+.ship li:last-child{border-bottom:1px solid var(--soft)}
+.ship .t{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--acctext)}
+.ship b{color:var(--ink);font-weight:600}
+.done{margin:16px 0 0;font-size:13.5px;color:var(--mut)}
+.done .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;
+  letter-spacing:.11em;text-transform:uppercase;color:var(--green);margin-right:8px}
+
+/* graphite band for the mutator stop */
+.stop.darkband .bodycard{background:var(--dark);border:1px solid var(--darkline);border-radius:5px;
+  padding:26px 28px;color:var(--darkink)}
+.stop.darkband .bodycard h2{color:var(--darkink)}
+.stop.darkband .bodycard .sub{color:var(--darkmut)}
+.stop.darkband .ship li{border-color:var(--darkline);color:var(--darkmut)}
+.stop.darkband .ship .t{color:var(--orange)}
+.stop.darkband .ship b{color:var(--darkink)}
+.stop.darkband .done{color:var(--darkmut)}
+
+footer{border-top:1px solid var(--line);padding:36px 0 56px;color:var(--mut);font-size:13px}
+.foot-row{display:flex;gap:24px;flex-wrap:wrap;align-items:center}
+
+@media (max-width:760px){
+  .princ{grid-template-columns:1fr}
+  .stop{grid-template-columns:26px minmax(0,1fr);gap:0 18px}
+  .stop .when{grid-column:2;text-align:left;padding:0 0 10px;order:-1}
+  .stop .when b{display:inline;margin-right:8px}
+  .rail{grid-row:2}
+  .body{grid-column:2}
+  .ship li{grid-template-columns:1fr;gap:4px}
+}
+
+nav{border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
+.nav-logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none;color:var(--ink)}
+.nav-links{display:flex;gap:22px;margin-left:auto}
+.nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
+.nav-links a:hover{color:var(--ink)}
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:1px solid var(--ink);
+  border-radius:3px;padding:10px 20px;font-size:14px;font-weight:550;text-decoration:none;cursor:pointer}
+.btn:hover{opacity:.85}
+@media (max-width:560px){.nav-links{display:none}.nav-in > .btn{margin-left:auto}}
+</style>
+</head>
+<body>
+<nav>
+  <div class="wrap nav-in">
+    <a class="nav-logo" href="index.html"><span class="dot" aria-hidden="true"></span>AlphaNode</a>
+    <div class="nav-links">
+      <a href="index.html">About AlphaNode</a>
+      <a href="start.html">Getting started</a>
+      <a href="download.html">Downloads</a>
+    </div>
+    <a class="btn" href="index.html#get">Get early access</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <p class="eyebrow">Roadmap · 2026 – 2028</p>
+    <h1>From one honest node<br><span class="quiet">to a network that breeds alpha.</span></h1>
+    <p class="lead">Today AlphaNode is a solitary miner: your machine, your formulas, honest
+      tests. Over the next two years it grows a mind of its own, then a society — an agent
+      inside every node, a network between them, a breeding loop across the network, and an
+      economy that pays the contributors. In that order, each stage shipping as product.</p>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="princ">
+    <div class="p"><span class="k">principle 01</span>
+      <h3>Honesty is not negotiable</h3>
+      <p>Every future feature inherits today's rules: locked out-of-sample tests, forward
+         tracking on closed bars, full costs. A network makes overfitting easier — so the
+         referee gets stricter, never looser.</p></div>
+    <div class="p"><span class="k">principle 02</span>
+      <h3>Sealed by design</h3>
+      <p>Formulas never travel in plaintext. The vault that today protects a single library is
+         the same machinery that will let strangers' nodes cooperate without trusting each
+         other.</p></div>
+    <div class="p"><span class="k">principle 03</span>
+      <h3>Economy before token</h3>
+      <p>Credits must work as boring internal bookkeeping first. A token only wraps an economy
+         that already functions without it — never the other way around.</p></div>
+  </div>
+
+  <div class="tl">
+
+    <div class="stop now">
+      <div class="when"><b>Now</b>2026 H2</div>
+      <div class="rail"><div class="knot"></div></div>
+      <div class="body">
+        <h2>Foundation — the honest miner, generally available</h2>
+        <p class="sub">Early access is live: desktop on three platforms, headless Docker nodes,
+           sealed vault, licence hub, the download pipeline. The remaining work is polish that
+           earns trust.</p>
+        <ul class="ship">
+          <li><span class="t">ship</span><span><b>Green CI on all three platforms</b> and signed
+              builds (Windows code-signing, Apple notarization).</span></li>
+          <li><span class="t">ship</span><span><b>Demo tier</b> for keyless copies and
+              engine-search fixes from the audit (refine cadence, restart replay, sparse-window
+              scoring).</span></li>
+          <li><span class="t">ship</span><span><b>Support pipeline</b>: key delivery by email,
+              docs, onboarding walkthrough.</span></li>
+        </ul>
+        <p class="done"><span class="k">done when</span>a stranger can go from the site to a
+           mining node on any OS without talking to us.</p>
+      </div>
+    </div>
+
+    <div class="stop">
+      <div class="when"><b>2027 H1</b>module</div>
+      <div class="rail"><div class="knot"></div></div>
+      <div class="body">
+        <h2>The Evolution Agent — a quant on staff, inside every node</h2>
+        <p class="sub">An autonomous AI agent joins the app as a module. The blind evolutionary
+           search gets an observer that reads its results, forms hypotheses and steers.</p>
+        <ul class="ship">
+          <li><span class="t">watch</span><span><b>Search health</b>: the agent monitors rounds
+              live — stagnation, overfit smell, wasted exploration — and retunes the
+              explore/refine cadence on evidence.</span></li>
+          <li><span class="t">explain</span><span><b>Plain-language reports</b>: why this round
+              found what it found, what a formula actually trades on, what died on TEST and
+              why.</span></li>
+          <li><span class="t">steer</span><span><b>Hypothesis-driven mining</b>: the agent
+              proposes universes, timeframes and primitive sets to try next — the search stops
+              being a random walk and becomes a directed one.</span></li>
+        </ul>
+        <p class="done"><span class="k">done when</span>an agent-steered node beats a default
+           node on held-out TEST across a season, reproducibly.</p>
+      </div>
+    </div>
+
+    <div class="stop">
+      <div class="when"><b>2027 H2</b>network</div>
+      <div class="rail"><div class="knot"></div></div>
+      <div class="body">
+        <h2>AlphaHub Network — nodes become a society</h2>
+        <p class="sub">The licence hub grows into a network layer. Nodes opt in to share what
+           can be shared honestly — performance, never plaintext formulas — and an internal
+           economy starts keeping score.</p>
+        <ul class="ship">
+          <li><span class="t">connect</span><span><b>The global leaderboard</b>: sealed
+              champions ranked by network-graded TEST and forward results — one honest table
+              across all participating nodes.</span></li>
+          <li><span class="t">earn</span><span><b>Credits ledger</b>: uptime, unique finds and
+              forward-track survival earn credits; reveals, agent features and priority spend
+              them. Internal economy, boring on purpose.</span></li>
+          <li><span class="t">trade</span><span><b>Formula access market, v1</b>: an owner can
+              grant paid, hub-brokered access to a sealed formula's signal — the formula itself
+              never leaves the vault.</span></li>
+        </ul>
+        <p class="done"><span class="k">done when</span>a node earns credits it can spend on
+           something it wants, with zero plaintext ever crossing the wire.</p>
+      </div>
+    </div>
+
+    <div class="stop darkband">
+      <div class="when"><b>2028 H1</b>breeding</div>
+      <div class="rail"><div class="knot"></div></div>
+      <div class="body"><div class="bodycard">
+        <h2>The Mutator — evolution at network scale</h2>
+        <p class="sub">A network-walking breeder: it visits participating libraries, crosses
+           champions from different nodes — islands exchanging genes — and returns offspring
+           that survive network-wide honest tests. More machines stop meaning merely more
+           tries; they start meaning deeper search.</p>
+        <ul class="ship">
+          <li><span class="t">walk</span><span><b>Island migration</b>: the mutator combines
+              solutions that evolved apart — the cross-pollination a solitary node can never
+              have.</span></li>
+          <li><span class="t">grade</span><span><b>Network referee</b>: offspring face locked
+              tests and forward tracks graded across the whole network before anyone sees
+              them.</span></li>
+          <li><span class="t">reward</span><span><b>Provenance & royalties</b>: every offspring
+              carries its lineage; credits flow back to the nodes whose champions were its
+              parents.</span></li>
+        </ul>
+        <p class="done"><span class="k">done when</span>a mutator-bred formula tops the global
+           leaderboard and its parents' owners get paid for it.</p>
+      </div></div>
+    </div>
+
+    <div class="stop far">
+      <div class="when"><b>2028 H2</b>economy</div>
+      <div class="rail"><div class="knot"></div></div>
+      <div class="body">
+        <h2>Tokenomics — the ledger grows up</h2>
+        <p class="sub">By now the credits economy has a year of real history: earnings, spends,
+           royalties. Tokenization wraps that proven ledger — it does not invent value, it
+           settles value that already moves.</p>
+        <ul class="ship">
+          <li><span class="t">legal</span><span><b>Jurisdiction and securities review first</b>
+              — the structure follows the law we choose to live under, not the other way
+              around.</span></li>
+          <li><span class="t">mint</span><span><b>Token over the ledger</b>: credits become
+              transferable; mining contribution, formula royalties and mutator fees settle
+              on-chain.</span></li>
+          <li><span class="t">open</span><span><b>External liquidity</b>: the internal economy
+              opens its doors — carefully, and only as far as the review allows.</span></li>
+        </ul>
+        <p class="done"><span class="k">done when</span>a contributor can convert a year of
+           honest mining into something the outside world accepts.</p>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-row">
+      <span>© 2026 AlphaNode</span>
+      <a href="index.html" style="color:var(--mut)">About AlphaNode</a>
+      <a href="download.html" style="color:var(--mut)">Downloads</a>
+      <span>A living document — dates are intents, principles are promises.</span>
+      <span style="margin-left:auto" class="mono">agent → network → mutator → economy</span>
+    </div>
+  </div>
+</footer>
+</body>
+</html>
