@@ -1,0 +1,309 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>AlphaNode — the deck</title>
+<style>
+/* AlphaNode brand, verbatim from the site: warm paper, near-black ink, hairline lines,
+   uppercase mono micro-labels, periwinkle + orange, one graphite slide. Single-theme by
+   design — the paper IS the brand — so every surface paints its own color explicitly. */
+:root{
+  --paper:#f6f4f0; --card:#ffffff; --ink:#222121; --mut:#6f6b66;
+  --line:#dedddd; --soft:#eae9e6;
+  --acc:#7d8cff; --acctext:#5261d6; --orange:#f99c00;
+  --green:#1e7f4e; --red:#c14b36;
+  --dark:#2e2b27; --darkline:#3f3b36; --darkink:#f6f4f0; --darkmut:#a5a09a; --darkacc:#bfd1ff;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:16px/1.55 system-ui,-apple-system,"Segoe UI",sans-serif;overflow:hidden}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+
+.deck{position:fixed;inset:0}
+.slide{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;
+  padding:6vh 7vw;visibility:hidden;opacity:0;transform:translateX(24px);
+  transition:opacity .35s ease,transform .35s ease,visibility 0s .35s;background:var(--paper)}
+.slide.on{visibility:visible;opacity:1;transform:none;transition:opacity .35s ease,transform .35s ease}
+@media (prefers-reduced-motion: reduce){.slide{transition:none!important;transform:none!important}}
+.inner{width:min(1060px,100%)}
+
+.eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--acctext);margin:0 0 22px}
+h1{font-size:clamp(40px,6vw,76px);font-weight:680;letter-spacing:-.025em;line-height:1.05;
+  margin:0;text-wrap:balance}
+h1 .quiet{color:var(--mut);font-weight:500}
+h2{font-size:clamp(30px,4.2vw,52px);font-weight:660;letter-spacing:-.022em;line-height:1.1;
+  margin:0 0 26px;text-wrap:balance}
+.lead{color:var(--mut);font-size:clamp(17px,1.7vw,21px);max-width:58ch;margin:18px 0 0}
+.big{font-size:clamp(19px,2vw,24px);line-height:1.5;max-width:54ch;margin:0}
+
+.logo{display:flex;align-items:center;gap:12px;font-weight:650;font-size:19px;margin-bottom:7vh}
+.dot{width:10px;height:10px;border-radius:50%;background:var(--acc)}
+
+.rows{margin-top:40px;display:flex;flex-direction:column}
+.row{display:grid;grid-template-columns:130px 1fr;gap:26px;padding:20px 0;border-top:1px solid var(--line);align-items:baseline}
+.row:last-child{border-bottom:1px solid var(--line)}
+.row .k{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;
+  letter-spacing:.12em;text-transform:uppercase;color:var(--acctext)}
+.row p{margin:0;color:var(--mut);font-size:clamp(15.5px,1.5vw,18px)}
+.row p b{color:var(--ink);font-weight:600}
+
+.slide.dark{background:var(--dark);color:var(--darkink)}
+.slide.dark .eyebrow{color:var(--orange)}
+.slide.dark h2{color:var(--darkink)}
+.slide.dark .row{border-color:var(--darkline)}
+.slide.dark .row .k{color:var(--orange)}
+.slide.dark .row p{color:var(--darkmut)}
+.slide.dark .row p b{color:var(--darkink)}
+.slide.dark .big{color:var(--darkmut)}
+.slide.dark .big b{color:var(--darkink)}
+
+.term{background:#262421;border:1px solid var(--darkline);border-radius:5px;margin-top:36px;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:clamp(12px,1.25vw,14.5px);
+  line-height:1.8;color:var(--darkink);overflow-x:auto}
+.term .bar{display:flex;justify-content:space-between;gap:16px;padding:10px 18px;
+  border-bottom:1px solid var(--darkline);color:var(--darkmut);font-size:.86em;letter-spacing:.08em}
+.term pre{margin:0;padding:14px 18px 18px;white-space:pre}
+.term .h{color:var(--darkmut)}
+.term .g{color:#5abd8c}
+.term .r{color:#e57a63}
+.term .a{color:var(--darkacc)}
+.term .o{color:var(--orange)}
+
+.foot-note{margin-top:5vh;color:var(--mut);font-size:13px}
+.slide.dark .foot-note{color:var(--darkmut)}
+
+.nav{position:fixed;left:0;right:0;bottom:26px;display:flex;justify-content:center;gap:9px;z-index:5}
+.nav button{width:9px;height:9px;border-radius:50%;border:1px solid var(--mut);background:transparent;
+  padding:0;cursor:pointer}
+.nav button.on{background:var(--acc);border-color:var(--acc)}
+.nav button:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
+.count{position:fixed;right:26px;bottom:20px;color:var(--mut);font-size:12px;z-index:5}
+.hint{position:fixed;left:26px;bottom:20px;color:var(--mut);font-size:12px;z-index:5}
+.tap{position:fixed;top:0;bottom:70px;width:34%;z-index:4;cursor:pointer;background:none;border:0;padding:0}
+.tap:focus-visible{outline:2px solid var(--acc);outline-offset:-4px}
+.tap.prev{left:0}.tap.next{right:0}
+
+@page{size:13.333in 7.5in;margin:0}
+@media print{
+  body{overflow:visible;background:var(--paper)}
+  .deck{position:static}
+  .slide{position:relative;inset:auto;visibility:visible;opacity:1;transform:none;
+    height:100vh;page-break-after:always;padding:8vh 8vw}
+  .nav,.count,.hint,.tap{display:none}
+}
+@media (max-width:640px){
+  .row{grid-template-columns:1fr;gap:6px;padding:16px 0}
+  .slide{padding:5vh 8vw}
+}
+</style>
+
+</head>
+<body>
+<div class="deck" id="deck">
+
+  <!-- 1 · cover -->
+  <section class="slide on" role="group" aria-label="Slide 1 of 8">
+    <div class="inner">
+      <div class="logo"><span class="dot"></span>AlphaNode</div>
+      <h1>Mines trading formulas.<br><span class="quiet">Tells you the truth about them.</span></h1>
+      <p class="lead">An evolutionary search that breeds alpha formulas over real crypto
+        market data — on your machine — and holds every one of them to tests it cannot charm.</p>
+      <p class="foot-note mono">alphanode.tech · early access</p>
+    </div>
+  </section>
+
+  <!-- 2 · the problem -->
+  <section class="slide" role="group" aria-label="Slide 2 of 8">
+    <div class="inner">
+      <p class="eyebrow">The problem</p>
+      <h2>Backtests flatter.</h2>
+      <p class="big">Almost any strategy can be tuned until the past applauds. Then it meets
+        tomorrow and dies quietly, taking real money with it.</p>
+      <p class="big" style="margin-top:22px">Tweak enough parameters and any chart turns
+        green — that is not an edge, that is <b>memorizing history</b>.</p>
+      <p class="big" style="margin-top:22px">The hard part of finding alpha was never the
+        finding. It is <b>knowing which finds are real</b> — before you trade them.</p>
+    </div>
+  </section>
+
+  <!-- 3 · what it does -->
+  <section class="slide" role="group" aria-label="Slide 3 of 8">
+    <div class="inner">
+      <p class="eyebrow">What AlphaNode does</p>
+      <h2>Evolution, not opinion.</h2>
+      <div class="rows">
+        <div class="row"><span class="k">breed</span>
+          <p>Formulas are <b>small programs</b> built from price, volume and funding —
+             <b>200 per generation, 30 generations, ≈ 6,000 candidates a round</b> — mutated
+             and crossed like organisms, round after round.</p></div>
+        <div class="row"><span class="k">test</span>
+          <p>Every candidate trades a <b>fee- and funding-aware simulator</b> over years of
+             history on <b>50 liquid crypto pairs</b>, from daily bars down to 15 minutes.
+             Weak ones are culled; nothing is hand-picked.</p></div>
+        <div class="row"><span class="k">refine</span>
+          <p>New rounds <b>warm-start from your champions</b> and mutate around what already
+             works; every few rounds the search explores from scratch so it never gets stuck
+             on one idea.</p></div>
+        <div class="row"><span class="k">keep</span>
+          <p>Survivors land in <b>your library</b> with their full record. You press one
+             button and read the leaderboard — the machine does the rest.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 · honesty (dark) -->
+  <section class="slide dark" role="group" aria-label="Slide 4 of 8">
+    <div class="inner">
+      <p class="eyebrow">The honesty rules</p>
+      <h2>A formula cannot pass<br>by memorizing the answers.</h2>
+      <div class="rows">
+        <div class="row"><span class="k">two windows</span>
+          <p>History is split. A formula's score is the <b>worse of two separate windows</b> —
+             shining on one and failing the other counts as failing.</p></div>
+        <div class="row"><span class="k">locked test</span>
+          <p>A third slice is <b>held out and locked</b>. The search never sees it, never
+             selects on it — it only grades the finished formula at the end, pass or fail.</p></div>
+        <div class="row"><span class="k">forward track</span>
+          <p>Champions then trade <b>live closed bars on paper</b>, appended one by one with a
+             deliberate lag — no acting on a bar that has not finished, no editing yesterday.</p></div>
+        <div class="row"><span class="k">real costs</span>
+          <p>Every simulated trade pays <b>exchange fees and funding</b>. An edge that only
+             exists before costs never reaches your screen.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 · what you see -->
+  <section class="slide dark" role="group" aria-label="Slide 5 of 8">
+    <div class="inner">
+      <p class="eyebrow">What you see</p>
+      <h2>Honest numbers — including the red ones.</h2>
+      <div class="term" role="img" aria-label="AlphaNode status page: leaderboard with fitness and held-out TEST columns, one negative TEST shown honestly, and a forward track line">
+        <div class="bar"><span>ALPHANODE · LOCALHOST:8787 — STATUS</span><span>ROUND 19 · 12:09</span></div>
+        <pre><span class="h">#   FITNESS   TEST (OOS)   FORMULA</span>
+1   <span class="g">+2.41</span>     <span class="g">+1.87</span>        ts_rank(sub(vwap, ema(close,20)), 14)
+2   <span class="g">+2.12</span>     <span class="g">+0.94</span>        mul(sign(delta(vol,3)), rank(hl_spread))
+3   <span class="g">+1.98</span>     <span class="r">-0.42</span>        <span class="h">← looked great in training. TEST says no.</span>
+<span class="h">──────────────────────────────────────────────────</span>
+<span class="o">FORWARD</span>  12 champions · live paper · day 34   <span class="a">+3.1%</span></pre>
+      </div>
+      <p class="big" style="margin-top:28px">The TEST column is graded on data the search
+        never touched. <b>When it is red, we show you red.</b></p>
+    </div>
+  </section>
+
+  <!-- 6 · in the box -->
+  <section class="slide" role="group" aria-label="Slide 6 of 8">
+    <div class="inner">
+      <p class="eyebrow">In the box</p>
+      <h2>From first launch to your own pipeline.</h2>
+      <div class="rows">
+        <div class="row"><span class="k">one button</span>
+          <p><b>Start</b> mines; the live page shows rounds, generations and finds as they
+             happen — on the desktop or in any browser for a server node.</p></div>
+        <div class="row"><span class="k">portfolio</span>
+          <p>Combine your best formulas into <b>one portfolio</b>, ranked by the honest TEST
+             column, and read a <b>PDF report</b> of how it would have traded.</p></div>
+        <div class="row"><span class="k">signal api</span>
+          <p>A local JSON endpoint serves <b>this hour's target weights</b> for your basket —
+             wire it into your own execution when you decide to go live. Your keys, your risk,
+             your code.</p></div>
+        <div class="row"><span class="k">no babysitting</span>
+          <p>The node fetches its own market data, tracks its champions forward and keeps
+             mining <b>unattended</b> — laptop, desktop or a $20 server.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 · yours, locally -->
+  <section class="slide" role="group" aria-label="Slide 7 of 8">
+    <div class="inner">
+      <p class="eyebrow">Yours, locally</p>
+      <h2>Runs on your hardware.<br>Finds stay yours.</h2>
+      <div class="rows">
+        <div class="row"><span class="k">private</span>
+          <p>Mining and forward tracking read <b>public market data only</b> — no exchange API
+             keys, no cloud. The only thing that leaves the machine is a licence check.</p></div>
+        <div class="row"><span class="k">everywhere</span>
+          <p><b>Windows, macOS, Linux</b> — or a headless server node with one Docker compose
+             file and a live status page.</p></div>
+        <div class="row"><span class="k">unique</span>
+          <p>Each install mines from its <b>own seed</b>: no two nodes walk the same path, so
+             your library is yours in both senses.</p></div>
+        <div class="row"><span class="k">sealed</span>
+          <p>On disk, mined formulas are <b>encrypted to your account</b> — a copied library
+             file is useless on someone else's machine. Your key opens them; nobody else's
+             does.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 · get it -->
+  <section class="slide" role="group" aria-label="Slide 8 of 8">
+    <div class="inner">
+      <p class="eyebrow">Early access</p>
+      <h2>Three steps to your first formula.</h2>
+      <div class="rows">
+        <div class="row"><span class="k">1 · request</span>
+          <p>Ask for early access at <b>alphanode.tech</b> — tell us what you would point a node at.</p></div>
+        <div class="row"><span class="k">2 · install</span>
+          <p>Download for your machine and press <b>Start</b>. It mines from the first minute.</p></div>
+        <div class="row"><span class="k">3 · unlock</span>
+          <p>Your subscription key arrives by email and <b>unlocks everything your node found</b>.
+             One key, your set of machines.</p></div>
+      </div>
+      <p class="foot-note">AlphaNode is research software, not investment advice. Simulated and
+        paper results have inherent limitations — read the risk disclosure at alphanode.tech.
+        <span class="mono" style="margin-left:14px">support@alphanode.tech</span></p>
+    </div>
+  </section>
+
+  <button class="tap prev" aria-label="Previous slide"></button>
+  <button class="tap next" aria-label="Next slide"></button>
+  <div class="nav" id="dots" role="tablist" aria-label="Slides"></div>
+  <div class="count mono" id="count" aria-hidden="true">1 / 8</div>
+  <div class="hint mono" aria-hidden="true">← → · click sides</div>
+</div>
+
+<script>
+(function () {
+  var slides = [].slice.call(document.querySelectorAll('.slide'));
+  var dots = document.getElementById('dots'), count = document.getElementById('count');
+  var i = 0;
+  slides.forEach(function (_, n) {
+    var b = document.createElement('button');
+    b.setAttribute('aria-label', 'Slide ' + (n + 1));
+    b.addEventListener('click', function () { go(n); });
+    dots.appendChild(b);
+  });
+  function go(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (s, k) { s.classList.toggle('on', k === i); });
+    [].forEach.call(dots.children, function (d, k) { d.classList.toggle('on', k === i); });
+    count.textContent = (i + 1) + ' / ' + slides.length;
+  }
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'ArrowRight' || e.key === 'PageDown' || e.key === ' ') { e.preventDefault(); go(i + 1); }
+    if (e.key === 'ArrowLeft'  || e.key === 'PageUp') { e.preventDefault(); go(i - 1); }
+    if (e.key === 'Home') go(0);
+    if (e.key === 'End') go(slides.length - 1);
+  });
+  document.querySelector('.tap.next').addEventListener('click', function () { go(i + 1); });
+  document.querySelector('.tap.prev').addEventListener('click', function () { go(i - 1); });
+  var x0 = null;
+  document.addEventListener('touchstart', function (e) { x0 = e.touches[0].clientX; }, {passive: true});
+  document.addEventListener('touchend', function (e) {
+    if (x0 === null) return;
+    var dx = e.changedTouches[0].clientX - x0;
+    if (Math.abs(dx) > 48) go(i + (dx < 0 ? 1 : -1));
+    x0 = null;
+  }, {passive: true});
+  go(0);
+})();
+</script>
+</body>
+</html>

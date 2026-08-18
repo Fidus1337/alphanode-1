@@ -137,6 +137,9 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
       support@alphanode.tech, usually within a few days — your subscription key arrives in that
       email. Meanwhile, install the app: it mines from the first minute, and the key later
       unlocks everything it has found.
+      <span data-requires="AlphaNode-Deck.pdf"> The
+      <a href="/dl/AlphaNode-Deck.pdf" download>two-minute deck (PDF)</a> is downloading —
+      pass it to whoever asks what this thing is.</span>
     </div>
     <p class="eyebrow">Early access · downloads</p>
     <h1>Pick your machine.</h1>
@@ -255,6 +258,15 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   if (/[?&]ok=1/.test(location.search)) {
     var s = document.getElementById('onlist');
     if (s) { s.style.display = 'block'; }
+    // hand over the deck without a click; the strip keeps a visible link as the fallback
+    if (location.protocol !== 'file:') {
+      setTimeout(function () {
+        var a = document.createElement('a');
+        a.href = '/dl/AlphaNode-Deck.pdf';
+        a.setAttribute('download', '');
+        document.body.appendChild(a); a.click(); a.remove();
+      }, 900);
+    }
   }
   // 2. version + sizes from the manifest the upload script writes next to the files.
   //    Absent manifest (or old cache) = empty mono line, never an error.
