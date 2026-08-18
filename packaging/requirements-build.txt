@@ -19,3 +19,6 @@ pillow            # icon generation (make_icon.py)
 pyinstaller>=6.0
 cython>=3.0       # compiles the engine core to native extensions (cythonize_engine.py) — the
 setuptools        # .spec refuses to ship the engine as decompilable bytecode without them
+cryptography      # vault sealing (X25519+ChaCha20). The node seals EVERY mined formula, so this
+                  # is a hard runtime dep of the frozen bundle — v1.4.1 shipped without it and
+                  # the first search round died on `import vault` (selfcheck now proves the seal)

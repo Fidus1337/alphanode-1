@@ -10,7 +10,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJ="$(dirname "$HERE")"
 PY="${PYTHON:-$PROJ/.venv/bin/python}"
-VER="${1:-1.4.1}"
+VER="${1:-1.4.2}"
 ARCH="amd64"
 ONEDIR="$HERE/dist/AlphaNode"                     # PyInstaller result (onedir)
 PKG="$HERE/deb/alphanode_${VER}_${ARCH}"

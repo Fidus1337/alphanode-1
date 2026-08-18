@@ -145,6 +145,18 @@ def _selfcheck_body(out):
     else:
         out('vault resolve: skipped (unsealed dev build)')
 
+    # The node seals EVERY mined formula, which drags `cryptography` into the bundle — a build
+    # env missing it ships an app whose FIRST search round dies on `import vault`, while every
+    # selfcheck above stays green (exactly v1.4.1: CI smoke red, selfcheck OK). Prove the whole
+    # seal path here, so that class of bundle fails loudly at selfcheck instead.
+    if os.path.exists(_pubf):
+        import vault
+        _probe_tok = vault.seal('selfcheck-probe', _pubf, owner='selfcheck')
+        assert _probe_tok.startswith('v2:'), 'seal produced an unexpected envelope'
+        out('vault seal  : ok (cryptography in the bundle, v2 envelope minted)')
+    else:
+        out('vault seal  : skipped (no public key — unsealed dev build)')
+
     # The data fetcher role pulls the Binance wrapper (import pytz). Exercise it here so a missing
     # transitive dep (e.g. pytz) fails the build in CI instead of shipping a broken --role fetch.
     import fetch_data                                      # noqa: F401
