@@ -61,7 +61,29 @@ print(f'synthetic  : {os.path.getsize(data) // 1024} KB market snapshot -> {data
 env = dict(os.environ, ALPHANODE_DATA=data,
            ALPHANODE_MAX_ROUNDS='1', ALPHANODE_POP='20', ALPHANODE_GENS='2',
            ALPHANODE_PAUSE='0', ALPHANODE_STATE_DIR=tmp, ALPHANODE_STATUS_PORT='8799')
-subprocess.run(cmd + ['--role', 'node'], env=env, cwd=cwd, timeout=900, check=True)
+# Popen + a status-HTTP watchdog instead of a blind run: a windowed exe's stdout is invisible
+# on Windows (GUI subsystem — the handles never attach), so a slow round and a hung round both
+# looked like 900 silent seconds. The node's own status server is the channel that always works.
+import time
+import urllib.request
+NODE_TIMEOUT = 1500
+proc = subprocess.Popen(cmd + ['--role', 'node'], env=env, cwd=cwd)
+_t0, _last = time.time(), 'no status yet'
+while proc.poll() is None:
+    if time.time() - _t0 > NODE_TIMEOUT:
+        proc.kill()
+        raise SystemExit(f'node round did not finish in {NODE_TIMEOUT}s; last status: {_last}')
+    time.sleep(20)
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:8799/status.json', timeout=3) as r:
+            st = json.load(r)
+        _last = f"round={st.get('rounds')} gen={st.get('gen')!r} found={st.get('found')}"
+        print(f'[watch {int(time.time() - _t0):4d}s] {_last}', flush=True)
+    except Exception as e:                                # noqa: BLE001
+        print(f'[watch {int(time.time() - _t0):4d}s] status not up yet ({type(e).__name__})',
+              flush=True)
+if proc.returncode != 0:
+    raise SystemExit(f'node exited with {proc.returncode}')
 lib = os.path.join(tmp, 'library.jsonl')
 rows = [json.loads(l) for l in open(lib, encoding='utf-8') if l.strip()]
 assert rows, 'node round produced an empty library'

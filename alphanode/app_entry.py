@@ -206,6 +206,11 @@ def _selfcheck_body(out):
            'index': pandas.date_range('2020-01-01', periods=_T, freq='D', tz='UTC'), 'tk': ['A', 'B', 'C']}
     fastsim.fast_sim(numpy.tile(numpy.linspace(-1.0, 1.0, _N), (_T, 1)), _mk, 0.30, 0.001)
     out('fast_sim    : ok, numba', 'ACTIVE' if fastsim._kernel_jit is not None else 'fallback(numpy)')
+    if os.environ.get('ALPHANODE_REQUIRE_NUMBA') == '1' and fastsim._kernel_jit is None:
+        # CI sets this: the numpy fallback is ~20x slower per genome — a release built that way
+        # would look alive and mine at a crawl (and its smoke round times out instead of failing
+        # with a reason). Version drift in the numba/numpy pair lands HERE, with one clear line.
+        raise AssertionError('numba is not active in this bundle (numpy fallback)')
 
     if os.path.exists(dp):
         with open(dp, 'rb') as f:

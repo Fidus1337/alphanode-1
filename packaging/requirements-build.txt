@@ -1,7 +1,8 @@
 # Dependencies for BUILDING the application (frozen). Installed in CI/locally before PyInstaller.
 # The runtime graph is intentionally narrow: numpy/pandas/matplotlib(Agg)/tkinter + aiosonic/orjson/onecache
 # (Binance data fetcher). scipy/seaborn/statsmodels are NOT in the bundle (excluded in .spec).
-numpy>=1.24
+numpy>=1.24,<2.3  # pinned to the numba-validated line: CI legs floated to 2.4.x while
+                  # dev ran 2.2.x — three platforms must freeze ONE tested pair
 pandas>=2.0,<3    # pin to 2.x: pandas 3's Copy-on-Write returns read-only .to_numpy() arrays; the
                   # code handles it, but this keeps the build matching the validated 2.x bundle
 pytz              # quantpylib.wrappers.binance imports it directly (pandas 2.x no longer guarantees it)

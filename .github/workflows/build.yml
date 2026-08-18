@@ -14,6 +14,7 @@ on:
 env:
   VAULT_API: https://api.alphanode.tech
   ALPHANODE_VAULT_URL: https://api.alphanode.tech
+  ALPHANODE_REQUIRE_NUMBA: '1'   # numpy-fallback bundle = 20x slower mining; fail selfcheck, not a timeout
 
 jobs:
   # ---------------------------------------------------------------- Windows
