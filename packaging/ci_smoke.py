@@ -58,9 +58,11 @@ make_data(data)
 print(f'synthetic  : {os.path.getsize(data) // 1024} KB market snapshot -> {data}')
 
 # ---- 1. one search round in a scratch state dir ----
+hang_file = os.path.join(tmp, 'hang_dump.txt')
 env = dict(os.environ, ALPHANODE_DATA=data,
            ALPHANODE_MAX_ROUNDS='1', ALPHANODE_POP='20', ALPHANODE_GENS='2',
-           ALPHANODE_PAUSE='0', ALPHANODE_STATE_DIR=tmp, ALPHANODE_STATUS_PORT='8799')
+           ALPHANODE_PAUSE='0', ALPHANODE_STATE_DIR=tmp, ALPHANODE_STATUS_PORT='8799',
+           ALPHANODE_HANG_DUMP='240', ALPHANODE_HANG_DUMP_FILE=hang_file)
 # Popen + a status-HTTP watchdog instead of a blind run: a windowed exe's stdout is invisible
 # on Windows (GUI subsystem — the handles never attach), so a slow round and a hung round both
 # looked like 900 silent seconds. The node's own status server is the channel that always works.
@@ -83,6 +85,9 @@ while proc.poll() is None:
         print(f'[watch {int(time.time() - _t0):4d}s] status not up yet ({type(e).__name__})',
               flush=True)
 if proc.returncode != 0:
+    if os.path.exists(hang_file) and os.path.getsize(hang_file):
+        print('--- hang dump (all thread stacks at the moment the watchdog fired) ---', flush=True)
+        print(open(hang_file, encoding='utf-8', errors='replace').read(), flush=True)
     raise SystemExit(f'node exited with {proc.returncode}')
 lib = os.path.join(tmp, 'library.jsonl')
 rows = [json.loads(l) for l in open(lib, encoding='utf-8') if l.strip()]

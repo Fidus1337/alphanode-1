@@ -255,6 +255,14 @@ def main():
     import multiprocessing
     multiprocessing.freeze_support()                     # portfolio build uses a process pool
     _fix_std_streams()
+    if os.environ.get('ALPHANODE_HANG_DUMP'):
+        # CI forensics for a wedged frozen process: a windowed exe on Windows has no visible
+        # stdout/stderr, so a hang is 900 silent seconds. Arm faulthandler to dump EVERY
+        # thread's stack into a file after N seconds and hard-exit; the smoke prints the file.
+        import faulthandler
+        _hf = open(os.environ.get('ALPHANODE_HANG_DUMP_FILE') or 'hang_dump.txt', 'w')
+        faulthandler.dump_traceback_later(int(os.environ['ALPHANODE_HANG_DUMP']),
+                                          exit=True, file=_hf)
     _prep_path()
     argv = sys.argv
     role = os.environ.get('ALPHANODE_ROLE')
