@@ -19,7 +19,7 @@ VER="$(sed -n "s/.*'\(.*\)'.*/\1/p" "$PROJ/alphanode/version.py" | head -1)"
 
 # stable-name <- source (first glob match wins; deb glob tolerates the versioned filename)
 declare -A SRC=(
-  ["AlphaNode-Setup.exe"]="$PROJ/packaging/Output/AlphaNode-Setup.exe"
+  ["AlphaNode-Setup.exe"]="$PROJ/packaging/Output/AlphaNode-Setup.exe $PROJ/packaging/dist/AlphaNode-Setup.exe"
   ["AlphaNode-windows-portable.zip"]="$PROJ/packaging/dist/AlphaNode-windows-portable.zip"
   ["AlphaNode-arm64.dmg"]="$PROJ/packaging/dist/AlphaNode-arm64.dmg"
   ["alphanode_amd64.deb"]="$PROJ/packaging/dist/alphanode_${VER}_amd64.deb"
@@ -32,15 +32,18 @@ manifest="{\"version\": \"$VER\", \"files\": {"
 sep=""
 for name in "AlphaNode-Setup.exe" "AlphaNode-windows-portable.zip" "AlphaNode-arm64.dmg" \
             "alphanode_amd64.deb" "AlphaNode-x86_64.AppImage" "docker-compose.yml"; do
-  src="${SRC[$name]}"
-  if [ -f "$src" ]; then
+  src=""
+  for cand in ${SRC[$name]}; do                       # first existing candidate wins
+    if [ -f "$cand" ]; then src="$cand"; break; fi
+  done
+  if [ -n "$src" ]; then
     cp "$src" "$STAGE/$name"
     mb=$(( ($(stat -c%s "$STAGE/$name") + 524288) / 1048576 ))
     if [ "$mb" -ge 1 ]; then size="${mb} MB"; else size="$(( ($(stat -c%s "$STAGE/$name")+512)/1024 )) KB"; fi
     manifest+="$sep\"$name\": \"$size\""; sep=", "
     printf '  + %-34s %8s\n' "$name" "$size"
   else
-    echo "  ! SKIP $name — not built yet ($src)"
+    echo "  ! SKIP $name — not built yet (${SRC[$name]})"
   fi
 done
 manifest+="}}"

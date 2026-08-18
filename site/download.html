@@ -152,7 +152,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
         <p class="req">Windows 10/11 · x64</p>
         <a class="btn" href="/dl/AlphaNode-Setup.exe" download>Download the installer</a>
         <p class="meta" data-size="AlphaNode-Setup.exe"></p>
-        <div class="alt">Prefer no installer? <a href="/dl/AlphaNode-windows-portable.zip" download>Portable .zip</a> — unzip and run <span class="mono">AlphaNode.exe</span>.</div>
+        <div class="alt" data-requires="AlphaNode-windows-portable.zip">Prefer no installer? <a href="/dl/AlphaNode-windows-portable.zip" download>Portable .zip</a> — unzip and run <span class="mono">AlphaNode.exe</span>.</div>
         <div class="spacer"></div>
         <p class="note">The build is not code-signed yet, so SmartScreen will warn on first
           run: choose “More info” → “Run anyway”. One click, once.</p>
@@ -267,6 +267,12 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
     for (var i = 0; i < els.length; i++) {
       var f = m.files[els[i].getAttribute('data-size')];
       if (f) els[i].textContent = (m.version ? 'v' + m.version + ' · ' : '') + f;
+    }
+    // secondary links vanish while their file is not in the served set (fail-open: no
+    // manifest = show everything; a visible dead link beats a silently hidden feature)
+    var req = document.querySelectorAll('[data-requires]');
+    for (var j = 0; j < req.length; j++) {
+      if (!m.files[req[j].getAttribute('data-requires')]) req[j].style.display = 'none';
     }
   }, function () {});
 })();
