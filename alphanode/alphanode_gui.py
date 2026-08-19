@@ -1312,7 +1312,7 @@ class App:
     def _hgrip(self, parent, on_drag, on_reset, tip):
         """An IN-CARD resize strip (packed at the card's bottom): a thin accent bar that
         lives inside the card, so it travels with it when cards are drag-reordered."""
-        strip = tk.Frame(parent, bg=CARD, height=max(12, int(12 * self.SCALE)),
+        strip = tk.Frame(parent, bg=CARD, height=max(16, int(16 * self.SCALE)),
                          cursor='sb_v_double_arrow')
         strip.pack(fill='x', pady=(6, 0))
         strip.pack_propagate(False)
@@ -1320,12 +1320,27 @@ class App:
                        width=int(64 * self.SCALE), cursor='sb_v_double_arrow')
         bar.place(relx=0.5, rely=0.5, anchor='center')
         for w in (strip, bar):
+            w.bind('<ButtonPress-1>', self._grip_freeze)
             w.bind('<B1-Motion>', on_drag)
-            w.bind('<ButtonRelease-1>', lambda e: self._save())
+            w.bind('<ButtonRelease-1>', self._grip_release)
             w.bind('<Double-1>', on_reset)
             w.bind('<Enter>', lambda e: bar.configure(bg=ACC))
             w.bind('<Leave>', lambda e: bar.configure(bg=BORDER))
         self._tip(strip, tip)
+
+    def _grip_freeze(self, _e=None):
+        """While ANY grip is dragged, the leaderboard must stop soaking window slack: with
+        its grid row weighted, every drag pixel of a card ABOVE it re-allocates and redraws
+        the whole Treeview — which read as jerky resizing of a completely unrelated card.
+        For the drag's duration the column simply grows into the scroll; release re-grids
+        once and hands the slack back."""
+        self._grip_live = True
+        self._regrid_cards()
+
+    def _grip_release(self, _e=None):
+        self._grip_live = False
+        self._regrid_cards()
+        self._save()
         return strip
 
     def _wrap_drag(self, wrap, key, e, lo, hi):
@@ -1774,7 +1789,8 @@ class App:
         lb_manual = int(self.cfg.get('lb_h') or 0) > 0   # user pinned a height: the row must
         for i, name in enumerate(self._card_order()):    # not soak window slack anymore
             w = self._cards[name]
-            stretch = name == 'leaderboard' and not lb_manual
+            stretch = (name == 'leaderboard' and not lb_manual
+                       and not getattr(self, '_grip_live', False))
             w.grid(row=row, column=0, sticky=('nsew' if stretch else 'ew'),
                    pady=((0 if i == 0 else 16), 0))
             if name in hidden:
