@@ -170,3 +170,72 @@ def test_gui_universe_tickers_honors_explicit_list(gui_app):
     assert app._universe_tickers() == ['BTCUSDT', 'ETHUSDT', 'SOLUSDT']
     app.cfg['universe_list'] = '  ,  '
     assert app._universe_tickers() is None                     # empty list is "no universe"
+
+
+# ------------------------------------------------- Part C: concurrent edits must not be lost
+
+def _enroll_two(tmp_names=('alpha_a', 'alpha_b')):
+    track = ft.load_track()
+    e1 = ft.new_entry(tmp_names[0], 'alpha', [FORMULA], ['BTCUSDT'], 0.25, 0.001, '2019-09-05')
+    e2 = ft.new_entry(tmp_names[1], 'alpha', [FORMULA + '#2'], ['ETHUSDT'], 0.25, 0.001, '2019-09-05')
+    track['entries'] += [e1, e2]
+    ft.save_track(track)
+    return e1, e2
+
+
+def test_archive_during_stepping_pass_stays_archived(sandbox):
+    """The shipped resurrection bug: the stepper holds a pre-Archive snapshot of the whole
+    file and its save used to write that snapshot back, erasing the user's Archive click.
+    sync_entry_to_disk must refuse to persist a step for an entry archived on disk."""
+    e1, _ = _enroll_two()
+    stepper_copy = json.loads(json.dumps(e1))            # the stepper's stale in-memory entry
+
+    track = ft.load_track()                              # ... user clicks Archive meanwhile
+    for x in track['entries']:
+        if x['id'] == e1['id']:
+            x['archived'] = True
+    ft.save_track(track)
+
+    stepper_copy['state']['equity'] = 9999.0             # the step "finishes"
+    stepper_copy['history'].append({'date': '2026-08-19', 'equity': 9999.0})
+    assert ft.sync_entry_to_disk(stepper_copy) is False  # step result dropped
+
+    on_disk = {x['id']: x for x in ft.load_track()['entries']}[e1['id']]
+    assert on_disk['archived'] is True                   # the click survived the pass
+    assert on_disk['history'] == []                      # no zombie step row
+    assert on_disk['state']['equity'] == ft.START_CAPITAL
+
+
+def test_enrollment_during_stepping_pass_survives(sandbox):
+    """The same lost-update in the other direction: an entry enrolled while the stepper
+    runs must not vanish when the stepper saves its step."""
+    e1, _ = _enroll_two()
+    stepper_copy = json.loads(json.dumps(e1))
+
+    track = ft.load_track()                              # ... user enrolls a THIRD strategy
+    e3 = ft.new_entry('alpha_c', 'alpha', [FORMULA + '#3'], ['SOLUSDT'], 0.25, 0.001, '2019-09-05')
+    track['entries'].append(e3)
+    ft.save_track(track)
+
+    stepper_copy['state']['equity'] = 10123.0
+    stepper_copy['history'].append({'date': '2026-08-19', 'equity': 10123.0})
+    assert ft.sync_entry_to_disk(stepper_copy) is True   # the step itself lands...
+
+    ids = [x['id'] for x in ft.load_track()['entries']]
+    assert e3['id'] in ids                               # ...and the new enrollment survives
+    on_disk = {x['id']: x for x in ft.load_track()['entries']}[e1['id']]
+    assert on_disk['state']['equity'] == 10123.0
+    assert len(on_disk['history']) == 1
+
+
+def test_entry_deleted_on_disk_is_not_resurrected_by_step(sandbox):
+    e1, _ = _enroll_two()
+    stepper_copy = json.loads(json.dumps(e1))
+
+    track = ft.load_track()
+    track['entries'] = [x for x in track['entries'] if x['id'] != e1['id']]
+    ft.save_track(track)
+
+    stepper_copy['history'].append({'date': '2026-08-19', 'equity': 10001.0})
+    assert ft.sync_entry_to_disk(stepper_copy) is False
+    assert e1['id'] not in [x['id'] for x in ft.load_track()['entries']]

@@ -365,6 +365,30 @@ def step_entry(entry, kline_cache, force=False, log=print):
     return True
 
 
+def sync_entry_to_disk(entry):
+    """Persist ONE stepped entry into the CURRENT on-disk track (read-merge-write).
+
+    step_all() used to hold its whole-file snapshot for minutes (kline fetches) and then
+    save_track(snapshot) after every entry — overwriting anything the user did meanwhile.
+    The shipped symptom: press Archive during a stepping pass and the entry RESURRECTS on
+    the stepper's next save (a fresh enrollment could vanish the same way). Merge rules:
+    the stepper owns only its own outputs (state, history); every structural fact — the
+    one-way `archived` flag above all, or the entry's very existence — belongs to the
+    freshest disk copy. Returns True if the step result was persisted."""
+    disk = load_track()
+    for i, e in enumerate(disk['entries']):
+        if e.get('id') == entry.get('id'):
+            if e.get('archived'):
+                return False                             # archived mid-step: the click wins
+            merged = dict(e)                             # disk copy keeps structural edits
+            merged['state'] = entry['state']
+            merged['history'] = entry['history']
+            disk['entries'][i] = merged
+            save_track(disk)
+            return True
+    return False                                         # removed on disk mid-step: stays gone
+
+
 def step_all(force=False, log=print):
     track = load_track()
     active = [e for e in track['entries'] if not e.get('archived')]
@@ -375,9 +399,17 @@ def step_all(force=False, log=print):
     stepped = 0
     for e in active:
         try:
+            # an Archive click may land while EARLIER entries were stepping — re-check the
+            # disk before spending minutes fetching klines for an entry nobody wants stepped
+            fresh = {x.get('id'): x for x in load_track()['entries']}.get(e['id'])
+            if fresh is None or fresh.get('archived'):
+                log(f'[{e["id"]}] archived/removed while the pass ran — skipped')
+                continue
             if step_entry(e, cache, force=force, log=log):
-                stepped += 1
-                save_track(track)                        # crash-safe: persist after every entry
+                if sync_entry_to_disk(e):                # crash-safe AND edit-safe: only this
+                    stepped += 1                         # entry's step lands, nothing else
+                else:
+                    log(f'[{e["id"]}] archived/removed mid-step — step result dropped')
         except Exception as ex:                          # noqa: BLE001
             log(f'[{e["id"]}] step failed: {type(ex).__name__}: {ex}')
     log(f'done: {stepped}/{len(active)} entries advanced')
