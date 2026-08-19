@@ -1,0 +1,396 @@
+"""Sessions: the whole mining workspace as one restorable file.
+
+A session is a tar.gz snapshot of everything a user would call "my setup": the sealed
+formula libraries (every timeframe, including the suffixless daily files), round history,
+the forward track, the built portfolio and the app settings — plus a manifest that lets a
+list of sessions read like a story (when, what timeframes, how many alphas, what the
+paper equity was). Market data is NOT included (re-fetchable, heavy), neither are machine
+identity files (device_id/node_id), nor the subscription key: a session may travel to
+another machine or another person, and the licence must never ride along (SECRET_KEYS is
+stripped on save and preserved on restore).
+
+Safety model, in the order things can go wrong:
+  * snapshots are written to a .partial file and os.replace()d into place — a crash or
+    a killed thread never leaves a half-archive under a session name;
+  * the app creates sessions only when the user asks (Save current…) — there is no
+    background auto-saving; the auto/rotate/skip_unchanged machinery below stays for
+    callers that opt in;
+  * rotation classifies auto vs named by the MANIFEST, never by the filename — a user
+    naming a session 'my_auto' keeps it forever; unreadable archives are neither counted
+    against the keep-window nor deleted;
+  * restore() extracts and validates the target FIRST, then (backup=True) checkpoints
+    the current workspace, then swaps files transactionally: originals are parked in an
+    undo dir and put back if anything fails mid-swap;
+  * archive members must be regular files with the exact names a snapshot writes;
+    absolute paths, ../, links, FIFOs/devices and oversized archives are rejected
+    before a single byte lands in the workspace.
+
+Honesty note: restoring an older session does NOT rewind the forward track's clock —
+stepping resumes from the next closed bar and the gap stays visible in history, exactly
+like a laptop that was simply off (mark-to-market covers the missed bars on the next
+step). Nothing is ever re-computed backwards.
+"""
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import tarfile
+import tempfile
+import threading
+from datetime import datetime, timezone
+
+import apppaths
+from version import __version__
+
+# state files a session owns (basename patterns); everything else in state/ stays local.
+# The timeframe suffix is OPTIONAL: daily files are plain library.jsonl / history.jsonl.
+_STATE_PATTERNS = (re.compile(r'^library(_[A-Za-z0-9]+)?\.jsonl$'),
+                   re.compile(r'^history(_[A-Za-z0-9]+)?\.jsonl$'),
+                   re.compile(r'^forward\.json$'),
+                   re.compile(r'^portfolio\.json$'))
+_TRANSIENT = ('status.json',)                            # never archived; cleared on restore
+SECRET_KEYS = ('vault_license',)                         # never inside an archive
+
+MAX_MEMBERS = 64                                         # a snapshot writes ~a dozen
+MAX_TOTAL_BYTES = 512 * 1024 * 1024                      # declared unpacked size cap
+MAX_META_BYTES = 1024 * 1024                             # manifest/settings read cap
+
+
+def sessions_dir(state_dir=None):
+    d = os.path.join(state_dir or apppaths.state_dir(), 'sessions')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _owned_state_files(state_dir):
+    out = []
+    try:
+        names = sorted(os.listdir(state_dir))
+    except OSError:
+        return out
+    for n in names:
+        p = os.path.join(state_dir, n)
+        if os.path.isfile(p) and any(pt.match(n) for pt in _STATE_PATTERNS):
+            out.append(p)
+    return out
+
+
+def _clean_settings(settings_path):
+    """The settings dict as it may travel: secrets stripped."""
+    try:
+        cfg = json.load(open(settings_path, encoding='utf-8'))
+    except Exception:                                    # noqa: BLE001
+        return {}
+    for k in SECRET_KEYS:
+        cfg.pop(k, None)
+    return cfg
+
+
+def workspace_fingerprint(state_dir, settings_path):
+    """Content hash of everything a snapshot would carry — for skipping no-op checkpoints."""
+    h = hashlib.sha1()
+    for f in _owned_state_files(state_dir):
+        h.update(os.path.basename(f).encode())
+        try:
+            with open(f, 'rb') as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b''):
+                    h.update(chunk)
+        except OSError:
+            h.update(b'?')
+    h.update(json.dumps(_clean_settings(settings_path), sort_keys=True).encode())
+    return h.hexdigest()
+
+
+def _slug(name):
+    s = re.sub(r'[^A-Za-z0-9а-яА-ЯіїєґІЇЄҐ_-]+', '-', (name or '').strip())[:40].strip('-')
+    return s
+
+
+def build_manifest(name, note, auto, state_dir, settings_path):
+    alphas = {}
+    for f in _owned_state_files(state_dir):
+        b = os.path.basename(f)
+        if b.startswith('library'):
+            tf = b[len('library_'):-len('.jsonl')] if b.startswith('library_') else '1d'
+            try:
+                alphas[tf] = sum(1 for line in open(f, encoding='utf-8') if line.strip())
+            except OSError:
+                alphas[tf] = 0
+    fwd = {'entries': 0, 'equity': None}
+    try:
+        t = json.load(open(os.path.join(state_dir, 'forward.json'), encoding='utf-8'))
+        act = [e for e in t.get('entries', []) if not e.get('archived')]
+        fwd['entries'] = len(act)
+        eqs = [float(e.get('state', {}).get('equity', 0)) for e in act]
+        fwd['equity'] = round(sum(eqs), 2) if eqs else None
+    except Exception:                                    # noqa: BLE001
+        pass
+    return {'name': name or '', 'note': note or '', 'auto': bool(auto),
+            'created': datetime.now(timezone.utc).isoformat(timespec='seconds'),
+            'version': __version__, 'alphas': alphas, 'forward': fwd,
+            'fp': workspace_fingerprint(state_dir, settings_path)}
+
+
+def _read_manifest(path):
+    """The archive's manifest, or None if the file is not a readable session archive.
+    Reads are capped so a hostile archive cannot balloon memory from a mere listing."""
+    try:
+        with tarfile.open(path, 'r:gz') as tar:
+            f = tar.extractfile('manifest.json')
+            if f is None:
+                return None
+            raw = f.read(MAX_META_BYTES + 1)
+            if len(raw) > MAX_META_BYTES:
+                return None
+            man = json.loads(raw)
+            return man if isinstance(man, dict) else None
+    except Exception:                                    # noqa: BLE001
+        return None
+
+
+def _newest_fingerprint(state_dir):
+    d = sessions_dir(state_dir)
+    newest, newest_mt = None, -1.0
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return None
+    for n in names:
+        if not n.endswith('.tar.gz'):
+            continue
+        p = os.path.join(d, n)
+        try:
+            mt = os.path.getmtime(p)
+        except OSError:
+            continue
+        if mt > newest_mt:
+            newest, newest_mt = p, mt
+    if newest is None:
+        return None
+    man = _read_manifest(newest)
+    return man.get('fp') if man else None
+
+
+def snapshot(name='', note='', auto=False, state_dir=None, settings_path=None, keep=10,
+             skip_unchanged=False):
+    """Write a session archive; auto snapshots also rotate (oldest beyond `keep` go).
+    With skip_unchanged=True, returns None instead of duplicating the newest session
+    (same content fingerprint) or archiving a workspace that owns no files at all."""
+    state_dir = state_dir or apppaths.state_dir()
+    settings_path = settings_path or apppaths.settings_file()
+    if skip_unchanged:
+        if not _owned_state_files(state_dir):
+            return None
+        if workspace_fingerprint(state_dir, settings_path) == _newest_fingerprint(state_dir):
+            return None
+    man = build_manifest(name, note, auto, state_dir, settings_path)
+    stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
+    slug = _slug(name)
+    # second-resolution stamp: two snapshots inside one second must not overwrite
+    for i in range(1000):
+        mid = f'-{i}' if i else ''
+        base = f'{stamp}{"_" + slug if slug else ""}{mid}{"_auto" if auto else ""}.tar.gz'
+        path = os.path.join(sessions_dir(state_dir), base)
+        if not os.path.exists(path):
+            break
+    # write-then-rename: a crash or killed checkpoint thread never leaves a half-archive
+    # under a session name (rotation and the list only ever see complete files)
+    part = f'{path}.{os.getpid()}-{threading.get_ident()}.partial'
+    try:
+        with tarfile.open(part, 'w:gz') as tar:
+            def _add_bytes(arcname, data):
+                info = tarfile.TarInfo(arcname)
+                info.size = len(data)
+                tar.addfile(info, io.BytesIO(data))
+            _add_bytes('manifest.json', json.dumps(man, ensure_ascii=False, indent=1).encode())
+            _add_bytes('settings.json', json.dumps(_clean_settings(settings_path),
+                                                   ensure_ascii=False, indent=1).encode())
+            for f in _owned_state_files(state_dir):
+                tar.add(f, arcname='state/' + os.path.basename(f))
+        os.replace(part, path)
+    except BaseException:
+        try:
+            os.remove(part)
+        except OSError:
+            pass
+        raise
+    if auto:
+        rotate(state_dir, keep=keep)
+    return path
+
+
+def list_sessions(state_dir=None):
+    """Newest first: [{path, size, **manifest}]. Unreadable archives are skipped."""
+    state_dir = state_dir or apppaths.state_dir()
+    out = []
+    d = sessions_dir(state_dir)
+    for n in sorted(os.listdir(d), reverse=True):
+        if not n.endswith('.tar.gz'):
+            continue
+        p = os.path.join(d, n)
+        man = _read_manifest(p)
+        if man is None:
+            continue
+        man.update(path=p, size=os.path.getsize(p))
+        out.append(man)
+    return out
+
+
+def _safe_members(tar):
+    """Only the names a snapshot writes, only regular files, only sane sizes; absolute
+    paths, .., links, FIFOs/devices and oversized archives are rejected outright."""
+    members = tar.getmembers()
+    if len(members) > MAX_MEMBERS:
+        raise ValueError(f'session archive has too many members ({len(members)})')
+    total = 0
+    ok = []
+    for m in members:
+        n = m.name
+        if not m.isreg():
+            raise ValueError(f'unsafe member in session archive (not a regular file): {n!r}')
+        total += m.size
+        if total > MAX_TOTAL_BYTES:
+            raise ValueError('session archive is unreasonably large unpacked')
+        if n in ('manifest.json', 'settings.json'):
+            if m.size > MAX_META_BYTES:
+                raise ValueError(f'unsafe member in session archive (oversized): {n!r}')
+            ok.append(m)
+            continue
+        b = os.path.basename(n)
+        if n == 'state/' + b and any(p.match(b) for p in _STATE_PATTERNS):
+            ok.append(m)
+            continue
+        raise ValueError(f'unsafe member in session archive: {n!r}')
+    return ok
+
+
+def restore(path, state_dir=None, settings_path=None, backup=False):
+    """Swap the workspace for the archived one. The caller must have stopped the node
+    (it appends to the library mid-round). Order of operations is the safety story:
+    the target is extracted and validated FIRST; only then, and only with backup=True
+    (an opt-in — the app itself never snapshots without being asked), is the current
+    workspace checkpointed; then files swap transactionally (originals parked in an
+    undo dir and put back if anything fails mid-swap). Settings are replaced EXCEPT
+    the secrets, which stay from this machine. Returns the manifest."""
+    state_dir = state_dir or apppaths.state_dir()
+    settings_path = settings_path or apppaths.settings_file()
+    with tarfile.open(path, 'r:gz') as tar:
+        members = _safe_members(tar)
+        f = tar.extractfile('manifest.json')
+        man = json.loads(f.read(MAX_META_BYTES)) if f else {}
+        with tempfile.TemporaryDirectory(dir=sessions_dir(state_dir)) as tmp:
+            tar.extractall(tmp, members=members)
+            if backup:                                   # AFTER the target is safely out
+                snapshot(name='before-load', auto=True, state_dir=state_dir,
+                         settings_path=settings_path, skip_unchanged=True)
+            # transactional swap: current session-owned files (plus transient status)
+            # are parked, not deleted — a mid-swap failure puts everything back
+            undo = tempfile.mkdtemp(prefix='.undo-', dir=sessions_dir(state_dir))
+            parked = []                                  # (parked_path, original_path)
+            try:
+                for f in _owned_state_files(state_dir) + [
+                        os.path.join(state_dir, t) for t in _TRANSIENT
+                        if os.path.isfile(os.path.join(state_dir, t))]:
+                    b = os.path.join(undo, os.path.basename(f))
+                    os.replace(f, b)
+                    parked.append((b, f))
+                src_state = os.path.join(tmp, 'state')
+                if os.path.isdir(src_state):
+                    for b in sorted(os.listdir(src_state)):
+                        os.replace(os.path.join(src_state, b), os.path.join(state_dir, b))
+            except BaseException:
+                for f in _owned_state_files(state_dir):  # anything already placed is new
+                    try:
+                        os.remove(f)
+                    except OSError:
+                        pass
+                for b, f in parked:
+                    try:
+                        os.replace(b, f)
+                    except OSError:
+                        pass
+                shutil.rmtree(undo, ignore_errors=True)
+                raise
+            shutil.rmtree(undo, ignore_errors=True)
+            try:
+                incoming = json.load(open(os.path.join(tmp, 'settings.json'), encoding='utf-8'))
+            except Exception:                            # noqa: BLE001
+                incoming = None
+            if isinstance(incoming, dict):
+                try:
+                    cur = json.load(open(settings_path, encoding='utf-8'))
+                except Exception:                        # noqa: BLE001
+                    cur = {}
+                for k in SECRET_KEYS:                    # the machine keeps its own licence
+                    if k in cur:
+                        incoming[k] = cur[k]
+                    else:
+                        incoming.pop(k, None)
+                tmp_s = settings_path + '.tmp'
+                json.dump(incoming, open(tmp_s, 'w', encoding='utf-8'), indent=2)
+                os.replace(tmp_s, settings_path)
+    return man
+
+
+def peek(path):
+    """Manifest, travelling settings and the built portfolio from an archive — read
+    in-memory with size caps, for a details view. Nothing touches the workspace."""
+    out = {'manifest': None, 'settings': None, 'portfolio': None}
+    try:
+        with tarfile.open(path, 'r:gz') as tar:
+            def _get(name):
+                try:
+                    f = tar.extractfile(name)
+                except KeyError:
+                    return None
+                if f is None:
+                    return None
+                raw = f.read(MAX_META_BYTES + 1)
+                if len(raw) > MAX_META_BYTES:
+                    return None
+                try:
+                    return json.loads(raw)
+                except ValueError:
+                    return None
+            out['manifest'] = _get('manifest.json')
+            out['settings'] = _get('settings.json')
+            out['portfolio'] = _get('state/portfolio.json')
+    except Exception:                                    # noqa: BLE001 — a details view
+        pass                                             # never breaks on a bad archive
+    return out
+
+
+def rotate(state_dir=None, keep=10):
+    """Auto snapshots beyond the newest `keep` are deleted; named ones are never touched.
+    Auto-ness comes from the MANIFEST — a user naming a session '..._auto' cannot end up
+    in the rotation pool. Archives whose manifest cannot be read are left alone and do
+    not occupy keep-slots. Stale .partial leftovers (crashed writes) are swept."""
+    state_dir = state_dir or apppaths.state_dir()
+    d = sessions_dir(state_dir)
+    import time
+    autos = []
+    for n in os.listdir(d):
+        p = os.path.join(d, n)
+        if n.endswith('.partial'):
+            try:                                         # only stale ones — a live writer
+                if time.time() - os.path.getmtime(p) > 3600:   # finishes within seconds
+                    os.remove(p)
+            except OSError:
+                pass
+            continue
+        if not n.endswith('.tar.gz'):
+            continue
+        man = _read_manifest(p)
+        if man and man.get('auto'):
+            try:
+                autos.append((os.path.getmtime(p), p))
+            except OSError:
+                continue
+    autos.sort(reverse=True)
+    for _, p in autos[keep:]:
+        try:
+            os.remove(p)
+        except OSError:
+            pass

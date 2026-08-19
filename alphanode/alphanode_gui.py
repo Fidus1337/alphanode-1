@@ -817,6 +817,12 @@ class App:
                                       height=34, width=112)
         self.btn_settings.pack(side='right', padx=(0, 16), pady=(2, 0))
         self._tip(self.btn_settings, 'Show / hide the search settings panel.')
+        self.btn_sessions = self._btn(top, '⧉  Sessions', self._sessions_open, kind='soft',
+                                      height=34, width=112)
+        self.btn_sessions.pack(side='right', padx=(0, 8), pady=(2, 0))
+        self._tip(self.btn_sessions, 'Snapshots of the whole workspace — formulas, forward\n'
+                                     'track, portfolio, settings. Save one, load an older one;\n'
+                                     'an auto snapshot is taken every time the node stops.')
         self.btn_stop = self._btn(top, '■  Stop', self.stop, kind='soft', height=34, width=88)
         self.btn_stop.configure(state='disabled')
         self.btn_stop.pack(side='right', padx=(0, 8), pady=(2, 0))
@@ -1905,6 +1911,8 @@ class App:
                f'• {n_rounds} rounds of history  (history.jsonl)\n'
                '• current status  (status.json)\n'
                '• the built portfolio  (portfolio.json)\n\n'
+               'Nothing is saved automatically — if you want a way back, save a session '
+               'first (Sessions → Save current…).\n'
                'Search settings (the parameters on the left) will remain.')
         if not messagebox.askyesno('Full clear', msg, icon='warning',
                                     default='no', parent=self.root):
@@ -2142,6 +2150,226 @@ class App:
             'PDF reports, the forward track and the live signal API. Portfolio/paper support '
             'is the next phase.', parent=self.root)
         return True
+
+    # ---------- sessions (workspace snapshots) ----------
+    def _sessions_lib(self):
+        import sessions
+        return sessions
+
+    def _sessions_open(self):
+        S = self._sessions_lib()
+        win = tk.Toplevel(self.root)
+        win.title('Sessions')
+        win.configure(bg=BG)
+        win.transient(self.root)
+        win.geometry(f'{int(760 * self.SCALE)}x{int(420 * self.SCALE)}')
+        pad = tk.Frame(win, bg=BG)
+        pad.pack(fill='both', expand=True, padx=14, pady=12)
+        self._head(pad, 'SESSIONS — the whole workspace as one file').pack(anchor='w')
+        self._lbl(pad, text='Formulas, forward track, portfolio and settings. The licence key '
+                            'never travels inside a session. Double-click a row for details.',
+                  text_color=MUT, font=(self.UI, 12)).pack(anchor='w', pady=(2, 8))
+        cols = ('created', 'name', 'alphas', 'equity', 'size', 'kind')
+        tree = ttk.Treeview(pad, columns=cols, show='headings', height=9)
+        for c, txt, w, anc in (('created', 'CREATED', 150, 'w'), ('name', 'NAME', 190, 'w'),
+                               ('alphas', 'ALPHAS', 90, 'center'), ('equity', 'FWD EQUITY', 110, 'e'),
+                               ('size', 'SIZE', 80, 'e'), ('kind', '', 70, 'center')):
+            tree.heading(c, text=txt)
+            tree.column(c, width=int(w * self.SCALE), anchor=anc, stretch=(c == 'name'))
+        tree.pack(fill='both', expand=True)
+
+        def _fill():
+            tree.delete(*tree.get_children())
+            for m in S.list_sessions(STATE_DIR):
+                al = ' · '.join(f'{k}:{v}' for k, v in sorted(m.get('alphas', {}).items()))
+                eq = m.get('forward', {}).get('equity')
+                tree.insert('', 'end', iid=m['path'], values=(
+                    m.get('created', '')[:16].replace('T', ' '), m.get('name') or '—',
+                    al or '—', f'${eq:,.0f}' if eq else '—',
+                    f"{m['size'] // 1024} KB", 'auto' if m.get('auto') else 'named'))
+        _fill()
+
+        def _sel():
+            it = tree.selection()
+            return it[0] if it else None
+
+        def _save():
+            dlg = ctk.CTkInputDialog(text='Name this session:', title='Save session')
+            name = (dlg.get_input() or '').strip()
+            if name:
+                try:
+                    S.snapshot(name=name, state_dir=STATE_DIR, settings_path=SETTINGS)
+                except Exception as e:                   # noqa: BLE001
+                    messagebox.showerror('Sessions', f'Could not save the session:\n{e}',
+                                         parent=win)
+                _fill()
+
+        def _load():
+            path = _sel()
+            if not path:
+                messagebox.showinfo('Sessions', 'Select a session in the list first.', parent=win)
+                return
+            busy = None                                  # every writer must be idle: a child
+            if self.proc and self.proc.poll() is None:   # finishing AFTER the swap would
+                busy = 'the node is searching'           # silently overwrite restored files
+            elif self._fwd_proc and self._fwd_proc.poll() is None:
+                busy = 'a forward-track step is running'
+            elif self._pf_proc and self._pf_proc.poll() is None:
+                busy = 'the portfolio build is running'
+            if busy:
+                messagebox.showwarning('Sessions', f'Not now — {busy}. Wait for it to finish '
+                                       '(usually under a minute), then load.', parent=win)
+                return
+            if not messagebox.askyesno('Sessions',
+                    'Load this session? The current workspace will be REPLACED — nothing is '
+                    "saved automatically. Use 'Save current…' first if you want a way "
+                    'back.\n\nThe forward track resumes from the next closed bar — the '
+                    'gap stays visible in its history (nothing is re-computed backwards).',
+                    parent=win):
+                return
+            try:
+                man = S.restore(path, state_dir=STATE_DIR, settings_path=SETTINGS)
+            except Exception as e:                       # noqa: BLE001
+                messagebox.showerror('Sessions',
+                                     f'Load failed — the workspace was left as it was.\n\n{e}',
+                                     parent=win)
+                _fill()
+                return
+            win.destroy()
+            self._sessions_rebuild()
+            n_alphas = sum((man.get('alphas') or {}).values())
+            n_fwd = (man.get('forward') or {}).get('entries') or 0
+            if n_alphas or n_fwd:
+                messagebox.showinfo('Sessions',
+                                    f'Session loaded: {man.get("name") or man.get("created", "")}\n'
+                                    f'{n_alphas} alphas · {n_fwd} forward entries.\n'
+                                    'The forward track continues from the next closed bar.',
+                                    parent=self.root)
+            else:
+                messagebox.showwarning('Sessions',
+                                       'Session loaded — but this archive carried no alphas and '
+                                       'no forward entries (it was saved from an empty '
+                                       'workspace).', parent=self.root)
+
+        _UI_KEYS = {'theme', 'settings_open', 'lb_mode', 'card_order', 'lb_rows', 'lb_h',
+                    'lb_cols', 'fwd_rows', 'fwd_h', 'pf_h', 'eula_accepted'}
+
+        def _details(_event=None):
+            path = _sel()
+            if not path:
+                return
+            pk = S.peek(path)
+            man = pk.get('manifest') or {}
+            cfg = pk.get('settings') or {}
+            pf = pk.get('portfolio')
+
+            L = []
+            title = man.get('name') or os.path.basename(path)
+            L.append(f"SESSION  {title}")
+            L.append(f"created  {man.get('created', '?')[:19].replace('T', ' ')}   "
+                     f"app v{man.get('version', '?')}   "
+                     f"{'auto' if man.get('auto') else 'saved by hand'}")
+            al = man.get('alphas') or {}
+            L.append('alphas   ' + (' · '.join(f'{k}: {v}' for k, v in sorted(al.items()))
+                                    or 'none'))
+            fw = man.get('forward') or {}
+            eq = fw.get('equity')
+            L.append(f"forward  {fw.get('entries', 0)} entries"
+                     + (f' · equity ${eq:,.2f}' if eq else ''))
+            L.append('')
+            L.append('PORTFOLIO')
+            if pf is None:
+                L.append('  — none was built in this session')
+            elif pf.get('ok') is False:
+                L.append(f"  build failed: {pf.get('error', '?')}")
+            else:
+                m = pf.get('metrics') or {}
+                if m:
+                    L.append('  ' + '   '.join(f'{k} {v:.3f}' if isinstance(v, float)
+                                               else f'{k} {v}' for k, v in sorted(m.items())))
+                tk_list = (pf.get('weights') or {}).get('tickers') or []
+                if tk_list:
+                    L.append(f"  universe ({len(tk_list)}): {', '.join(tk_list[:12])}"
+                             + (' …' if len(tk_list) > 12 else ''))
+                for i, f in enumerate(pf.get('formulas') or [], 1):
+                    L.append(f'  {i}. {f}')
+                if not m and not pf.get('formulas'):
+                    L.append('  ' + json.dumps(pf)[:600])
+            L.append('')
+            L.append('SETTINGS')
+            for k in sorted(k for k in cfg if k not in _UI_KEYS):
+                L.append(f'  {k:<16} {cfg[k]}')
+            ui = [k for k in sorted(cfg) if k in _UI_KEYS]
+            if ui:
+                L.append('')
+                L.append('INTERFACE')
+                for k in ui:
+                    L.append(f'  {k:<16} {cfg[k]}')
+
+            dlg = tk.Toplevel(win)
+            dlg.title(f'Session — {title}')
+            dlg.configure(bg=BG)
+            dlg.transient(win)
+            dlg.geometry(f'{int(680 * self.SCALE)}x{int(560 * self.SCALE)}')
+            box = tk.Frame(dlg, bg=BG)
+            box.pack(fill='both', expand=True, padx=14, pady=12)
+            txt = tk.Text(box, bg=CARD, fg=TXT, insertbackground=TXT, relief='flat',
+                          font=(self.MONO, self._px(11)), wrap='none', padx=12, pady=10)
+            sb = ttk.Scrollbar(box, orient='vertical', command=txt.yview)
+            txt.configure(yscrollcommand=sb.set)
+            sb.pack(side='right', fill='y')
+            txt.pack(side='left', fill='both', expand=True)
+            txt.insert('1.0', '\n'.join(L))
+            txt.configure(state='disabled')
+            self._btn(dlg, 'Close', dlg.destroy, kind='soft', height=30,
+                      width=80).pack(anchor='e', padx=14, pady=(0, 12))
+
+        tree.bind('<Double-1>', _details)
+
+        def _delete():
+            path = _sel()
+            if not path:
+                return
+            if messagebox.askyesno('Sessions', 'Delete the selected session file? This cannot '
+                                   'be undone.', parent=win):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+                _fill()
+
+        btns = tk.Frame(pad, bg=BG)
+        btns.pack(fill='x', pady=(10, 0))
+        self._btn(btns, 'Save current…', _save, kind='accent', height=30, width=130).pack(side='left')
+        self._btn(btns, 'Load selected', _load, kind='soft', height=30, width=120).pack(side='left', padx=(8, 0))
+        self._btn(btns, 'Details', _details, kind='soft', height=30, width=90).pack(side='left', padx=(8, 0))
+        self._btn(btns, 'Delete', _delete, kind='danger', height=30, width=90).pack(side='left', padx=(8, 0))
+        self._btn(btns, 'Close', win.destroy, kind='soft', height=30, width=80).pack(side='right')
+
+    def _sessions_rebuild(self):
+        """After a restore the window shows a DIFFERENT workspace: reload settings from disk
+        and rebuild the UI the same way a theme switch does."""
+        self.cfg = dict(DEFAULTS)
+        self._load()
+        self.cfg['theme'] = _apply_palette(self.cfg.get('theme') or _system_theme())
+        self._lb_mode = self.cfg.get('lb_mode') or 'all'
+        self._tip_hide()
+        if self._pf_resize_after:
+            self.root.after_cancel(self._pf_resize_after)
+            self._pf_resize_after = None
+        self._style()
+        self._shell.destroy()
+        self._lib_cache = {'mtime': None, 'all': [], 'families': [], 'computing': False,
+                           'dirty': False, 'ts': 0.0, 'computed': False, 'select': None}
+        self._pf_doc = None
+        self._pf_last_w = 0
+        self._treesig = None
+        self._sig_shown = None
+        self._build()
+        self._set_running(bool(self.proc and self.proc.poll() is None))
+        self._render_signal_rows()
+        self._start_lb_compute(force=True)               # show the restored library NOW,
+        self._poll_once_soon()                           # not on the node's next status
 
     # ---------- licence gate (first run) ----------
     def _eula_gate(self):
@@ -2687,6 +2915,12 @@ class App:
         self._sig_health[port] = txt
 
     # ---------- status polling ----------
+    def _poll_once_soon(self):
+        """Render freshly computed leaderboard rows without waiting for the 1.5s tick.
+        NOT via _poll: that reschedules itself and would spawn extra poll loops."""
+        for delay in (120, 400, 900):                    # compute is a background thread:
+            self.root.after(delay, lambda: self._refresh_leaderboard([]))
+
     def _log_placeholder(self):
         self.logbox.configure(state='normal')
         self.logbox.delete('1.0', 'end')
@@ -2748,11 +2982,13 @@ class App:
             if evs and evs != self._events_last:
                 self._events_last = evs
                 self._render_events(evs)
-            self._refresh_leaderboard(st.get('best', []))
             hist = st.get('history') or []               # the retired PROGRESS chart, as one number
             fit = next((p.get('best_base', p.get('best_test')) for p in reversed(hist)
                         if p.get('best_base', p.get('best_test')) is not None), None)
             self.s_fit.configure(text=f'{fit:+.2f}' if fit is not None else '—')
+        # the leaderboard is a view of the LIBRARY FILE, not of the node: it must fill
+        # even when no status.json exists yet (fresh start, restored session)
+        self._refresh_leaderboard(st.get('best', []))
         if not running and (not st or st.get('state') != 'running'):
             if not (self.proc and self.proc.poll() is None):
                 self._state_pill('● stopped', MUT)
