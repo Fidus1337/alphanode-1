@@ -182,7 +182,6 @@ DEFAULTS = {
     'settings_open': False,  # settings pane hidden by default; toggled by the header button
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
     'card_order': [],       # dashboard card order (drag a card to reorder); [] = default layout
-    'log_h': 0,             # live-log height, dp; 0 = natural (7 lines)
     'lb_rows': 12,          # leaderboard rows at natural height (when lb_h is 0)
     'lb_h': 0,              # leaderboard table height, dp; 0 = natural (lb_rows rows)
     'lb_cols': None,        # Advanced leaderboard: enabled OPTIONAL columns; None = default set
@@ -1359,18 +1358,6 @@ class App:
             wrap.pack_propagate(False)
             wrap.configure(height=int(h * self.SCALE))
 
-    def _on_log_drag(self, e):
-        h = max(int(60 * self.SCALE), min(int(600 * self.SCALE),
-                                          e.y_root - self._logwrap.winfo_rooty()))
-        self._logwrap.pack_propagate(False)
-        self._logwrap.configure(height=h)
-        self.cfg['log_h'] = round(h / self.SCALE)
-
-    def _log_reset(self, _e=None):
-        self.cfg['log_h'] = 0
-        self._logwrap.pack_propagate(True)               # back to the text's natural height
-        self._save()
-
     def _on_lb_rows_drag(self, e):
         entering = not int(self.cfg.get('lb_h') or 0)
         self._wrap_drag(self._lbwrap, 'lb_h', e, int(140 * self.SCALE), int(1400 * self.SCALE))
@@ -1466,11 +1453,9 @@ class App:
         self.logbox.tag_configure('roundsum', font=self._font(self.MONO, 11, 'bold'))
         self.logbox.pack(fill='both', expand=True, padx=8, pady=6)
         self._logwrap = logwrap
-        if self.cfg.get('log_h'):                        # user-dragged log height (dp), 0 = natural
-            logwrap.configure(height=int(self.cfg['log_h'] * self.SCALE))
-            logwrap.pack_propagate(False)
-        self._hgrip(pad, self._on_log_drag, self._log_reset,
-                    'Drag: the live log grows/shrinks. Double-click — natural height.')
+        # the status card is deliberately STATIC: a fixed 7-line log window, no grip. It is
+        # the dashboard's masthead — a constant-size instrument panel reads calmer than one
+        # more stretchable card, and the log scrolls inside itself anyway.
         self._events_last = None
         self._log_placeholder()
 
