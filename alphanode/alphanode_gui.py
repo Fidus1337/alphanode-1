@@ -1376,12 +1376,16 @@ class App:
         self._save()
 
     def _on_lb_rows_drag(self, e):
+        entering = not int(self.cfg.get('lb_h') or 0)
         self._wrap_drag(self._lbwrap, 'lb_h', e, int(140 * self.SCALE), int(1400 * self.SCALE))
+        if entering:                                     # first drag pixel: take the card's grid
+            self._regrid_cards()                         # row out of the window-slack game
 
     def _lb_rows_reset(self, _e=None):
         self.cfg['lb_h'] = 0
         self._lbwrap.pack_propagate(True)                # back to the table's natural height
         self.tree.configure(height=int(self.cfg.get('lb_rows') or 12))
+        self._regrid_cards()                             # the row soaks window slack again
         self._save()
 
     def _on_fwd_rows_drag(self, e):
@@ -1786,7 +1790,8 @@ class App:
         for r in range(3 * len(self._cards)):
             right.rowconfigure(r, weight=0)
         row, after_grip = 0, False
-        for i, name in enumerate(self._card_order()):
+        lb_manual = int(self.cfg.get('lb_h') or 0) > 0   # user pinned a height: the row must
+        for i, name in enumerate(self._card_order()):    # not soak window slack anymore
             if name == 'portfolio':                      # its plot-height grip is the gap ABOVE
                 if name in hidden:
                     self._pf_grip.grid_remove()          # a grip for a hidden card is a stray gap
@@ -1795,11 +1800,12 @@ class App:
                     row += 1
                     after_grip = True
             w = self._cards[name]
-            w.grid(row=row, column=0, sticky=('nsew' if name == 'leaderboard' else 'ew'),
+            stretch = name == 'leaderboard' and not lb_manual
+            w.grid(row=row, column=0, sticky=('nsew' if stretch else 'ew'),
                    pady=((0 if (i == 0 or after_grip) else 16), 0))
             if name in hidden:
                 w.grid_remove()                          # grid() above re-showed it — undo
-            if name == 'leaderboard':
+            if stretch:
                 right.rowconfigure(row, weight=1)
             after_grip = False
             row += 1
@@ -3065,6 +3071,11 @@ class App:
             return
         avail = self.tree.winfo_width() - fixed - int(4 * self.SCALE)
         w = max(self._lb_need_px, avail, int(260 * self.SCALE))
+        try:                                             # height-only drags land here per pixel:
+            if int(self.tree.column('formula', 'width')) == w:
+                return                                   # unchanged width = nothing to relayout
+        except tk.TclError:
+            return
         self.tree.column('formula', width=w, stretch=False)
 
     def _on_tree_scroll(self, first, last):
