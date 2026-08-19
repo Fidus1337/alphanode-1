@@ -1309,26 +1309,8 @@ class App:
         canvas.bind('<Leave>', _off)
 
     # ---------- right panel: status / leaderboard ----------
-    def _vgrip(self, parent, row, on_drag, on_reset, tip):
-        """A full-width draggable gap between two cards: the ENTIRE space between the blocks is
-        the handle (a thin accent bar lights up on hover), not a hairline you have to hunt for."""
-        outer = tk.Frame(parent, bg=BG, height=max(16, int(16 * self.SCALE)),
-                         cursor='sb_v_double_arrow')
-        outer.grid(row=row, column=0, sticky='ew')
-        handle = tk.Frame(outer, bg=BORDER, height=max(4, int(4 * self.SCALE)),
-                          width=int(64 * self.SCALE), cursor='sb_v_double_arrow')
-        handle.place(relx=0.5, rely=0.5, anchor='center')
-        for w in (outer, handle):
-            w.bind('<B1-Motion>', on_drag)
-            w.bind('<ButtonRelease-1>', lambda e: self._save())
-            w.bind('<Double-1>', on_reset)
-            w.bind('<Enter>', lambda e: handle.configure(bg=ACC))
-            w.bind('<Leave>', lambda e: handle.configure(bg=BORDER))
-        self._tip(outer, tip)
-        return outer
-
     def _hgrip(self, parent, on_drag, on_reset, tip):
-        """An IN-CARD resize strip (packed at the card's bottom): same look as _vgrip but it
+        """An IN-CARD resize strip (packed at the card's bottom): a thin accent bar that
         lives inside the card, so it travels with it when cards are drag-reordered."""
         strip = tk.Frame(parent, bg=CARD, height=max(12, int(12 * self.SCALE)),
                          cursor='sb_v_double_arrow')
@@ -1637,9 +1619,6 @@ class App:
                                             command=lambda c=c: self._lb_toggle_col(c))
 
         # ---- PORTFOLIO panel (combine top-N via the real engine; TEST- or fitness-ranked) ----
-        self._pf_grip = self._vgrip(right, 5, self._on_pf_grip, self._pf_grip_reset,
-                    'Drag up — a taller portfolio equity plot (the leaderboard shrinks);\n'
-                    'drag down — more room for the leaderboard. Double-click — automatic height.')
         card3 = self._card(right)
         card3.grid(row=6, column=0, sticky='ew')
         self.pf_card = card3
@@ -1770,6 +1749,8 @@ class App:
                        'leaderboard': card2, 'portfolio': card3, 'forward': card4}
         self._wire_card_drag('status', pad, head, stats)
         self._wire_card_drag('leaderboard', p2, hrow)
+        self._hgrip(p3, self._on_pf_grip, self._pf_grip_reset,
+                    'Drag: taller/shorter equity plot. Double-click — automatic height.')
         self._wire_card_drag('portfolio', p3, hp)
         self._wire_card_drag('forward', p4, hf)
         self._regrid_cards()
@@ -1789,25 +1770,17 @@ class App:
         hidden = {n for n, w in self._cards.items() if not w.winfo_manager()}
         for r in range(3 * len(self._cards)):
             right.rowconfigure(r, weight=0)
-        row, after_grip = 0, False
+        row = 0
         lb_manual = int(self.cfg.get('lb_h') or 0) > 0   # user pinned a height: the row must
         for i, name in enumerate(self._card_order()):    # not soak window slack anymore
-            if name == 'portfolio':                      # its plot-height grip is the gap ABOVE
-                if name in hidden:
-                    self._pf_grip.grid_remove()          # a grip for a hidden card is a stray gap
-                else:
-                    self._pf_grip.grid(row=row, column=0, sticky='ew')
-                    row += 1
-                    after_grip = True
             w = self._cards[name]
             stretch = name == 'leaderboard' and not lb_manual
             w.grid(row=row, column=0, sticky=('nsew' if stretch else 'ew'),
-                   pady=((0 if (i == 0 or after_grip) else 16), 0))
+                   pady=((0 if i == 0 else 16), 0))
             if name in hidden:
                 w.grid_remove()                          # grid() above re-showed it — undo
             if stretch:
                 right.rowconfigure(row, weight=1)
-            after_grip = False
             row += 1
 
     def _wire_card_drag(self, name, *widgets):
@@ -3529,11 +3502,11 @@ class App:
         self._pf_rerender()                              # debounce: re-render after resize settles
 
     def _on_pf_grip(self, e):
-        """The grip above the PORTFOLIO card: cursor-to-image-bottom = new equity-plot height."""
-        base = (self.pf_img.winfo_rooty() + self.pf_img.winfo_height()
-                if self._pf_img_ref is not None           # an equity PNG is actually shown
-                else self.pf_card.winfo_rooty() + self.pf_card.winfo_height())
-        self.cfg['pf_h'] = max(160, min(800, base - e.y_root))
+        """The in-card grip UNDER the plot (bottom, like every other card): pointer distance
+        from the image top = new equity-plot height."""
+        top = (self.pf_img.winfo_rooty() if self._pf_img_ref is not None
+               else self.pf_card.winfo_rooty())           # no plot yet: measure from the card
+        self.cfg['pf_h'] = max(160, min(800, e.y_root - top))
         self._pf_rerender(delay=180)                     # height is picked up by the render itself
 
     def _pf_grip_reset(self, _e=None):
