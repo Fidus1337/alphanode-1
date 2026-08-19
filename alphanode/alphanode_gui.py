@@ -1341,7 +1341,6 @@ class App:
         self._grip_live = False
         self._regrid_cards()
         self._save()
-        return strip
 
     def _wrap_drag(self, wrap, key, e, lo, hi):
         """Shared SMOOTH resize for a table card: the table lives in a wrap frame whose pixel
