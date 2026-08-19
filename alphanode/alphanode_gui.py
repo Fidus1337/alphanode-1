@@ -1710,10 +1710,11 @@ class App:
         self._tip(self.btn_fwd_sig, 'Step-by-step log of the selected strategy: the held book\n'
                                     '(signed % of equity per asset), the executed rebalances,\n'
                                     'P&L and fees of every live step — exportable as CSV.')
-        self.btn_fwd_arch = self._btn(fctl, 'Archive', self._fwd_archive, width=90)
+        self.btn_fwd_arch = self._btn(fctl, 'Delete', self._fwd_delete, width=90)
         self.btn_fwd_arch.pack(side='left', padx=(6, 0))
-        self._tip(self.btn_fwd_arch, 'Stop stepping the selected strategy. Its history stays in\n'
-                                     'state/forward.json (append-only) — the row just leaves the table.')
+        self._tip(self.btn_fwd_arch, 'Remove the selected strategy and its paper history from the\n'
+                                     'track for good. The formula stays in your library — enroll it\n'
+                                     'again anytime; the fresh track starts from a clean $10,000.')
         self.lbl_fwd = self._lbl(p4, text='', text_color=FAINT, font=(self.UI, 12),
                                  wraplength=900, anchor='w', justify='left')
         self.lbl_fwd.pack(anchor='w', fill='x', pady=(8, 2))
@@ -4397,22 +4398,21 @@ class App:
             return None
         return next((e for e in self._fwd_entries if e['id'] == sel[0]), None)
 
-    def _fwd_archive(self):
+    def _fwd_delete(self):
         e = self._fwd_selected()
         if not e:
             return
         if not messagebox.askyesno('Forward track',
-                                   f'Archive {e["id"]}? It stops stepping; the history stays in '
-                                   'state/forward.json (append-only), the row leaves the table.',
+                                   f'Delete {e["id"]}? Its paper history is deleted with it — '
+                                   'this cannot be undone. The formula itself stays in your '
+                                   'library; you can enroll it again anytime.',
                                    parent=self.root):
             return
         ft = self._fwd_lib()
         track = ft.load_track()
-        for x in track['entries']:
-            if x['id'] == e['id']:
-                x['archived'] = True
-        ft.save_track(track)
-        self._fwd_refresh()
+        track['entries'] = [x for x in track['entries'] if x['id'] != e['id']]
+        ft.save_track(track)                              # a step racing this save cannot bring
+        self._fwd_refresh()                               # it back: sync_entry_to_disk drops it
 
     @staticmethod
     def _fwd_book_str(d):

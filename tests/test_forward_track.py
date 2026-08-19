@@ -239,3 +239,29 @@ def test_entry_deleted_on_disk_is_not_resurrected_by_step(sandbox):
     stepper_copy['history'].append({'date': '2026-08-19', 'equity': 10001.0})
     assert ft.sync_entry_to_disk(stepper_copy) is False
     assert e1['id'] not in [x['id'] for x in ft.load_track()['entries']]
+
+
+@pytest.mark.gui
+def test_gui_delete_removes_entry_and_its_history_for_good(gui_app, monkeypatch):
+    """The Delete button (ex-Archive): the entry leaves forward.json entirely — no hidden
+    archived rows accumulating in the file — and the confirmation says it is irreversible."""
+    app, rec, state = gui_app
+    _enroll_once(app)
+    fj = state / 'forward.json'
+    e_id = json.loads(fj.read_text())['entries'][0]['id']
+
+    app._fwd_refresh()
+    app.fwd_tree.selection_set(e_id)                      # rows are keyed by entry id
+
+    # the recorder's default askyesno=False must mean "delete cancelled, nothing changed"
+    app._fwd_delete()
+    assert len(json.loads(fj.read_text())['entries']) == 1
+
+    monkeypatch.setattr(app.__class__, '_fwd_selected', lambda self: next(
+        (x for x in ft.load_track()['entries'] if x['id'] == e_id), None))
+    import alphanode_gui as G
+    monkeypatch.setattr(G.messagebox, 'askyesno', lambda *a, **k: True, raising=False)
+    app._fwd_delete()
+
+    doc = json.loads(fj.read_text())
+    assert doc['entries'] == []                           # gone from the file, not flagged
