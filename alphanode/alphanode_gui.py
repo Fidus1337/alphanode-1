@@ -45,6 +45,12 @@ from tkinter import ttk, messagebox, filedialog
 
 import customtkinter as ctk
 
+# customtkinter bug (5.x/6.x): CTkScrollbar._on_motion reads self._motion_center_offset, but
+# only _clicked ever sets it — a drag that reaches the slider without a clean press inside it
+# crashes the Tk callback with AttributeError. A class-level default turns that first motion
+# into a plain no-offset drag instead of a traceback.
+ctk.CTkScrollbar._motion_center_offset = 0
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)                             # for import apppaths on direct launch
@@ -177,9 +183,11 @@ DEFAULTS = {
     'lb_mode': 'all',       # leaderboard: 'all' = every alpha | 'families' = best per family (deduped)
     'card_order': [],       # dashboard card order (drag a card to reorder); [] = default layout
     'log_h': 0,             # live-log height, dp; 0 = natural (7 lines)
-    'lb_rows': 12,          # leaderboard rows on screen (its in-card grip)
+    'lb_rows': 12,          # leaderboard rows at natural height (when lb_h is 0)
+    'lb_h': 0,              # leaderboard table height, dp; 0 = natural (lb_rows rows)
     'lb_cols': None,        # Advanced leaderboard: enabled OPTIONAL columns; None = default set
-    'fwd_rows': 4,          # forward-track rows on screen (its in-card grip)
+    'fwd_rows': 4,          # forward-track rows at natural height (when fwd_h is 0)
+    'fwd_h': 0,             # forward-track table height, dp; 0 = natural (fwd_rows rows)
     'pf_h': 0,              # portfolio equity-plot height, px; 0 = automatic (from width)
 }
 
@@ -1338,14 +1346,22 @@ class App:
         self._tip(strip, tip)
         return strip
 
-    def _tree_rows_drag(self, tree, key, e, lo, hi):
-        """Shared row-count resize for a Treeview card: rows from the pointer's distance to
-        the table top, clamped, persisted under cfg[key]."""
-        rh = max(1, int(32 * self.SCALE))                # matches the Treeview style rowheight
-        rows = max(lo, min(hi, round((e.y_root - tree.winfo_rooty()) / rh)))
-        if rows != int(tree['height']):
-            tree.configure(height=rows)
-            self.cfg[key] = rows
+    def _wrap_drag(self, wrap, key, e, lo, hi):
+        """Shared SMOOTH resize for a table card: the table lives in a wrap frame whose pixel
+        height follows the pointer (pack_propagate off), exactly like the live-log card. The
+        old version set the Treeview's row COUNT instead — the card resized in 32px jumps and
+        read as broken. cfg[key] stores dp (unscaled px); 0 means natural height."""
+        h = max(lo, min(hi, e.y_root - wrap.winfo_rooty()))
+        wrap.pack_propagate(False)
+        wrap.configure(height=h)
+        self.cfg[key] = round(h / self.SCALE)
+
+    def _wrap_apply_saved(self, wrap, key):
+        """On build: restore a persisted pixel height (or leave the natural one for 0)."""
+        h = int(self.cfg.get(key) or 0)
+        if h > 0:
+            wrap.pack_propagate(False)
+            wrap.configure(height=int(h * self.SCALE))
 
     def _on_log_drag(self, e):
         h = max(int(60 * self.SCALE), min(int(600 * self.SCALE),
@@ -1360,19 +1376,21 @@ class App:
         self._save()
 
     def _on_lb_rows_drag(self, e):
-        self._tree_rows_drag(self.tree, 'lb_rows', e, 4, 40)
+        self._wrap_drag(self._lbwrap, 'lb_h', e, int(140 * self.SCALE), int(1400 * self.SCALE))
 
     def _lb_rows_reset(self, _e=None):
-        self.cfg['lb_rows'] = 12
-        self.tree.configure(height=12)
+        self.cfg['lb_h'] = 0
+        self._lbwrap.pack_propagate(True)                # back to the table's natural height
+        self.tree.configure(height=int(self.cfg.get('lb_rows') or 12))
         self._save()
 
     def _on_fwd_rows_drag(self, e):
-        self._tree_rows_drag(self.fwd_tree, 'fwd_rows', e, 2, 30)
+        self._wrap_drag(self._fwdwrap, 'fwd_h', e, int(90 * self.SCALE), int(1000 * self.SCALE))
 
     def _fwd_rows_reset(self, _e=None):
-        self.cfg['fwd_rows'] = 4
-        self.fwd_tree.configure(height=4)
+        self.cfg['fwd_h'] = 0
+        self._fwdwrap.pack_propagate(True)
+        self.fwd_tree.configure(height=int(self.cfg.get('fwd_rows') or 4))
         self._save()
 
     def _build_status(self, body):
@@ -1506,6 +1524,7 @@ class App:
                                  'the old compact view. Sorting by any column works in both.')
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
+        self._lbwrap = wrap                              # smooth pixel resize (its in-card grip)
         cols = ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
                 'ls', 'act', 'win', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
@@ -1584,8 +1603,9 @@ class App:
         vsb.pack(side='right', fill='y', padx=(4, 0))
         hsb.pack(side='bottom', fill='x', pady=(4, 0))
         self.tree.pack(side='left', fill='both', expand=True)
+        self._wrap_apply_saved(wrap, 'lb_h')
         self._hgrip(p2, self._on_lb_rows_drag, self._lb_rows_reset,
-                    'Drag: more/fewer leaderboard rows on screen. Double-click — default (12).')
+                    'Drag: taller/shorter leaderboard. Double-click — natural height.')
         self.tree.bind('<Configure>', lambda e: self._fit_formula_col())
         self.tree.bind('<Double-1>', self._on_row_open)
         self.tree.bind('<Button-3>', self._on_row_menu)             # right-click — context menu
@@ -1718,6 +1738,8 @@ class App:
         self.lbl_fwd = self._lbl(p4, text='', text_color=FAINT, font=(self.UI, 12),
                                  wraplength=900, anchor='w', justify='left')
         self.lbl_fwd.pack(anchor='w', fill='x', pady=(8, 2))
+        self._fwdwrap = self._box(p4)
+        self._fwdwrap.pack(fill='x', pady=(4, 0))
         fcols = ('id', 'kind', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
         self.fwd_tree = ttk.Treeview(p4, columns=fcols, show='headings',
                                      height=int(self.cfg.get('fwd_rows') or 4))
@@ -1729,9 +1751,10 @@ class App:
             self.fwd_tree.heading(c, text=txt)
             self.fwd_tree.column(c, width=int(w * self.SCALE), anchor=anch,
                                  stretch=(c == 'id'))
-        self.fwd_tree.pack(fill='x', pady=(4, 0))
+        self.fwd_tree.pack(in_=self._fwdwrap, fill='both', expand=True)
+        self._wrap_apply_saved(self._fwdwrap, 'fwd_h')
         self._hgrip(p4, self._on_fwd_rows_drag, self._fwd_rows_reset,
-                    'Drag: more/fewer forward-track rows on screen. Double-click — default (4).')
+                    'Drag: taller/shorter forward-track table. Double-click — natural height.')
         self.fwd_tree.bind('<Double-1>', lambda _e: self._fwd_chart())
         self.root.after(900, self._fwd_refresh)
         if not getattr(self, '_fwd_tick_on', False):          # _build reruns on theme switch —
