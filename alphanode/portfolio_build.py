@@ -15,6 +15,12 @@ Two selection modes (--select):
         picked the members — a cherry-pick); treat them as a shortlist, validate forward/paper.
   base  — top-N by fitness min(TRAIN, VAL) Sharpe: TEST never enters selection, so the combined
         TEST metrics are a genuine out-of-sample evaluation.
+  combo — the best COMBINATION of N, not the N best: a pool of top-M by fitness is simulated
+        once, then a greedy + swap search picks the members whose equal-weight mix has the
+        highest Sharpe on TRAIN+VAL ONLY (brute force over C(M,N) is billions; greedy+swap is
+        hundreds of vector ops on cached return series). TEST never enters the search, so the
+        combined TEST metrics stay a genuine out-of-sample evaluation. Diversification is
+        implicit: the objective itself prefers uncorrelated members.
 
 The per-alpha simulations are run in parallel processes (the real engine loop is slow); the
 combined book is then produced by the real Portfolio object.
@@ -120,6 +126,59 @@ def _sim_one(arg):
     return i, sdf[keep]
 
 
+def selection_matrix(rets, lo, hi):
+    """Member returns stacked into a T×M matrix over the SELECTION span [lo, hi) only —
+    what the combination search is allowed to see (hi = TEST start: never beyond)."""
+    cols = []
+    for r in rets:
+        rr = r[(r.index >= lo) & (r.index < hi)].fillna(0.0)
+        cols.append(rr.to_numpy(dtype=np.float64))
+    n = min(len(c) for c in cols)
+    return np.column_stack([c[-n:] for c in cols])
+
+
+def _mix_sharpe(R, idx, ann):
+    r = R[:, list(idx)].mean(axis=1)
+    s = r.std()
+    if not np.isfinite(s) or s <= 0:
+        return -1e18
+    return float(r.mean() / s * np.sqrt(ann))
+
+
+def choose_combo(R, k, ann=365):
+    """Greedy forward selection + replace-one local search, maximizing the Sharpe of the
+    equal-weight member mix. R: T×M selection-span returns. Returns (indices, objective,
+    evaluations) — hundreds of vector ops instead of C(M,k) brute force."""
+    m = R.shape[1]
+    k = max(1, min(int(k), m))
+    evals = 0
+
+    def obj(idx):
+        nonlocal evals
+        evals += 1
+        return _mix_sharpe(R, idx, ann)
+
+    chosen = [max(range(m), key=lambda j: obj([j]))]
+    while len(chosen) < k:
+        rest = [j for j in range(m) if j not in chosen]
+        chosen.append(max(rest, key=lambda j: obj(chosen + [j])))
+    cur = obj(chosen)
+    for _ in range(10):                                   # swap pass: escape greedy myopia
+        improved = False
+        for pos in range(len(chosen)):
+            for j in range(m):
+                if j in chosen:
+                    continue
+                v = obj(chosen[:pos] + [j] + chosen[pos + 1:])
+                if v > cur + 1e-9:
+                    chosen[pos] = j
+                    cur = v
+                    improved = True
+        if not improved:
+            break
+    return sorted(chosen), cur, evals
+
+
 def _metrics(capital_ret, lo, hi, ann=365):
     r = capital_ret[(capital_ret.index >= lo) & (capital_ret.index < hi)].dropna()
     if len(r) < 5 or r.std() == 0:
@@ -175,13 +234,28 @@ def _apply_segments(cfg):
     cfg['end'] = en.tz_localize(None).to_pydatetime()
 
 
-def build(top_n, sim_start, jobs, out_path, select='test'):
+def build(top_n, sim_start, jobs, out_path, select='test', pool_n=0):
     from config import load_config
 
     cfg = load_config()
     _apply_segments(cfg)
     tf = cfg.get('tf', '1d')
     lib = os.path.join(_state_dir(), f'library{"" if tf == "1d" else "_" + tf}.jsonl')
+    if select == 'combo':
+        # the pool is ranked by FITNESS (TEST never enters the search at any stage)
+        pool_n = pool_n or min(max(4 * top_n, 12), 30)
+        pool = _pick_top(pool_n, 'base', lib)
+        if len(pool) < 2:
+            raise RuntimeError('need at least 2 scored alphas in the library')
+        if len(pool) <= top_n:                            # nothing to choose between
+            top = pool
+            print(f'· pool has only {len(pool)} distinct alphas — taking them all', flush=True)
+            if tf == '1d':
+                return _build_daily(cfg, top, sim_start, jobs, out_path, select)
+            return _build_fast(cfg, top, out_path, select)
+        if tf == '1d':
+            return _combo_daily(cfg, pool, top_n, sim_start, jobs, out_path)
+        return _combo_fast(cfg, pool, top_n, out_path)
     top = _pick_top(top_n, select, lib)
     if len(top) < 2:
         raise RuntimeError('need at least 2 scored alphas in the library')
@@ -190,8 +264,84 @@ def build(top_n, sim_start, jobs, out_path, select='test'):
     return _build_fast(cfg, top, out_path, select)
 
 
-def _build_daily(cfg, top, sim_start, jobs, out_path, select):
-    """1d: the real quantpylib Portfolio — the numbers paper/Serve will reproduce."""
+def _combo_window(cfg):
+    """[selection start, TEST start): everything the combination search may look at."""
+    lo = cfg['splits']['train'][0]
+    ts = cfg['splits']['test'][0]
+    return lo, ts
+
+
+def _combo_daily(cfg, pool, top_n, sim_start, jobs, out_path):
+    """1d: simulate the whole pool once (parallel real-engine runs), search the best
+    combination on TRAIN+VAL, then hand the winners to the normal builder — their sims
+    are reused, not repeated."""
+    t0 = time.time()
+    ts0, te0 = cfg['splits']['test']
+    start = (pd.Timestamp(sim_start, tz='UTC').tz_localize(None).to_pydatetime() if sim_start
+             else cfg['start'])
+    end = te0.tz_localize(None).to_pydatetime()
+    formulas = [c['formula'] for c in pool]
+    jobs = max(jobs, min(len(formulas), max(1, (os.cpu_count() or 4) - 2)))
+    print(f'· combo: simulating a pool of {len(formulas)} (top by fitness; real engine, '
+          f'{jobs} workers)…', flush=True)
+    items = list(enumerate(formulas))
+    results = {}
+    with mp.Pool(processes=jobs, initializer=_winit, initargs=(start, end)) as p:
+        for done, (i, sdf) in enumerate(p.imap_unordered(_sim_one, items), 1):
+            results[i] = sdf
+            print(f'  [{done}/{len(items)}] pool member S{i} simulated', flush=True)
+    lo, ts = _combo_window(cfg)
+    R = selection_matrix([results[i]['capital_ret'] for i in range(len(formulas))], lo, ts)
+    if R.shape[0] < 60:
+        raise RuntimeError('selection span too short for a combination search')
+    idx, obj, evals = choose_combo(R, top_n, ann=365)
+    print(f'· combo: best mix of {len(idx)} — TRAIN+VAL Sharpe {obj:+.2f} '
+          f'({evals} combinations evaluated, TEST untouched)', flush=True)
+    chosen = [pool[i] for i in idx]
+    pre = {formulas[i]: results[i] for i in idx}
+    extra = {'combo': {'pool': len(pool), 'obj_tv': round(obj, 3), 'evals': evals,
+                       'pool_secs': round(time.time() - t0, 1)}}
+    return _build_daily(cfg, chosen, sim_start, jobs, out_path, 'combo', pre=pre, extra=extra)
+
+
+def _combo_fast(cfg, pool, top_n, out_path):
+    """Intraday: the same search over fastsim return series (seconds per member)."""
+    from genome import parse
+    from evaluator import build_panel, make_market, eval_alpha_panel
+    from fastsim import fast_sim_paths
+
+    t0 = time.time()
+    formulas = [c['formula'] for c in pool]
+    print(f'· combo: simulating a pool of {len(formulas)} (top by fitness; '
+          f'{cfg["tf"]} fastsim)…', flush=True)
+    tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'),
+                                 freq=cfg['freq'])
+    market = make_market(panel, tk, raw, vol_window=cfg['vol_window'])
+    pre = {}
+    rets = []
+    for i, formula in enumerate(formulas):
+        ap = eval_alpha_panel(parse(formula), panel)
+        r, wl = fast_sim_paths(ap[tk].to_numpy(dtype=np.float64), market, cfg['vol'],
+                               cfg['exec'], ann=cfg['ann'], ewma_lambda=cfg['ewma_lambda'])
+        pre[formula] = (r, wl)
+        rets.append(r)
+        print(f'  [{i + 1}/{len(formulas)}] pool member S{i} simulated', flush=True)
+    lo, ts = _combo_window(cfg)
+    R = selection_matrix(rets, lo, ts)
+    if R.shape[0] < 60:
+        raise RuntimeError('selection span too short for a combination search')
+    idx, obj, evals = choose_combo(R, top_n, ann=cfg['ann'])
+    print(f'· combo: best mix of {len(idx)} — TRAIN+VAL Sharpe {obj:+.2f} '
+          f'({evals} combinations evaluated, TEST untouched)', flush=True)
+    chosen = [pool[i] for i in idx]
+    extra = {'combo': {'pool': len(pool), 'obj_tv': round(obj, 3), 'evals': evals,
+                       'pool_secs': round(time.time() - t0, 1)}}
+    return _build_fast(cfg, chosen, out_path, 'combo', pre=pre, extra=extra)
+
+
+def _build_daily(cfg, top, sim_start, jobs, out_path, select, pre=None, extra=None):
+    """1d: the real quantpylib Portfolio — the numbers paper/Serve will reproduce.
+    pre: {formula: sdf} simulations already run (the combo pool) — reused, not repeated."""
     from evaluator import build_panel, basket_returns, open_pnl_series
     from quantpylib.simulator.alpha import Portfolio
 
@@ -204,16 +354,19 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
     end = te.tz_localize(None).to_pydatetime()
 
     formulas = [c['formula'] for c in top]
-    how = ('by TEST Sharpe (⚠ cherry-pick: combined TEST is optimistic)' if select != 'base'
-           else 'by base=min(train,val) — TEST stays held out')
+    how = {'base': 'by base=min(train,val) — TEST stays held out',
+           'combo': 'best combination on TRAIN+VAL — TEST stays held out'}.get(
+        select, 'by TEST Sharpe (⚠ cherry-pick: combined TEST is optimistic)')
     print(f'· combining top-{len(formulas)} {how} (real engine, {jobs} workers)…', flush=True)
 
-    items = list(enumerate(formulas))
-    results = {}
-    with mp.Pool(processes=jobs, initializer=_winit, initargs=(start, end)) as pool:
-        for done, (i, sdf) in enumerate(pool.imap_unordered(_sim_one, items), 1):
-            results[i] = sdf
-            print(f'  [{done}/{len(items)}] strategy S{i} simulated', flush=True)
+    pre = pre or {}
+    results = {i: pre[f] for i, f in enumerate(formulas) if f in pre}
+    items = [(i, f) for i, f in enumerate(formulas) if f not in pre]
+    if items:
+        with mp.Pool(processes=jobs, initializer=_winit, initargs=(start, end)) as pool:
+            for done, (i, sdf) in enumerate(pool.imap_unordered(_sim_one, items), 1):
+                results[i] = sdf
+                print(f'  [{done}/{len(items)}] strategy S{i} simulated', flush=True)
     stratdfs = [results[i] for i in range(len(formulas))]
 
     print('· running the Portfolio combiner…', flush=True)
@@ -257,13 +410,14 @@ def _build_daily(cfg, top, sim_start, jobs, out_path, select):
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values],
                       'basket': [round(float(x), 5) for x in be.values]},
            'built_secs': round(time.time() - t0, 1)}
+    doc.update(extra or {})
     _write_doc(doc, out_path)
     print(f'✓ portfolio built: Sharpe {_seg_line(segs)} · {doc["built_secs"]}s → {out_path}',
           flush=True)
     return 0
 
 
-def _build_fast(cfg, top, out_path, select):
+def _build_fast(cfg, top, out_path, select, pre=None, extra=None):
     """Intraday: fastsim per member -> Σ(weight×leverage) -> the same kernel once more.
     The sum is exactly what Portfolio.compute_forecasts produces, so the second vol-targeting +
     inertia layer is applied with identical semantics — just in the search's engine, with the
@@ -275,8 +429,9 @@ def _build_fast(cfg, top, out_path, select):
     t0 = time.time()
     tf, ann, lam = cfg['tf'], cfg['ann'], cfg['ewma_lambda']
     formulas = [c['formula'] for c in top]
-    how = ('by TEST Sharpe (⚠ cherry-pick: combined TEST is optimistic)' if select != 'base'
-           else 'by base=min(train,val) — TEST stays held out')
+    how = {'base': 'by base=min(train,val) — TEST stays held out',
+           'combo': 'best combination on TRAIN+VAL — TEST stays held out'}.get(
+        select, 'by TEST Sharpe (⚠ cherry-pick: combined TEST is optimistic)')
     print(f'· combining top-{len(formulas)} {how} ({tf} fastsim — the search engine)…', flush=True)
 
     tk, raw, panel = build_panel(cfg['data'], cfg['start'], cfg['end'], cfg.get('instruments'),
@@ -284,14 +439,18 @@ def _build_fast(cfg, top, out_path, select):
     market = make_market(panel, tk, raw, vol_window=cfg['vol_window'])
     ts, te = cfg['splits']['test']
 
+    pre = pre or {}
     rets, paths = [], []
     for i, formula in enumerate(formulas):
-        ap = eval_alpha_panel(parse(formula), panel)
-        r, wl = fast_sim_paths(ap[tk].to_numpy(dtype=np.float64), market, cfg['vol'], cfg['exec'],
-                               ann=ann, ewma_lambda=lam)
+        if formula in pre:
+            r, wl = pre[formula]
+        else:
+            ap = eval_alpha_panel(parse(formula), panel)
+            r, wl = fast_sim_paths(ap[tk].to_numpy(dtype=np.float64), market, cfg['vol'],
+                                   cfg['exec'], ann=ann, ewma_lambda=lam)
+            print(f'  [{i + 1}/{len(formulas)}] strategy S{i} simulated', flush=True)
         rets.append(r)
         paths.append(wl)
-        print(f'  [{i + 1}/{len(formulas)}] strategy S{i} simulated', flush=True)
 
     print('· running the Portfolio combiner (same kernel over Σ weight×leverage)…', flush=True)
     comb_alpha = np.sum(paths, axis=0)        # NaN pre-listing cells stay NaN -> masked eligibility
@@ -337,6 +496,7 @@ def _build_fast(cfg, top, out_path, select):
            'equity': {'dates': dates, 'combined': [round(float(x), 5) for x in ce.values[::step]],
                       'basket': [round(float(x), 5) for x in be.values[::step]]},
            'built_secs': round(time.time() - t0, 1)}
+    doc.update(extra or {})
     _write_doc(doc, out_path)
     print(f'✓ portfolio built ({tf}): Sharpe {_seg_line(segs)} · {doc["built_secs"]}s → {out_path}',
           flush=True)
@@ -347,9 +507,12 @@ def main():
     ap = argparse.ArgumentParser(
         description='Build a combined Portfolio from the top-N library alphas')
     ap.add_argument('--top', type=int, default=6)
-    ap.add_argument('--select', choices=('test', 'base'), default='test',
-                    help='ranking for the top-N: held-out TEST Sharpe (optimistic cherry-pick) '
-                         'or fitness min(train,val) (TEST stays a clean evaluation)')
+    ap.add_argument('--select', choices=('test', 'base', 'combo'), default='test',
+                    help='ranking for the top-N: held-out TEST Sharpe (optimistic cherry-pick), '
+                         'fitness min(train,val) (TEST stays a clean evaluation), or combo — '
+                         'the best COMBINATION of N found on TRAIN+VAL (TEST stays clean)')
+    ap.add_argument('--pool', type=int, default=0,
+                    help='combo only: candidate pool size (0 = auto: 4×top, 12..30)')
     ap.add_argument('--sim-start', default='',
                     help='simulation start; empty (default) = TRAIN start, so metrics/equity '
                          'cover all three segments. An explicit date (e.g. 2022-06-01) trades '
@@ -359,7 +522,7 @@ def main():
     args = ap.parse_args()
     jobs = args.jobs if args.jobs > 0 else max(1, min(args.top, (os.cpu_count() or 4) - 2))
     try:
-        rc = build(args.top, args.sim_start, jobs, args.out, args.select)
+        rc = build(args.top, args.sim_start, jobs, args.out, args.select, pool_n=args.pool)
     except Exception as e:                                 # noqa: BLE001
         print(f'✗ portfolio build failed: {type(e).__name__}: {e}', flush=True)
         try:

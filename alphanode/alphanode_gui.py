@@ -1638,7 +1638,7 @@ class App:
         ttk.Spinbox(ctl, from_=2, to=20, width=4, textvariable=self.v_pfn).pack(side='left', padx=(0, 8))
         self._lbl(ctl, text='by', text_color=MUT, font=(self.UI, 13)).pack(side='left', padx=(0, 5))
         self.v_pfsel = tk.StringVar(value='TEST')
-        sel_box = ttk.Combobox(ctl, textvariable=self.v_pfsel, values=('TEST', 'fitness'),
+        sel_box = ttk.Combobox(ctl, textvariable=self.v_pfsel, values=('TEST', 'fitness', 'combo'),
                                state='readonly', width=7)
         sel_box.pack(side='left', padx=(0, 8))
         self._tip(sel_box, 'How the top-N members are picked from the library:\n'
@@ -1646,7 +1646,13 @@ class App:
                            '  ⚠ the shown combined TEST becomes optimistic (the same window\n'
                            '  picked the members) — validate on the forward track first.\n'
                            '• fitness — by min(train,val): TEST never enters selection, so\n'
-                           '  the combined TEST numbers are honest out-of-sample.')
+                           '  the combined TEST numbers are honest out-of-sample.\n'
+                           '• combo — the best COMBINATION of N, not the N best: a pool of\n'
+                           '  top-fitness alphas is simulated once and a greedy+swap search\n'
+                           '  maximizes the mix\'s Sharpe on TRAIN+VAL only. TEST never\n'
+                           '  enters the search, so the combined TEST stays honest — and the\n'
+                           '  objective itself hunts diversification (uncorrelated members).\n'
+                           '  Slower: the whole pool is simulated, not just N.')
         self.btn_pf = self._btn(ctl, '▶ Build portfolio', self._build_portfolio, kind='accent')
         self.btn_pf.pack(side='left')
         self._tip(self.btn_pf, 'Runs the top-N library alphas (ranked per the "by" selector)\n'
@@ -3625,13 +3631,19 @@ class App:
         if self._pf_proc and self._pf_proc.poll() is None:
             return                                       # already building
         n = self._gi(self.v_pfn, 6)
-        sel = 'base' if self.v_pfsel.get() == 'fitness' else 'test'
-        eng = 'real engine, ~1–2 min' if self._tf() == '1d' else f'{self._tf()} fastsim, ~seconds'
+        sel = {'fitness': 'base', 'combo': 'combo'}.get(self.v_pfsel.get(), 'test')
+        eng = ('real engine, ~1–2 min' if self._tf() == '1d'
+               else f'{self._tf()} fastsim, ~seconds')
+        if sel == 'combo':
+            eng = (f'pool of ~{min(max(4 * n, 12), 30)} on the ' + eng
+                   + ' each — grab a coffee' if self._tf() == '1d'
+                   else eng + ', pool included')
         self.btn_pf.configure(state='disabled')
         self.lbl_pf_m.configure(text='', fg=MUT)
-        self.lbl_pf.configure(text=f'building portfolio from top-{n} by '
-                                   f'{"TEST" if sel == "test" else "fitness min(train,val)"} '
-                                   f'({eng})…')
+        self.lbl_pf.configure(text=(
+            f'searching the best combination of {n} on TRAIN+VAL ({eng})…' if sel == 'combo'
+            else f'building portfolio from top-{n} by '
+                 f'{"TEST" if sel == "test" else "fitness min(train,val)"} ({eng})…'))
         env = dict(os.environ)
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
                    ALPHANODE_TF=self._tf(),
@@ -3687,6 +3699,14 @@ class App:
         if doc.get('sel') == 'base':                     # selection never saw TEST
             note = 'TEST held out of selection — the numbers below are honest OOS'
             picked = 'by fitness min(train,val)'
+        elif doc.get('sel') == 'combo':                  # searched on TRAIN+VAL only
+            cb = doc.get('combo') or {}
+            obj = cb.get('obj_tv')
+            obj_s = f'{obj:+.2f}' if isinstance(obj, (int, float)) else '?'
+            note = (f'best combination from a pool of {cb.get("pool", "?")} '
+                    f'(TRAIN+VAL Sharpe {obj_s} over '
+                    f'{cb.get("evals", "?")} mixes) — TEST never entered the search: honest OOS')
+            picked = 'as the best combination'
         else:                                            # 'test' or legacy docs without 'sel'
             note = ('⚠ members picked by TEST — its numbers are optimistic (cherry-pick); '
                     'validate on the forward track')
