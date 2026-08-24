@@ -12,9 +12,14 @@ GUI only ever waits on a pipe (which releases it).
 stdin  -> {"formulas": [...], "instruments": [...]|null, "vol": .., "exec": ..,
            "train_start": "YYYY-MM-DD", "test_start": ..., "test_end": ...}
 stdout -> {"ok": true, "metrics": {formula: {"long":n,"short":n,"win":f,"act":f,
-           "dd":f,"cagr":f|null,"sortino":f|null,"calm":f|null,"storm":f|null} | "err"}}
+           "dd":f,"cagr":f|null,"sortino":f|null,"calm":f|null,"storm":f|null,
+           "tup":f|null,"tdown":f|null,"tflat":f|null} | "err"}}
            calm/storm = the alpha's TEST Sharpe on low-vol / high-vol market bars
            (EW-basket realized vol vs its trailing 1y median; see evaluator.vol_regime)
+           tup/tdown/tflat = the alpha's TEST Sharpe on trending-up / trending-down /
+           flat market bars (drift t-stat of the EW basket over ~30 calendar days of
+           bars, labels lagged one bar; see evaluator.trend_regime and trend_split
+           below) — under 30 bars in a bucket comes back null
            {"ok": false, "error": "..."}   on a failure that kills the whole batch
 
 A formula that cannot be parsed or never trades comes back as "err" — same contract the GUI's
@@ -41,7 +46,7 @@ def build_ctx(opt):
     Timeframe-aware: the grid freq / vol window / bars-per-year come from load_config
     (which honors ALPHANODE_TF), so intraday libraries get intraday-correct stats."""
     from config import load_config
-    from evaluator import build_panel, make_market, vol_regime
+    from evaluator import build_panel, make_market, vol_regime, trend_regime
     cfg = load_config()
     if opt.get('instruments'):
         cfg['instruments'] = list(opt['instruments'])
@@ -62,13 +67,40 @@ def build_ctx(opt):
     # market vol regime on the same grid: 1=storm / 0=calm / NaN=warmup (causal, alpha-independent)
     reg = vol_regime(panel, vol_window=cfg.get('vol_window', 30), ann=ann)
     reg = reg.reindex(pd.DatetimeIndex(market['index'])).to_numpy()
+    # market DIRECTION regime: +1 up / -1 down / 0 flat / NaN warmup — same causal contract.
+    # The window is 30 CALENDAR days of bars whatever the grid (30 on 1d, 180 on 4h, 720 on
+    # 1h) — 'ann<=400 ? 30 : 120' would have handed 15m a 1.25-day "trend". The labels are
+    # then LAGGED one bar: bar t carries the regime known at t-1's close, so a label's window
+    # never contains the very return that gets sliced by it (see trend_split).
+    trd = trend_regime(panel, window=max(30, int(round(30 * ann / 365.0))))
+    trd = trd.reindex(pd.DatetimeIndex(market['index'])).to_numpy()
+    trd = np.concatenate([[np.nan], trd[:-1]])
     return {'panel': panel, 'market': market, 'V': market['V'], 'elig': elig, 'tmask': tmask,
             'n_assets': max(1, n_assets), 'years': years, 'vol': vol, 'exec': ex,
-            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06)), 'reg': reg}
+            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06)), 'reg': reg, 'trend': trd}
+
+
+def regime_sharpe(x, ann):
+    """Sharpe of one regime slice — under 30 bars (or zero variance) an honest None,
+    never a number invented from a handful of bars."""
+    if x.size < 30 or float(x.std()) < 1e-12:
+        return None
+    return float(x.mean()) * ann / (float(x.std()) * np.sqrt(ann))
+
+
+def trend_split(rt, trd, ann):
+    """{'tup','tdown','tflat'}: TEST Sharpe by direction bucket. `trd` must already be
+    LAGGED one bar (build_ctx does it): slicing on the unlagged label conditions each
+    return on its own bar's market move — a beta-1 clone of the market on a DRIFTLESS
+    walk showed ~+1.3 of pure T↑−T↓ Sharpe mirage before the lag."""
+    return {'tup': regime_sharpe(rt[trd == 1.0], ann),
+            'tdown': regime_sharpe(rt[trd == -1.0], ann),
+            'tflat': regime_sharpe(rt[trd == 0.0], ann)}
 
 
 def trade_stats(formula, ctx):
-    """{long, short, win, act, dd, cagr, sortino, calm, storm} for one formula on TEST — act =
+    """{long, short, win, act, dd, cagr, sortino, calm, storm, tup, tdown, tflat} for one
+    formula on TEST — act =
     trades per asset per year (relative activity, universe/period independent); dd/cagr/sortino
     from the same simulated TEST equity; calm/storm = Sharpe on the low-vol / high-vol halves of
     TEST (market regime, not the alpha's own vol). 'err' if it doesn't parse or never trades."""
@@ -104,17 +136,16 @@ def trade_stats(formula, ctx):
                    if dstd > 1e-12 else None)                               # no losing bars -> null
         reg = ctx['reg'][tmask]                                             # 1 storm / 0 calm / NaN
 
-        def _regsh(x):                                                      # Sharpe of one regime slice
-            if x.size < 30 or float(x.std()) < 1e-12:                       # too few bars -> null
-                return None
-            return float(x.mean()) * ctx['ann'] / (float(x.std()) * np.sqrt(ctx['ann']))
-        sh_calm, sh_storm = _regsh(rt[reg == 0.0]), _regsh(rt[reg == 1.0])
+        sh_calm = regime_sharpe(rt[reg == 0.0], ctx['ann'])
+        sh_storm = regime_sharpe(rt[reg == 1.0], ctx['ann'])
+        ts = trend_split(rt, ctx['trend'][tmask], ctx['ann'])               # labels pre-lagged
 
         def _fin(v):                                                        # JSON-safe: NaN/inf -> null
             return float(v) if (v is not None and np.isfinite(v)) else None
         return {'long': long_tr, 'short': short_tr, 'win': win, 'act': act,
                 'dd': _fin(dd), 'cagr': _fin(cagr), 'sortino': _fin(sortino),
-                'calm': _fin(sh_calm), 'storm': _fin(sh_storm)}
+                'calm': _fin(sh_calm), 'storm': _fin(sh_storm),
+                'tup': _fin(ts['tup']), 'tdown': _fin(ts['tdown']), 'tflat': _fin(ts['tflat'])}
     except Exception:                                                   # noqa: BLE001
         return 'err'
 

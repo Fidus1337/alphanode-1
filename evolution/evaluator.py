@@ -253,6 +253,29 @@ def vol_regime(panel, vol_window=30, ann=365.0):
     return (v > med).astype(float).where(v.notna() & med.notna())
 
 
+def trend_regime(panel, window=30, t_hi=1.28):
+    """Market DIRECTION regime per bar: +1 trending up, -1 trending down, 0 flat,
+    NaN warmup. The gate is a drift t-statistic on the trailing window's basket
+    log-returns (mean / (std/sqrt(n))): |t| >= t_hi labels the bar with the drift's
+    sign, below it the bar is flat. NOT the R² of price-on-time — for an integrated
+    price that R² is spuriously large (median ~0.45 on a DRIFTLESS random walk;
+    ~62% of pure chop would read as 'trend'), while the t-stat is calibrated against
+    exactly that null (t_hi=1.28 ≈ 90% one-sided confidence; ~21% of driftless noise
+    still passes — honest, and the price of usable buckets). Returns are cleaned
+    first (a zero close used to poison the cumsum into NaN forever). Causal: the
+    window ends at the bar it labels — a consumer attributing a bar's RETURN to a
+    regime must lag these labels one bar (metrics_worker.build_ctx does), or the
+    label leaks the very return it conditions. The companion axis to vol_regime:
+    that one splits TEST by how wild the market was, this one by where it went."""
+    r = basket_returns(panel)
+    r = np.log1p(r.clip(lower=-0.9999)).replace([np.inf, -np.inf], np.nan).fillna(0.0)
+    mu = r.rolling(window, min_periods=window).mean()
+    sd = r.rolling(window, min_periods=window).std()
+    t = (mu * np.sqrt(float(window))) / sd                    # sd==0, mu==0 -> NaN -> flat;
+    lab = np.sign(mu).where(t.abs() >= t_hi, 0.0)             # sd==0, mu!=0 -> inf -> a trend
+    return lab.where(mu.notna())
+
+
 def open_pnl_series(weights, rets):
     """Unrealized ("open") PnL of the currently held positions, as a share of the book.
 

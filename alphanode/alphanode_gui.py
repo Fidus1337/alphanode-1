@@ -1535,7 +1535,7 @@ class App:
         wrap.pack(fill='both', expand=True)
         self._lbwrap = wrap                              # smooth pixel resize (its in-card grip)
         cols = ('fav', 'rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
-                'ls', 'act', 'win', 'id', 'formula')
+                'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
                                  height=int(self.cfg.get('lb_rows') or 12))
         self._HEAD = {}
@@ -1547,6 +1547,8 @@ class App:
                                ('test', 'TEST OOS', 86, 'e'), ('dd', 'maxDD', 74, 'e'),
                                ('cagr', 'CAGR', 72, 'e'), ('srt', 'sortino', 80, 'e'),
                                ('calm', 'calm', 68, 'e'), ('storm', 'storm', 74, 'e'),
+                               ('tup', 'T ↑', 64, 'e'), ('tdown', 'T ↓', 64, 'e'),
+                               ('tflat', 'T ~', 64, 'e'),
                                ('ls', 'trades L/S', 100, 'center'),
                                ('act', 'tr/yr·a', 72, 'e'),
                                ('win', 'win%', 62, 'e'), ('id', 'ID', 72, 'center'),
@@ -1574,6 +1576,16 @@ class App:
             'cagr': 'annualized growth on TEST',
             'srt': 'Sortino on TEST — like Sharpe, but only downside vol counts',
             'calm': 'Sharpe on the QUIET half of TEST (vol regime) — analysis, not selection',
+            'tup': 'TEST Sharpe on TRENDING-UP market bars only.\n'
+                   'Direction regime: t-stat of the EW basket\'s drift over the trailing\n'
+                   '~30 calendar days — |t| ≥ 1.28 labels the bar with the drift\'s sign.\n'
+                   'A bar is judged by the regime known at its OPEN (labels lag one bar),\n'
+                   'so a formula can\'t get credit for a move its own bar created.\n'
+                   'Causal, TEST-only. \'—\' = under 30 such bars on TEST.',
+            'tdown': 'TEST Sharpe on TRENDING-DOWN market bars only.\n'
+                     'Same direction regime as T↑ — see that column\'s tooltip.',
+            'tflat': 'TEST Sharpe on FLAT market bars — no statistically confident drift\n'
+                     '(|t| below 1.28). Same direction regime as T↑ — see its tooltip.',
             'storm': 'Sharpe on the TURBULENT half of TEST (vol regime) — analysis, not selection',
             'ls': 'positions OPENED over TEST: long / short',
             'act': 'trades per asset per year — relative activity',
@@ -3069,8 +3081,8 @@ class App:
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
-    _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm', 'ls', 'act', 'win',
-                 'formula')
+    _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
+                 'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'formula')
 
     @staticmethod
     def _finite(v):
@@ -3093,7 +3105,7 @@ class App:
                 else self._finite(m.get(col))
         if col == 'srt':
             return self._finite(m.get('sortino'))
-        if col in ('calm', 'storm'):
+        if col in ('calm', 'storm', 'tup', 'tdown', 'tflat'):
             return self._finite(m.get(col))
         if col == 'ls':
             return m.get('long', 0) + m.get('short', 0)
@@ -3118,8 +3130,9 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt.upper() + arrow)
 
-    _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt', 'calm', 'storm', 'ls', 'act', 'win')
-    _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win')
+    _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt', 'calm', 'storm',
+                     'tup', 'tdown', 'tflat', 'ls', 'act', 'win')
+    _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'tup', 'tdown', 'tflat')
 
     def _adv_cols(self):
         """Advanced display columns: the honest core (#/fitness/TEST/formula) plus the user's
@@ -3320,14 +3333,14 @@ class App:
                 m = self._metrics_cache.get(formula)
             need = max(need, self._tree_font.measure(f))   # row; the two spaces are the gutter to
             #                                                the neighbour cell's right-flush value
-            ls, act, win, srt, calm, storm = self._fmt_metrics(m)
+            ls, act, win, srt, calm, storm, tup, tdn, tfl = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
             item = self.tree.insert('', 'end', values=(
                 ('★' if aid in self._fav_ids else ''),
                 i + 1, f'{base:+.2f}' if base is not None else '—',
                 f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt, calm, storm,
-                ls, act, win, aid, f),
+                tup, tdn, tfl, ls, act, win, aid, f),
                 tags=tags)
             self._row_items[formula or ('id:' + aid)] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
@@ -3393,7 +3406,8 @@ class App:
     def _pump_metrics(self):
         """After a redraw: compute the visible rows' stats. Sorting BY a stat column is the one case
         that needs every value at once (else the order is wrong), so there we compute the full set."""
-        if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm', 'dd', 'cagr'):
+        if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm',
+                              'tup', 'tdown', 'tflat', 'dd', 'cagr'):
             self._start_metrics(self._shown)
         else:
             self._start_metrics(self._visible_champs())
@@ -3418,17 +3432,18 @@ class App:
 
     @staticmethod
     def _fmt_metrics(m):
-        """('L/S', 'tr/yr·a', 'win%', 'sortino', 'calm', 'storm') strings from the cache:
-        None=still computing, 'err'=failed."""
+        """('L/S', 'tr/yr·a', 'win%', 'sortino', 'calm', 'storm', 'T↑', 'T↓', 'T~') strings
+        from the cache: None=still computing, 'err'=failed."""
         if m is None:
-            return ('·',) * 6                            # still computing (quiet placeholder)
+            return ('·',) * 9                            # still computing (quiet placeholder)
         if m == 'err':
-            return ('—',) * 6
+            return ('—',) * 9
         a = m.get('act', 0.0)
         astr = f'{a:.1f}' if a < 10 else f'{a:.0f}'
         return (f'{m["long"]:.0f}/{m["short"]:.0f}', astr, f'{m["win"] * 100:.0f}%',
                 App._fmt_ratio(m.get('sortino')), App._fmt_ratio(m.get('calm')),
-                App._fmt_ratio(m.get('storm')))
+                App._fmt_ratio(m.get('storm')), App._fmt_ratio(m.get('tup')),
+                App._fmt_ratio(m.get('tdown')), App._fmt_ratio(m.get('tflat')))
 
     def _start_metrics(self, champs):
         """Background computation of long/short/win (on TEST) for the shown alphas; cached by formula."""
@@ -3500,20 +3515,24 @@ class App:
             if formula.startswith('id:'):                # locked row: no plaintext to simulate —
                 continue                                 # leave its '—' cells, don't repaint to '·'
             m = self._metrics_cache.get(formula)
-            ls, act, win, srt, calm, storm = self._fmt_metrics(m)
+            ls, act, win, srt, calm, storm, tup, tdn, tfl = self._fmt_metrics(m)
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
             self.tree.set(item, 'srt', srt)
             self.tree.set(item, 'calm', calm)
             self.tree.set(item, 'storm', storm)
+            self.tree.set(item, 'tup', tup)
+            self.tree.set(item, 'tdown', tdn)
+            self.tree.set(item, 'tflat', tfl)
             if isinstance(m, dict):                      # dd/cagr fallback for legacy library rows
                 for col in ('dd', 'cagr'):
                     if self.tree.set(item, col) in ('·', '—'):
                         self.tree.set(item, col, self._fmt_ratio(m.get(col), pct=True))
         if seq != self._metrics_seq:
             return
-        if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm', 'dd', 'cagr'):
+        if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm',
+                              'tup', 'tdown', 'tflat', 'dd', 'cagr'):
             self._treesig = None
             self._render_lb(self._lb_rows() or self._shown)
         elif any(c.get('formula') and c['formula'] not in self._metrics_cache
@@ -3864,13 +3883,17 @@ class App:
                         round(m['sortino'], 3) if isinstance(m.get('sortino'), (int, float)) else '',
                         round(m['calm'], 3) if isinstance(m.get('calm'), (int, float)) else '',
                         round(m['storm'], 3) if isinstance(m.get('storm'), (int, float)) else '',
+                        round(m['tup'], 3) if isinstance(m.get('tup'), (int, float)) else '',
+                        round(m['tdown'], 3) if isinstance(m.get('tdown'), (int, float)) else '',
+                        round(m['tflat'], 3) if isinstance(m.get('tflat'), (int, float)) else '',
                         m.get('long', ''), m.get('short', ''),
                         round(m['act'], 2) if 'act' in m else '',
                         round(m['win'] * 100, 1) if 'win' in m else '',
                         aid, fcell])
         self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
                               'test_dd', 'test_cagr', 'test_sortino', 'test_sh_calm',
-                              'test_sh_storm', 'long', 'short', 'tr_yr_a',
+                              'test_sh_storm', 'test_sh_trend_up', 'test_sh_trend_down',
+                              'test_sh_flat', 'long', 'short', 'tr_yr_a',
                               'win_pct', 'id', 'formula'), out, 'rows')
 
     def _export_library(self):
