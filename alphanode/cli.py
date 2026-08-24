@@ -3,7 +3,7 @@
     python alphanode/cli.py run [flags]        # start continuous search (foreground, log to stdout)
     python alphanode/cli.py fetch [flags]      # download fresh Binance data
     python alphanode/cli.py top [flags]        # top alphas found in the library (table in the terminal)
-    python alphanode/cli.py top --stats        # + trade stats on TEST (maxDD/CAGR/sortino/calm/storm/win)
+    python alphanode/cli.py top --stats        # + trade stats on TEST (maxDD/CAGR/sortino/T↑T↓T~/win)
     python alphanode/cli.py status             # current node state (rounds, best)
     python alphanode/cli.py forward list       # forward track: enrolled strategies + their paper equity
     python alphanode/cli.py forward step       # advance the forward track now (run also does it itself)
@@ -128,8 +128,8 @@ def _fmt(v):
 def _trade_stats(formulas):
     """The GUI leaderboard's TEST columns, in-process: one shared panel, fast_sim per alpha.
     Reuses metrics_worker (the exact code the GUI runs out of process), so the numbers match
-    the desktop app cell for cell — including calm/storm, the Sharpe on the quiet vs turbulent
-    half of the market (EW-basket realized vol vs its trailing 1-year median)."""
+    the desktop app cell for cell — including T↑/T↓/T~, the Sharpe on the trending-up /
+    trending-down / flat bars of the market (direction regime, labels lagged one bar)."""
     import metrics_worker
     from config import load_config
     cfg = load_config()
@@ -169,7 +169,7 @@ def cmd_top(args):
         stats = _trade_stats([c.get('formula', '') for c in picked])
         fcol = max(24, width - 84)
         print(f'{"#":>3}  {"fitness":>7}  {"TEST":>6}  {"maxDD":>6}  {"CAGR":>6}  {"srtno":>6}  '
-              f'{"calm":>6}  {"storm":>6}  {"L/S":>9}  {"win%":>4}  formula')
+              f'{"T↑":>6}  {"T↓":>6}  {"T~":>6}  {"L/S":>9}  {"win%":>4}  formula')
     else:
         fcol = max(30, width - 26)
         print(f'{"#":>3}  {"fitness":>7}  {"TEST":>6}  formula')
@@ -189,12 +189,13 @@ def cmd_top(args):
         ls = f"{m['long']}/{m['short']}" if 'long' in m else '—'
         win = f"{m['win'] * 100:.0f}" if 'win' in m else '—'
         print(f'{i:>3}  {_fmt(c.get("base")):>7}  {_fmt(_testsh(c)):>6}  {pct(m.get("dd")):>6}  '
-              f'{pct(m.get("cagr")):>6}  {_fmt(m.get("sortino")):>6}  {_fmt(m.get("calm")):>6}  '
-              f'{_fmt(m.get("storm")):>6}  {ls:>9}  {win:>4}  {f}')
+              f'{pct(m.get("cagr")):>6}  {_fmt(m.get("sortino")):>6}  {_fmt(m.get("tup")):>6}  '
+              f'{_fmt(m.get("tdown")):>6}  {_fmt(m.get("tflat")):>6}  {ls:>9}  {win:>4}  {f}')
     if stats is not None:
-        print('\ncalm/storm = TEST Sharpe on the quiet / turbulent half of the market '
-              '(basket vol vs its 1y median). Analysis, not selection: picking by these '
-              'is another layer of TEST peeking.')
+        print('\nT↑/T↓/T~ = TEST Sharpe on trending-up / trending-down / flat market bars '
+              '(direction regime: drift t-stat over ~30 calendar days, labels lagged one '
+              'bar). Analysis, not selection: picking by these is another layer of TEST '
+              'peeking.')
 
 
 def cmd_forward(args):
@@ -346,9 +347,9 @@ def build_parser():
     t.add_argument('-n', type=int, default=20, help='how many rows')
     t.add_argument('--all', action='store_true', help='no family dedup (raw top)')
     t.add_argument('--stats', action='store_true',
-                   help='add TEST trade stats per row (maxDD, CAGR, sortino, calm/storm '
-                        'vol-regime Sharpe, trades L/S, win%%) — simulates every row, takes '
-                        'a few seconds')
+                   help='add TEST trade stats per row (maxDD, CAGR, sortino, T↑/T↓/T~ '
+                        'direction-regime Sharpe, trades L/S, win%%) — simulates every row, '
+                        'takes a few seconds')
     t.set_defaults(func=cmd_top)
 
     s = sub.add_parser('status', help='current node state')

@@ -1,5 +1,5 @@
 """Direction regime (trend up/down/flat) — which formula earns in which market mode,
-measured on TEST only, like calm/storm. The gate is a drift t-statistic, NOT R² of
+measured on TEST only. The gate is a drift t-statistic, NOT R² of
 price-on-time (spurious regression: ~62% of driftless chop reads as 'trend' there),
 and consumers slice returns with ONE-BAR-LAGGED labels (a label's window must not
 contain the return it conditions). Each of those was a confirmed review finding —
@@ -147,8 +147,7 @@ def test_gui_trend_columns_render_from_the_cache(gui_app):
     champ = {'formula': 'tanh(high)', 'base': 1.0, 'test': {'sharpe': 0.5}}
     app._metrics_cache[champ['formula']] = {
         'long': 3, 'short': 1, 'win': 0.5, 'act': 2.0, 'dd': -0.1, 'cagr': 0.2,
-        'sortino': 1.0, 'calm': 0.5, 'storm': -0.2,
-        'tup': 1.234, 'tdown': -0.456, 'tflat': None}
+        'sortino': 1.0, 'tup': 1.234, 'tdown': -0.456, 'tflat': None}
     app._treesig = None
     app._fill_tree([champ])
     item = app.tree.get_children()[0]

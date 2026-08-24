@@ -1534,7 +1534,7 @@ class App:
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         self._lbwrap = wrap                              # smooth pixel resize (its in-card grip)
-        cols = ('fav', 'rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
+        cols = ('fav', 'rank', 'fit', 'test', 'dd', 'cagr', 'srt',
                 'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
                                  height=int(self.cfg.get('lb_rows') or 12))
@@ -1546,7 +1546,6 @@ class App:
                                ('rank', '#', 40, 'center'), ('fit', 'fitness', 86, 'e'),
                                ('test', 'TEST OOS', 86, 'e'), ('dd', 'maxDD', 74, 'e'),
                                ('cagr', 'CAGR', 72, 'e'), ('srt', 'sortino', 80, 'e'),
-                               ('calm', 'calm', 68, 'e'), ('storm', 'storm', 74, 'e'),
                                ('tup', 'T ↑', 64, 'e'), ('tdown', 'T ↓', 64, 'e'),
                                ('tflat', 'T ~', 64, 'e'),
                                ('ls', 'trades L/S', 100, 'center'),
@@ -1578,7 +1577,6 @@ class App:
             'dd': 'worst peak-to-trough drawdown on TEST',
             'cagr': 'annualized growth on TEST',
             'srt': 'Sortino on TEST — like Sharpe, but only downside vol counts',
-            'calm': 'Sharpe on the QUIET half of TEST (vol regime) — analysis, not selection',
             'tup': 'TEST Sharpe on TRENDING-UP market bars only.\n'
                    'Direction regime: t-stat of the EW basket\'s drift over the trailing\n'
                    '~30 calendar days — |t| ≥ 1.28 labels the bar with the drift\'s sign.\n'
@@ -1589,7 +1587,6 @@ class App:
                      'Same direction regime as T↑ — see that column\'s tooltip.',
             'tflat': 'TEST Sharpe on FLAT market bars — no statistically confident drift\n'
                      '(|t| below 1.28). Same direction regime as T↑ — see its tooltip.',
-            'storm': 'Sharpe on the TURBULENT half of TEST (vol regime) — analysis, not selection',
             'ls': 'positions OPENED over TEST: long / short',
             'act': 'trades per asset per year — relative activity',
             'win': 'share of profitable days on TEST',
@@ -1600,10 +1597,10 @@ class App:
         self.tree.bind('<Leave>', lambda e: self._head_tip_hide(), add='+')
         self._tip(self.lbl_lb_head, 'maxDD = worst peak-to-trough drawdown; CAGR = annualized growth;\n'
                                     'sortino = like Sharpe but only downside vol counts (upside is free);\n'
-                                    'calm / storm = the alpha\'s Sharpe on the quiet vs turbulent halves\n'
-                                    'of TEST (market vol = EW-basket realized vol vs its trailing 1-year\n'
-                                    'median; causal, ~50/50 by construction). Analysis, not selection:\n'
-                                    'picking alphas by these numbers is another layer of TEST peeking;\n'
+                                    'T↑ / T↓ / T~ = the alpha\'s Sharpe on trending-up / trending-down /\n'
+                                    'flat halves of TEST (market direction regime; causal, lagged one bar).\n'
+                                    'Analysis, not selection: picking alphas by TEST numbers is another\n'
+                                    'layer of TEST peeking;\n'
                                     'trades L/S = total number of long / short positions OPENED over TEST\n'
                                     '(a trade = crossing into long/short from flat or the opposite side);\n'
                                     'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
@@ -3084,7 +3081,7 @@ class App:
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
-    _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
+    _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt',
                  'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'formula')
 
     @staticmethod
@@ -3108,7 +3105,7 @@ class App:
                 else self._finite(m.get(col))
         if col == 'srt':
             return self._finite(m.get('sortino'))
-        if col in ('calm', 'storm', 'tup', 'tdown', 'tflat'):
+        if col in ('tup', 'tdown', 'tflat'):
             return self._finite(m.get(col))
         if col == 'ls':
             return m.get('long', 0) + m.get('short', 0)
@@ -3133,7 +3130,7 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt.upper() + arrow)
 
-    _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt', 'calm', 'storm',
+    _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt',
                      'tup', 'tdown', 'tflat', 'ls', 'act', 'win')
     _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'tup', 'tdown', 'tflat')
 
@@ -3336,13 +3333,13 @@ class App:
                 m = self._metrics_cache.get(formula)
             need = max(need, self._tree_font.measure(f))   # row; the two spaces are the gutter to
             #                                                the neighbour cell's right-flush value
-            ls, act, win, srt, calm, storm, tup, tdn, tfl = self._fmt_metrics(m)
+            ls, act, win, srt, tup, tdn, tfl = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
             item = self.tree.insert('', 'end', values=(
                 ('★' if aid in self._fav_ids else ''),
                 i + 1, f'{base:+.2f}' if base is not None else '—',
-                f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt, calm, storm,
+                f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt,
                 tup, tdn, tfl, ls, act, win, aid, f),
                 tags=tags)
             self._row_items[formula or ('id:' + aid)] = item
@@ -3409,7 +3406,7 @@ class App:
     def _pump_metrics(self):
         """After a redraw: compute the visible rows' stats. Sorting BY a stat column is the one case
         that needs every value at once (else the order is wrong), so there we compute the full set."""
-        if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm',
+        if self._sort_col in ('ls', 'act', 'win', 'srt',
                               'tup', 'tdown', 'tflat', 'dd', 'cagr'):
             self._start_metrics(self._shown)
         else:
@@ -3435,17 +3432,16 @@ class App:
 
     @staticmethod
     def _fmt_metrics(m):
-        """('L/S', 'tr/yr·a', 'win%', 'sortino', 'calm', 'storm', 'T↑', 'T↓', 'T~') strings
-        from the cache: None=still computing, 'err'=failed."""
+        """('L/S', 'tr/yr·a', 'win%', 'sortino', 'T↑', 'T↓', 'T~') strings from the cache:
+        None=still computing, 'err'=failed."""
         if m is None:
-            return ('·',) * 9                            # still computing (quiet placeholder)
+            return ('·',) * 7                            # still computing (quiet placeholder)
         if m == 'err':
-            return ('—',) * 9
+            return ('—',) * 7
         a = m.get('act', 0.0)
         astr = f'{a:.1f}' if a < 10 else f'{a:.0f}'
         return (f'{m["long"]:.0f}/{m["short"]:.0f}', astr, f'{m["win"] * 100:.0f}%',
-                App._fmt_ratio(m.get('sortino')), App._fmt_ratio(m.get('calm')),
-                App._fmt_ratio(m.get('storm')), App._fmt_ratio(m.get('tup')),
+                App._fmt_ratio(m.get('sortino')), App._fmt_ratio(m.get('tup')),
                 App._fmt_ratio(m.get('tdown')), App._fmt_ratio(m.get('tflat')))
 
     def _start_metrics(self, champs):
@@ -3541,13 +3537,11 @@ class App:
             if formula.startswith('id:'):                # locked row: no plaintext to simulate —
                 continue                                 # leave its '—' cells, don't repaint to '·'
             m = self._metrics_cache.get(formula)
-            ls, act, win, srt, calm, storm, tup, tdn, tfl = self._fmt_metrics(m)
+            ls, act, win, srt, tup, tdn, tfl = self._fmt_metrics(m)
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
             self.tree.set(item, 'srt', srt)
-            self.tree.set(item, 'calm', calm)
-            self.tree.set(item, 'storm', storm)
             self.tree.set(item, 'tup', tup)
             self.tree.set(item, 'tdown', tdn)
             self.tree.set(item, 'tflat', tfl)
@@ -3557,7 +3551,7 @@ class App:
                         self.tree.set(item, col, self._fmt_ratio(m.get(col), pct=True))
         if seq != self._metrics_seq:
             return
-        if self._sort_col in ('ls', 'act', 'win', 'srt', 'calm', 'storm',
+        if self._sort_col in ('ls', 'act', 'win', 'srt',
                               'tup', 'tdown', 'tflat', 'dd', 'cagr'):
             self._treesig = None
             self._render_lb(self._lb_rows() or self._shown)
@@ -3907,8 +3901,6 @@ class App:
                         self._seg(c, 'test', 'sharpe'), self._seg(c, 'test', 'dd'),
                         self._seg(c, 'test', 'cagr'),
                         round(m['sortino'], 3) if isinstance(m.get('sortino'), (int, float)) else '',
-                        round(m['calm'], 3) if isinstance(m.get('calm'), (int, float)) else '',
-                        round(m['storm'], 3) if isinstance(m.get('storm'), (int, float)) else '',
                         round(m['tup'], 3) if isinstance(m.get('tup'), (int, float)) else '',
                         round(m['tdown'], 3) if isinstance(m.get('tdown'), (int, float)) else '',
                         round(m['tflat'], 3) if isinstance(m.get('tflat'), (int, float)) else '',
@@ -3917,8 +3909,8 @@ class App:
                         round(m['win'] * 100, 1) if 'win' in m else '',
                         aid, fcell])
         self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
-                              'test_dd', 'test_cagr', 'test_sortino', 'test_sh_calm',
-                              'test_sh_storm', 'test_sh_trend_up', 'test_sh_trend_down',
+                              'test_dd', 'test_cagr', 'test_sortino',
+                              'test_sh_trend_up', 'test_sh_trend_down',
                               'test_sh_flat', 'long', 'short', 'tr_yr_a',
                               'win_pct', 'id', 'formula'), out, 'rows')
 
@@ -4746,9 +4738,10 @@ class App:
         seg('VAL', champ.get('val'))
         seg('TEST (held-out)', champ.get('test'), accent=True)
         _m = self._metrics_cache.get(champ.get('formula', ''))
-        if isinstance(_m, dict) and (_m.get('calm') is not None or _m.get('storm') is not None):
-            self._lbl(head, text=f"TEST by market vol regime:   calm {self._fmt_ratio(_m.get('calm'))}"
-                                 f"   ·   storm {self._fmt_ratio(_m.get('storm'))}  (Sharpe)",
+        if isinstance(_m, dict) and any(_m.get(k) is not None for k in ('tup', 'tdown', 'tflat')):
+            self._lbl(head, text=f"TEST by market direction:   T↑ {self._fmt_ratio(_m.get('tup'))}"
+                                 f"   ·   T↓ {self._fmt_ratio(_m.get('tdown'))}"
+                                 f"   ·   T~ {self._fmt_ratio(_m.get('tflat'))}  (Sharpe)",
                       text_color=MUT, anchor='w', font=(self.UI, 11)).pack(anchor='w')
         self._lbl(head, text=champ.get('formula', ''), text_color=MUT, justify='left', anchor='w',
                      wraplength=img_w - 30, font=(self.MONO, 12)).pack(anchor='w', pady=(6, 0))

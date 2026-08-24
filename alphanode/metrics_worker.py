@@ -13,10 +13,8 @@ stdin  -> {"formulas": [...], "instruments": [...]|null, "vol": .., "exec": ..,
            "train_start": "YYYY-MM-DD", "test_start": ..., "test_end": ...}
 stdout -> {"ok": true, "trend_bars": {"up":n,"down":n,"flat":n},
            "metrics": {formula: {"long":n,"short":n,"win":f,"act":f,
-           "dd":f,"cagr":f|null,"sortino":f|null,"calm":f|null,"storm":f|null,
+           "dd":f,"cagr":f|null,"sortino":f|null,
            "tup":f|null,"tdown":f|null,"tflat":f|null} | "err"}}
-           calm/storm = the alpha's TEST Sharpe on low-vol / high-vol market bars
-           (EW-basket realized vol vs its trailing 1y median; see evaluator.vol_regime)
            tup/tdown/tflat = the alpha's TEST Sharpe on trending-up / trending-down /
            flat market bars (drift t-stat of the EW basket over ~30 calendar days of
            bars, labels lagged one bar; see evaluator.trend_regime and trend_split
@@ -47,7 +45,7 @@ def build_ctx(opt):
     Timeframe-aware: the grid freq / vol window / bars-per-year come from load_config
     (which honors ALPHANODE_TF), so intraday libraries get intraday-correct stats."""
     from config import load_config
-    from evaluator import build_panel, make_market, vol_regime, trend_regime
+    from evaluator import build_panel, make_market, trend_regime
     cfg = load_config()
     if opt.get('instruments'):
         cfg['instruments'] = list(opt['instruments'])
@@ -65,9 +63,6 @@ def build_ctx(opt):
     elig = market['base_elig']
     n_assets = int(elig[tmask].any(axis=0).sum()) or int(elig.shape[1])   # assets live on TEST
     years = max(float(np.count_nonzero(tmask)) / ann, 1e-9)
-    # market vol regime on the same grid: 1=storm / 0=calm / NaN=warmup (causal, alpha-independent)
-    reg = vol_regime(panel, vol_window=cfg.get('vol_window', 30), ann=ann)
-    reg = reg.reindex(pd.DatetimeIndex(market['index'])).to_numpy()
     # market DIRECTION regime: +1 up / -1 down / 0 flat / NaN warmup — same causal contract.
     # The window is 30 CALENDAR days of bars whatever the grid (30 on 1d, 180 on 4h, 720 on
     # 1h) — 'ann<=400 ? 30 : 120' would have handed 15m a 1.25-day "trend". The labels are
@@ -78,7 +73,7 @@ def build_ctx(opt):
     trd = np.concatenate([[np.nan], trd[:-1]])
     return {'panel': panel, 'market': market, 'V': market['V'], 'elig': elig, 'tmask': tmask,
             'n_assets': max(1, n_assets), 'years': years, 'vol': vol, 'exec': ex,
-            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06)), 'reg': reg, 'trend': trd}
+            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06)), 'trend': trd}
 
 
 def regime_sharpe(x, ann):
@@ -108,11 +103,10 @@ def trend_bar_counts(ctx):
 
 
 def trade_stats(formula, ctx):
-    """{long, short, win, act, dd, cagr, sortino, calm, storm, tup, tdown, tflat} for one
-    formula on TEST — act =
-    trades per asset per year (relative activity, universe/period independent); dd/cagr/sortino
-    from the same simulated TEST equity; calm/storm = Sharpe on the low-vol / high-vol halves of
-    TEST (market regime, not the alpha's own vol). 'err' if it doesn't parse or never trades."""
+    """{long, short, win, act, dd, cagr, sortino, tup, tdown, tflat} for one formula on
+    TEST — act = trades per asset per year (relative activity, universe/period independent);
+    dd/cagr/sortino from the same simulated TEST equity; tup/tdown/tflat = Sharpe by market
+    DIRECTION regime (see trend_split). 'err' if it doesn't parse or never trades."""
     from genome import parse
     from evaluator import eval_alpha_panel
     from fastsim import fast_sim
@@ -143,17 +137,13 @@ def trade_stats(formula, ctx):
         dstd = float(np.sqrt(np.mean(np.minimum(rt, 0.0) ** 2)))            # downside deviation
         sortino = (float(rt.mean()) * ctx['ann'] / (dstd * np.sqrt(ctx['ann']))
                    if dstd > 1e-12 else None)                               # no losing bars -> null
-        reg = ctx['reg'][tmask]                                             # 1 storm / 0 calm / NaN
 
-        sh_calm = regime_sharpe(rt[reg == 0.0], ctx['ann'])
-        sh_storm = regime_sharpe(rt[reg == 1.0], ctx['ann'])
         ts = trend_split(rt, ctx['trend'][tmask], ctx['ann'])               # labels pre-lagged
 
         def _fin(v):                                                        # JSON-safe: NaN/inf -> null
             return float(v) if (v is not None and np.isfinite(v)) else None
         return {'long': long_tr, 'short': short_tr, 'win': win, 'act': act,
                 'dd': _fin(dd), 'cagr': _fin(cagr), 'sortino': _fin(sortino),
-                'calm': _fin(sh_calm), 'storm': _fin(sh_storm),
                 'tup': _fin(ts['tup']), 'tdown': _fin(ts['tdown']), 'tflat': _fin(ts['tflat'])}
     except Exception:                                                   # noqa: BLE001
         return 'err'
