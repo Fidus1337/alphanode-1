@@ -265,3 +265,56 @@ def test_gui_delete_removes_entry_and_its_history_for_good(gui_app, monkeypatch)
 
     doc = json.loads(fj.read_text())
     assert doc['entries'] == []                           # gone from the file, not flagged
+
+
+def test_new_entry_explicit_id_wins_over_name_sig():
+    e = ft.new_entry('whatever', 'alpha', ['f'], ['BTCUSDT'], 0.25, 0.001,
+                     '2020-01-01', entry_id='abc123')
+    assert e['id'] == 'abc123'
+    legacy = ft.new_entry('name', 'alpha', ['f'], ['BTCUSDT'], 0.25, 0.001, '2020-01-01')
+    assert legacy['id'].startswith('name_')              # old callers unchanged
+
+
+def test_migrate_ids_renames_legacy_alphas_only():
+    track = {'entries': [
+        {'id': 'alpha_c560b8_e75526', 'name': 'alpha_c560b8'},
+        {'id': 'portfolio_top6_27d869', 'name': 'portfolio_top6'},   # portfolios keep style
+        {'id': 'c0ffee', 'name': 'c0ffee'},                          # already new-style
+        {'id': 'alpha_c0ffee_aaaaaa', 'name': 'x'},                  # rename would collide
+    ]}
+    assert ft.migrate_ids(track) == 1
+    assert [e['id'] for e in track['entries']] == \
+        ['c560b8', 'portfolio_top6_27d869', 'c0ffee', 'alpha_c0ffee_aaaaaa']
+    assert track['entries'][0]['name'] == 'c560b8'
+
+
+@pytest.mark.gui
+def test_gui_enroll_id_matches_the_leaderboard(gui_app):
+    """One list, two panels: the forward entry id must be EXACTLY the leaderboard's
+    md5(formula)[:6] — no 'alpha_' prefix, no enrollment sig. The id doubles as the
+    uniqueness key: the same alpha cannot enroll twice, even on another universe."""
+    app, rec, state = gui_app
+    _enroll_once(app)
+    e = json.loads((state / 'forward.json').read_text())['entries'][0]
+    lb_id = hashlib.md5(FORMULA.encode()).hexdigest()[:6]
+    assert e['id'] == lb_id and e['name'] == lb_id
+
+    app.cfg['universe_all'] = False
+    app.cfg['universe_list'] = 'BTCUSDT,ETHUSDT'         # different basket, same alpha
+    n0 = len(rec.calls)
+    _enroll_once(app)
+    doc = json.loads((state / 'forward.json').read_text())
+    assert len(doc['entries']) == 1                      # refused: one alpha — one entry
+    assert any(c[0] == 'showinfo' and 'Already enrolled' in c[2] for c in rec.calls[n0:])
+
+
+@pytest.mark.gui
+def test_gui_migrates_legacy_ids_on_first_touch(gui_app):
+    app, rec, state = gui_app
+    (state / 'forward.json').write_text(json.dumps({'entries': [
+        ft.new_entry('alpha_aaaaaa', 'alpha', ['x'], ['BTCUSDT'], 0.25, 0.001,
+                     '2020-01-01')]}))
+    app._fwd_migrated = False                            # a fresh session touches the lib
+    app._fwd_lib()
+    ids = [e['id'] for e in json.loads((state / 'forward.json').read_text())['entries']]
+    assert ids == ['aaaaaa']

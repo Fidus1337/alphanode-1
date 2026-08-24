@@ -76,12 +76,14 @@ def save_track(track):
 
 
 def new_entry(name, kind, formulas, tickers, vol, exec_rate, engine_start,
-              capital=START_CAPITAL, tf='1d'):
-    """A frozen strategy: everything a step needs, snapshotted at enrollment."""
+              capital=START_CAPITAL, tf='1d', entry_id=None):
+    """A frozen strategy: everything a step needs, snapshotted at enrollment.
+    entry_id: explicit id (the GUI passes the leaderboard's md5(formula)[:6], so the
+    forward track and the leaderboard read as ONE list); legacy callers get name_sig."""
     sig = hashlib.md5(('|'.join(formulas) + '#' + ','.join(sorted(tickers)) + '#' + tf)
                       .encode()).hexdigest()[:6]
     return {
-        'id': f'{name}_{sig}',
+        'id': entry_id or f'{name}_{sig}',
         'name': name, 'kind': kind,                      # 'alpha' | 'portfolio'
         'tf': tf,                                        # bar size FROZEN with the strategy
         'formulas': list(formulas), 'tickers': list(tickers),
@@ -93,6 +95,24 @@ def new_entry(name, kind, formulas, tickers, vol, exec_rate, engine_start,
         'state': {'equity': float(capital), 'positions': {}, 'prices': {}, 'last_run': None},
         'history': [],
     }
+
+
+def migrate_ids(track):
+    """One-time rename of legacy 'alpha_<md5>_<sig>' entry ids to the bare leaderboard
+    id '<md5>' — the two panels must read as one list. Returns the number renamed.
+    Safe mid-flight: a step child syncing under the OLD id simply finds no match and
+    drops that one step (append-only semantics); the next step lands normally."""
+    import re
+    n = 0
+    ids = {e.get('id') for e in track.get('entries', [])}
+    for e in track.get('entries', []):
+        m = re.fullmatch(r'alpha_([0-9a-f]{6})_[0-9a-f]{6}', str(e.get('id', '')))
+        if m and m.group(1) not in ids:
+            e['id'] = m.group(1)
+            e['name'] = m.group(1)
+            ids.add(m.group(1))
+            n += 1
+    return n
 
 
 def find_duplicate(track, formulas, tickers, tf='1d'):

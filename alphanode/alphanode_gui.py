@@ -1557,7 +1557,7 @@ class App:
             'ls': 'positions OPENED over TEST: long / short',
             'act': 'trades per asset per year — relative activity',
             'win': 'share of profitable days on TEST',
-            'id': 'stable ID — the md5 tail of the formula; forward-track names start with it',
+            'id': 'stable ID — the md5 tail of the formula; the forward track uses the SAME id',
             'formula': 'the alpha itself — right-click: copy / choose columns',
         }
         self.tree.bind('<Motion>', self._on_tree_motion, add='+')
@@ -3558,7 +3558,7 @@ class App:
             locked = bool(c.get('locked')) and not formula
             # locked rows: the doc's real public id, a '🔒 locked' formula cell — never the
             # empty-string md5 that would collide every locked row onto one bogus id
-            aid = str(c.get('id', '')) if locked else 'alpha_' + hashlib.md5(formula.encode()).hexdigest()[:6]
+            aid = str(c.get('id', ''))[:6] if locked else hashlib.md5(formula.encode()).hexdigest()[:6]
             fcell = '🔒 locked (subscription reveals)' if locked else formula
             m = self._metrics_cache.get(formula)
             m = m if isinstance(m, dict) else {}          # None = still computing, 'err' = failed -> blanks
@@ -4431,7 +4431,7 @@ class App:
                           'An explanation is not evidence — TEST and forward still decide.')
         fwd_btn = self._btn(btnrow, 'Forward track ➕',
                             lambda: self._fwd_enroll(
-                                [_f], 'alpha_' + hashlib.md5(_f.encode()).hexdigest()[:6], 'alpha'),
+                                [_f], hashlib.md5(_f.encode()).hexdigest()[:6], 'alpha'),
                             width=150)
         fwd_btn.pack(side='left', padx=(8, 0))
         self._tip(fwd_btn, 'Enroll this alpha into the FORWARD TRACK: freeze it (formula +\n'
@@ -4523,6 +4523,14 @@ class App:
         if HERE not in sys.path:
             sys.path.insert(0, HERE)
         import forward_track
+        if not getattr(self, '_fwd_migrated', False):    # legacy 'alpha_xxxxxx_yyyyyy' ids ->
+            self._fwd_migrated = True                    # the bare leaderboard id, once
+            try:
+                track = forward_track.load_track()
+                if forward_track.migrate_ids(track):
+                    forward_track.save_track(track)
+            except Exception:                            # noqa: BLE001 — cosmetics must not
+                pass                                     # block enrollment/stepping
         return forward_track
 
     def _fwd_universe(self):
@@ -4541,7 +4549,13 @@ class App:
         tf = self._tf()                                   # frozen with the strategy: windows are in
         ft = self._fwd_lib()                              # bars of the tf the formula was mined on
         track = ft.load_track()
-        dup = ft.find_duplicate(track, formulas, tickers, tf)
+        # single alphas: the entry id IS the leaderboard id (md5 of the formula, 6 chars) —
+        # the two panels must read as one list, so the id doubles as the uniqueness key
+        entry_id = (hashlib.md5(formulas[0].encode()).hexdigest()[:6]
+                    if kind == 'alpha' and len(formulas) == 1 else None)
+        dup = next((e for e in track.get('entries', [])
+                    if entry_id and e.get('id') == entry_id), None) \
+            or ft.find_duplicate(track, formulas, tickers, tf)
         if dup:
             messagebox.showinfo('Forward track',
                                 f'Already enrolled: {dup["id"]} (since {dup["enrolled"]}).',
@@ -4555,8 +4569,9 @@ class App:
                 start = max(start, _rtf(tf).history)      # plenty of warm-up (ISO strings compare)
             except Exception:                             # noqa: BLE001
                 pass
-        entry = ft.new_entry(name, kind, formulas, tickers, c.get('target_vol', 0.25),
-                             c.get('exec_cost', 0.001), start, tf=tf)
+        entry = ft.new_entry(entry_id or name, kind, formulas, tickers,
+                             c.get('target_vol', 0.25),
+                             c.get('exec_cost', 0.001), start, tf=tf, entry_id=entry_id)
         track['entries'].append(entry)
         ft.save_track(track)
         self._fwd_refresh()
