@@ -95,6 +95,11 @@ def gui_app(tmp_path, monkeypatch):
     import alphanode_gui as G
     monkeypatch.setattr(G, 'SETTINGS', str(tmp_path / 'settings.json'))
     monkeypatch.setattr(G, 'STATE_DIR', str(state))
+    # apppaths.state_dir() ignores ALPHANODE_STATE_DIR in dev, so these module-level paths
+    # were baked from the REAL alphanode/state at import — _poll would read the developer's
+    # live status.json mid-test and paint real champions into a sandboxed leaderboard.
+    for name in ('STATUS_FILE', 'SIGNALS_JSON', 'PORTFOLIO_JSON', 'PORTFOLIO_PNG'):
+        monkeypatch.setattr(G, name, str(state / os.path.basename(getattr(G, name))))
     (tmp_path / 'settings.json').write_text(json.dumps(
         {'eula_accepted': '1.0.0', 'timeframe': '1h', 'universe_all': True}))
     rec = MessageboxRecorder()

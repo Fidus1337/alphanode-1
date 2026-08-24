@@ -55,6 +55,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
     sys.path.insert(0, HERE)                             # for import apppaths on direct launch
 import apppaths                                          # noqa: E402
+import favorites as favdb                                # noqa: E402
 PROJ = apppaths.PROJ
 EVO = apppaths.engine_dir()
 if EVO not in sys.path:
@@ -1491,6 +1492,12 @@ class App:
                   'Paste your subscription key once: this machine claims one of the plan\'s\n'
                   'node seats, EVERY sealed formula in the local library is unlocked in one\n'
                   'go, and mining continues in the open while the subscription is live.')
+        self.btn_favs = self._btn(hrow, '★ Favorites', self._open_favorites, height=24, width=96)
+        self.btn_favs.pack(side='right', padx=(10, 0))
+        self._tip(self.btn_favs,
+                  'Your starred formulas — stored OUTSIDE the library, so they survive\n'
+                  "'Clear all history' and session loads. Star a row by clicking its ★ cell;\n"
+                  'open a favorite from the list exactly like a leaderboard row.')
         # All ↔ Families toggle. ON collapses the table to the best alpha per family (the old view);
         # OFF (default) shows every alpha the node has mined. A CTkSwitch, not a segmented button:
         # 6.0.0's segmented button has no selected_text_color, so its active label loses contrast.
@@ -1527,7 +1534,7 @@ class App:
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         self._lbwrap = wrap                              # smooth pixel resize (its in-card grip)
-        cols = ('rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
+        cols = ('fav', 'rank', 'fit', 'test', 'dd', 'cagr', 'srt', 'calm', 'storm',
                 'ls', 'act', 'win', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
                                  height=int(self.cfg.get('lb_rows') or 12))
@@ -1535,7 +1542,8 @@ class App:
         # Widths fit the WIDEST real value plus the sort arrow the heading grows by (' ▼'), and are
         # scaled with the display: a Treeview column is raw pixels while its text follows the DPI,
         # which is what cut "3069/2100" down to "3069/:" and clipped the "tr/yr·a" heading itself.
-        for c, txt, w, anc in (('rank', '#', 40, 'center'), ('fit', 'fitness', 86, 'e'),
+        for c, txt, w, anc in (('fav', '★', 34, 'center'),
+                               ('rank', '#', 40, 'center'), ('fit', 'fitness', 86, 'e'),
                                ('test', 'TEST OOS', 86, 'e'), ('dd', 'maxDD', 74, 'e'),
                                ('cagr', 'CAGR', 72, 'e'), ('srt', 'sortino', 80, 'e'),
                                ('calm', 'calm', 68, 'e'), ('storm', 'storm', 74, 'e'),
@@ -1544,7 +1552,7 @@ class App:
                                ('win', 'win%', 62, 'e'), ('id', 'ID', 72, 'center'),
                                ('formula', 'formula', 260, 'w')):
             self._HEAD[c] = txt
-            kw = {} if c in ('rank', 'id') else {'command': (lambda c=c: self._sort_by(c))}
+            kw = {} if c in ('fav', 'rank', 'id') else {'command': (lambda c=c: self._sort_by(c))}
             w = int(w * self.SCALE)
             self.tree.heading(c, text=txt, anchor=anc, **kw)   # headings share the values' edge
             self.tree.column(c, width=w, anchor=anc, stretch=(c == 'formula'), minwidth=w)
@@ -1556,6 +1564,8 @@ class App:
         self._update_headings()                          # show the sort arrow on the active column
         # one-line definitions per column header (the card-title tooltip nobody hovered is gone)
         self._HEAD_TIP = {
+            'fav': 'favorites — click a row\'s ★ cell to star/unstar the formula;\n'
+                   'the ★ Favorites button opens the starred list',
             'rank': 'position in the current sort',
             'fit': 'fitness = min(TRAIN, VAL) Sharpe — the number the search optimizes',
             'test': 'held-out TEST Sharpe (out-of-sample) — never optimized;\n'
@@ -1613,11 +1623,13 @@ class App:
         self.tree.bind('<Button-3>', self._on_row_menu)             # right-click — context menu
         self.tree.bind('<Control-c>', lambda e: self._copy_formula())
         self.tree.bind('<Control-C>', lambda e: self._copy_formula())
+        self.tree.bind('<Button-1>', self._on_lb_star, add='+')    # BEFORE the overlay: 'break' wins
         self._selectable_cells(self.tree)                # click a cell — its text turns selectable
         self._menu = tk.Menu(self.root, tearoff=0, bg=CARD, fg=TXT, activebackground=ACC_SOFT,
                              activeforeground=TXT, borderwidth=0, font=(self.UI, 13))
         self._menu.add_command(label='Copy formula', command=self._copy_formula)
         self._menu.add_command(label='Copy formula + metrics', command=self._copy_full)
+        self._menu.add_command(label='★ Star / unstar', command=self._fav_toggle_selected)
         self._menu.add_separator()
         self._menu.add_command(label='Export table (CSV)…', command=self._export_visible)
         self._menu.add_command(label='Export full library (CSV)…', command=self._export_library)
@@ -1932,7 +1944,7 @@ class App:
                '• the built portfolio  (portfolio.json)\n\n'
                'Nothing is saved automatically — if you want a way back, save a session '
                'first (Sessions → Save current…).\n'
-               'Search settings (the parameters on the left) will remain.')
+               'Search settings (the parameters on the left) and starred favorites (★) remain.')
         if not messagebox.askyesno('Full clear', msg, icon='warning',
                                     default='no', parent=self.root):
             return
@@ -3115,7 +3127,7 @@ class App:
         a '…' placeholder next to the ID used to read as a truncated ID."""
         saved = self.cfg.get('lb_cols')
         on = set(saved) if isinstance(saved, list) else set(self._LB_OPT_DEFAULT)
-        return ('rank', 'fit', 'test', *[c for c in self._LB_OPT_ORDER if c in on], 'formula')
+        return ('fav', 'rank', 'fit', 'test', *[c for c in self._LB_OPT_ORDER if c in on], 'formula')
 
     def _lb_toggle_col(self, c):
         """Header right-click menu: show/hide an optional column. Data, sorting and the CSV
@@ -3286,6 +3298,8 @@ class App:
         for i in self.tree.get_children():
             self.tree.delete(i)
         self._row_items = {}
+        if getattr(self, '_fav_ids', None) is None:      # None = re-read favorites.json
+            self._fav_ids = favdb.ids(STATE_DIR)
         need = 0
         for i, c in enumerate(best):
             t = c.get('test') if isinstance(c.get('test'), dict) else {}
@@ -3310,6 +3324,7 @@ class App:
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
             item = self.tree.insert('', 'end', values=(
+                ('★' if aid in self._fav_ids else ''),
                 i + 1, f'{base:+.2f}' if base is not None else '—',
                 f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt, calm, storm,
                 ls, act, win, aid, f),
@@ -3511,6 +3526,9 @@ class App:
         item = self.tree.identify_row(event.y)
         if not item:
             return
+        bx = self.tree.bbox(item, '#1')                  # the ★ strip is a button, not data
+        if bx and bx[0] <= event.x < bx[0] + bx[2]:
+            return
         idx = self.tree.index(item)
         if 0 <= idx < len(self._shown):
             self._open_plot(self._shown[idx])
@@ -3668,6 +3686,125 @@ class App:
         txt = (f"{c.get('formula', '')}\n"
                f"fitness(base)={c.get('base')}  train={sh('train')}  val={sh('val')}  TEST(OOS)={sh('test')}")
         self._to_clipboard(txt, '✓ formula + metrics copied')
+
+    # ---------- favorites (starred formulas) ----------
+    def _on_lb_star(self, e):
+        """A click inside the ★ cell toggles the row's star. Hit-testing goes through bbox,
+        NOT identify_column: identify's column ranges sit a few px off the drawn cells, so a
+        click in the neighbour cell's first pixels reads as '#1' and silently unstars.
+        'break' keeps the cell overlay and the row-select press away from a button strip."""
+        item = self.tree.identify_row(e.y)
+        if not item:
+            return None
+        try:
+            bx = self.tree.bbox(item, '#1')              # 'fav' is always the first display column
+        except Exception:                                # noqa: BLE001 — row vanished mid-click
+            return None
+        if not bx or not (bx[0] <= e.x < bx[0] + bx[2]):
+            return None
+        idx = self.tree.index(item)
+        if not (0 <= idx < len(self._shown)):
+            return None
+        self._fav_toggle(self._shown[idx])
+        return 'break'
+
+    def _fav_toggle(self, c):
+        formula = c.get('formula') or ''
+        if not formula:
+            self._flash_lb('locked formulas can\'t be starred — activate to reveal them first')
+            return
+        _favs, added = favdb.toggle(STATE_DIR, c, self._tf())
+        self._fav_ids = None                             # repaint re-reads favorites.json
+        self._treesig = None
+        self._render_lb(self._lb_rows() or self._shown)
+        self._flash_lb('★ saved to favorites' if added else '☆ removed from favorites')
+
+    def _fav_toggle_selected(self):
+        c = self._selected_champ()
+        if c:
+            self._fav_toggle(c)
+
+    def _open_favorites(self):
+        """The starred list: same gestures as the leaderboard — double-click an equity
+        chart, click a cell for selectable text, Ctrl+C / a button copies the formula."""
+        win = self._dialog('AlphaNode — Favorites', f'{int(940 * self.SCALE)}x{int(470 * self.SCALE)}')
+        pad = tk.Frame(win, bg=CARD)
+        pad.pack(fill='both', expand=True, padx=14, pady=12)
+        self._head(pad, 'FAVORITES — your starred formulas').pack(anchor='w')
+        self._lbl(pad, text='Stored outside the library: stars survive \'Clear all history\' and '
+                            'session loads. Double-click a row — its equity chart, like the leaderboard.',
+                  text_color=MUT, font=(self.UI, 12)).pack(anchor='w', pady=(2, 8))
+        cols = ('added', 'id', 'tf', 'fit', 'test', 'formula')
+        tv = ttk.Treeview(pad, columns=cols, show='headings', height=12)
+        for c, txt, w, anc in (('added', 'ADDED', 100, 'center'), ('id', 'ID', 72, 'center'),
+                               ('tf', 'TF', 50, 'center'), ('fit', 'FITNESS', 84, 'e'),
+                               ('test', 'TEST OOS', 84, 'e'), ('formula', 'FORMULA', 420, 'w')):
+            tv.heading(c, text=txt)
+            tv.column(c, width=int(w * self.SCALE), anchor=anc, stretch=(c == 'formula'))
+        tv.pack(fill='both', expand=True)
+        self._selectable_cells(tv)
+
+        rows = {}
+
+        def fill():
+            rows.clear()
+            tv.delete(*tv.get_children())
+            for f in favdb.load(STATE_DIR):
+                t = f.get('test') if isinstance(f.get('test'), dict) else {}
+                ts, base = t.get('sharpe'), f.get('base')
+                iid = tv.insert('', 'end', values=(
+                    f.get('added', '—'), favdb.alpha_id(f['formula']), f.get('tf', '—'),
+                    f'{base:+.2f}' if isinstance(base, (int, float)) else '—',
+                    f'{ts:+.2f}' if isinstance(ts, (int, float)) else '—',
+                    '  ' + f['formula']))
+                rows[iid] = f
+            n = len(tv.get_children())
+            note.configure(text=(f'{n} starred' if n else
+                                 'no favorites yet — click the ★ cell on a leaderboard row'))
+
+        def picked():
+            sel = tv.focus() or (tv.selection()[0] if tv.selection() else '')
+            return rows.get(sel)
+
+        def open_plot(_e=None):
+            f = picked()
+            if f:
+                self._open_plot(f)
+
+        def copy():
+            f = picked()
+            if f:
+                self._to_clipboard(f['formula'], '✓ formula copied to clipboard')
+
+        def unstar(_e=None):
+            f = picked()
+            if not f:
+                return
+            favdb.remove(STATE_DIR, favdb.alpha_id(f['formula']))
+            self._fav_ids = None                         # the leaderboard drops the star too
+            self._treesig = None
+            self._render_lb(self._lb_rows() or self._shown)
+            fill()
+
+        tv.bind('<Double-1>', open_plot, add='+')
+        tv.bind('<Delete>', unstar)
+        tv.bind('<Control-c>', lambda _e: copy())
+        tv.bind('<Control-C>', lambda _e: copy())
+        row = self._box(pad)
+        row.pack(fill='x', pady=(10, 0))
+        note = self._lbl(row, text='', text_color=FAINT, font=(self.UI, 11))
+        note.pack(side='left')
+        self._btn(row, 'Close', win.destroy, kind='soft', height=30, width=80).pack(side='right')
+        self._btn(row, 'Remove ☆', unstar, kind='soft', height=30,
+                  width=100).pack(side='right', padx=(0, 10))
+        self._btn(row, 'Copy formula', copy, kind='soft', height=30,
+                  width=120).pack(side='right', padx=(0, 10))
+        self._btn(row, 'Show equity', open_plot, height=30,
+                  width=110).pack(side='right', padx=(0, 10))
+        fill()
+        win._tv, win._fill, win._unstar, win._open, win._rows = tv, fill, unstar, open_plot, rows
+        self._fav_win = win                              # the tests drive these directly
+        return win
 
     def _open_selected_plot(self):
         c = self._selected_champ()
