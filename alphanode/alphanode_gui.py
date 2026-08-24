@@ -1251,6 +1251,7 @@ class App:
                              wrap='word', border_width=0, corner_radius=8,
                              scrollbar_button_color='#333a46')
         txt.pack(fill='both', expand=True, padx=12, pady=12)
+        self._text_selectable(txt)
         return txt
 
     # ---------- tooltips (short hints on hover) ----------
@@ -1463,6 +1464,7 @@ class App:
         # the dashboard's masthead — a constant-size instrument panel reads calmer than one
         # more stretchable card, and the log scrolls inside itself anyway.
         self._events_last = None
+        self._text_selectable(self.logbox)               # the log is text — let the mouse treat it as text
         self._log_placeholder()
 
         self._build_signals_card(right)                  # row 1 — hidden while nothing is served
@@ -1513,7 +1515,7 @@ class App:
         # the heading used to clip mid-shortcut ('right-click / Ctrl+') and read as the switch's
         # label. The full hints stay in the heading tooltip either way.
         hints = self._lbl(hrow, text='·  click column: sort  ·  double-click: equity  ·  '
-                                     'Ctrl+C: copy',
+                                     'click a cell: select text  ·  Ctrl+C: copy',
                           text_color=FAINT, font=(self.UI, 12), bg=CARD)
         hints.pack(side='left', anchor='w', padx=(10, 0))
         self._hide_when_tight(hrow, hints)
@@ -1611,6 +1613,7 @@ class App:
         self.tree.bind('<Button-3>', self._on_row_menu)             # right-click — context menu
         self.tree.bind('<Control-c>', lambda e: self._copy_formula())
         self.tree.bind('<Control-C>', lambda e: self._copy_formula())
+        self._selectable_cells(self.tree)                # click a cell — its text turns selectable
         self._menu = tk.Menu(self.root, tearoff=0, bg=CARD, fg=TXT, activebackground=ACC_SOFT,
                              activeforeground=TXT, borderwidth=0, font=(self.UI, 13))
         self._menu.add_command(label='Copy formula', command=self._copy_formula)
@@ -1759,6 +1762,7 @@ class App:
         self._hgrip(p4, self._on_fwd_rows_drag, self._fwd_rows_reset,
                     'Drag: taller/shorter forward-track table. Double-click — natural height.')
         self.fwd_tree.bind('<Double-1>', lambda _e: self._fwd_chart())
+        self._selectable_cells(self.fwd_tree)
         self.root.after(900, self._fwd_refresh)
         if not getattr(self, '_fwd_tick_on', False):          # _build reruns on theme switch —
             self._fwd_tick_on = True                          # keep exactly one tick loop
@@ -2192,6 +2196,7 @@ class App:
             tree.heading(c, text=txt)
             tree.column(c, width=int(w * self.SCALE), anchor=anc, stretch=(c == 'name'))
         tree.pack(fill='both', expand=True)
+        self._selectable_cells(tree)
 
         def _fill():
             tree.delete(*tree.get_children())
@@ -2336,6 +2341,7 @@ class App:
             txt.pack(side='left', fill='both', expand=True)
             txt.insert('1.0', '\n'.join(L))
             txt.configure(state='disabled')
+            self._text_selectable(txt)
             self._btn(dlg, 'Close', dlg.destroy, kind='soft', height=30,
                       width=80).pack(anchor='e', padx=14, pady=(0, 12))
 
@@ -2416,6 +2422,7 @@ class App:
         box.pack(fill='both', expand=True, padx=16, pady=(0, 10))
         box.insert('1.0', text)
         box.configure(state='disabled')
+        self._text_selectable(box)
         row = ctk.CTkFrame(win, fg_color='transparent')
         row.pack(fill='x', padx=16, pady=(0, 14))
 
@@ -2961,6 +2968,24 @@ class App:
             self.logbox.see('end')
         self.logbox.configure(state='disabled')
 
+    def _log_sel_busy(self):
+        """True while the user is mid-selection in the live log (pointer still over it) —
+        rebuilding the feed would yank the text out from under the mouse."""
+        try:
+            if not self.logbox.tag_ranges('sel'):
+                return False
+            px, py = self.root.winfo_pointerxy()
+            x, y = self.logbox.winfo_rootx(), self.logbox.winfo_rooty()
+            return (x <= px < x + self.logbox.winfo_width()
+                    and y <= py < y + self.logbox.winfo_height())
+        except Exception:                                # noqa: BLE001 — never stall the poll
+            return False
+
+    def _maybe_render_events(self, evs):
+        if evs and evs != self._events_last and not self._log_sel_busy():
+            self._events_last = evs
+            self._render_events(evs)
+
     def _poll(self):
         running = bool(self.proc and self.proc.poll() is None)
         self._set_running(running)
@@ -2994,9 +3019,7 @@ class App:
             self.lbl_res.configure(text=res, fg=MUT if live else FAINT)
             self.lbl_cur.configure(text=line, fg=MUT if live else FAINT)
             evs = st.get('events') or []
-            if evs and evs != self._events_last:
-                self._events_last = evs
-                self._render_events(evs)
+            self._maybe_render_events(evs)
             hist = st.get('history') or []               # the retired PROGRESS chart, as one number
             fit = next((p.get('best_base', p.get('best_test')) for p in reversed(hist)
                         if p.get('best_base', p.get('best_test')) is not None), None)
@@ -3257,6 +3280,7 @@ class App:
         if getattr(self, '_treesig', None) == sig:
             return
         self._treesig = sig
+        self._kill_cell_overlay(self.tree)               # rows are about to move under the overlay
         self._shown = best                               # for clicks: row -> champion
         top = self.tree.yview()[0] if self.tree.get_children() else 0.0   # keep the viewport across redraws
         for i in self.tree.get_children():
@@ -3526,6 +3550,107 @@ class App:
         self.root.clipboard_append(text)
         self.root.update()                               # so the buffer is handed to the X server right away
         self._flash_lb(msg)
+
+    # ---------- mouse selection & copy-as-text ----------
+    def _text_selectable(self, box):
+        """A read-only log/text view the mouse can work: I-beam cursor, click focuses it
+        (a disabled Text won't always take focus on click), Ctrl+C copies the selection."""
+        t = getattr(box, '_textbox', box)                # CTkTextbox wraps a real tk.Text
+        try:
+            t.configure(cursor='xterm', selectbackground=TXT, selectforeground=CARD)
+        except Exception:                                # noqa: BLE001 — cosmetics only
+            pass
+        t.bind('<Button-1>', lambda _e: t.focus_set(), add='+')
+
+        def copy(_e=None):
+            try:
+                sel = t.get('sel.first', 'sel.last')
+            except Exception:                            # noqa: BLE001 — nothing selected
+                return 'break'
+            if sel:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(sel)
+                self.root.update()                       # hand the buffer to X right away
+            return 'break'
+        t.bind('<Control-c>', copy)
+        t.bind('<Control-C>', copy)
+        t._copy_sel = copy                               # the tests drive this directly
+        return t
+
+    def _selectable_cells(self, tree):
+        """Real text selection for a ttk.Treeview: a click parks a borderless read-only Entry
+        over the cell, full text pre-selected — drag over it, Ctrl+C, done. It waits out the
+        double-click window so double-click actions still fire; Esc, scroll, another click or
+        a table rebuild dismisses it."""
+        def cancel():
+            job = getattr(tree, '_cell_job', None)
+            if job is not None:
+                tree._cell_job = None
+                try:
+                    tree.after_cancel(job)
+                except Exception:                        # noqa: BLE001
+                    pass
+
+        def kill(_e=None):
+            cancel()
+            ov = getattr(tree, '_cell_ov', None)
+            if ov is not None:
+                tree._cell_ov = None
+                try:
+                    ov.destroy()
+                except Exception:                        # noqa: BLE001
+                    pass
+
+        def show(item, col):
+            tree._cell_job = None
+            try:
+                bx = tree.bbox(item, col)
+                txt = str(tree.set(item, col)).strip()
+            except Exception:                            # noqa: BLE001 — row gone mid-flight
+                return
+            if not bx or not txt:
+                return
+            x, y, w, h = bx
+            w = max(w, min(self._tree_font.measure(txt) + int(24 * self.SCALE),
+                           tree.winfo_width() - x - 4))
+            ov = tk.Entry(tree, font=self._tree_font, relief='flat', bd=0,
+                          highlightthickness=1, highlightcolor=ACC, highlightbackground=ACC,
+                          readonlybackground=ACC_SOFT, fg=TXT, insertbackground=TXT,
+                          selectbackground=TXT, selectforeground=CARD)
+            ov.insert(0, txt)
+            ov.configure(state='readonly')
+            ov.place(x=x, y=y, width=w, height=h)
+            ov.selection_range(0, 'end')
+            ov.icursor('end')
+            ov.focus_set()
+            ov.bind('<Escape>', lambda _e: (kill(), tree.focus_set()))
+            ov.bind('<FocusOut>', kill)
+            tree._cell_ov = ov
+
+        def click(e):
+            kill()
+            if tree.identify('region', e.x, e.y) != 'cell':
+                return
+            item, col = tree.identify_row(e.y), tree.identify_column(e.x)
+            if item and col:                             # past the double-click window, so a
+                tree._cell_job = tree.after(400, lambda: show(item, col))   # double still fires
+
+        tree._cell_ov = None
+        tree._cell_job = None
+        tree.bind('<Button-1>', click, add='+')
+        tree.bind('<B1-Motion>', lambda _e: cancel(), add='+')   # a drag means rows, not text
+        tree.bind('<Double-1>', lambda _e: kill(), add='+')
+        tree.bind('<Button-3>', lambda _e: kill(), add='+')
+        for seq in ('<MouseWheel>', '<Button-4>', '<Button-5>'):
+            tree.bind(seq, lambda _e: kill(), add='+')
+        tree._cell_show = show                           # the tests drive these directly
+        tree._cell_kill = kill
+
+    @staticmethod
+    def _kill_cell_overlay(tree):
+        k = getattr(tree, '_cell_kill', None)
+        if k:
+            k()
 
     def _copy_formula(self):
         c = self._selected_champ()
@@ -4663,6 +4788,7 @@ class App:
         ft = self._fwd_lib()
         entries = [e for e in ft.load_track()['entries'] if not e.get('archived')]
         self._fwd_entries = entries
+        self._kill_cell_overlay(self.fwd_tree)
         for i in self.fwd_tree.get_children():
             self.fwd_tree.delete(i)
         for e in entries:
@@ -4769,6 +4895,7 @@ class App:
                                ('fees', 'FEES $', 80, 'e')):
             tv.heading(c, text=txt)
             tv.column(c, width=int(w * self.SCALE), anchor=anc, stretch=(c in ('book', 'trades')))
+        self._selectable_cells(tv)
         shown = hist[-400:]                               # a 1h track grows long — cap the widget
         for i, h in enumerate(reversed(shown)):           # latest first
             tr = h.get('trades')
