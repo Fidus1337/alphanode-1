@@ -11,7 +11,8 @@ GUI only ever waits on a pipe (which releases it).
 
 stdin  -> {"formulas": [...], "instruments": [...]|null, "vol": .., "exec": ..,
            "train_start": "YYYY-MM-DD", "test_start": ..., "test_end": ...}
-stdout -> {"ok": true, "metrics": {formula: {"long":n,"short":n,"win":f,"act":f,
+stdout -> {"ok": true, "trend_bars": {"up":n,"down":n,"flat":n},
+           "metrics": {formula: {"long":n,"short":n,"win":f,"act":f,
            "dd":f,"cagr":f|null,"sortino":f|null,"calm":f|null,"storm":f|null,
            "tup":f|null,"tdown":f|null,"tflat":f|null} | "err"}}
            calm/storm = the alpha's TEST Sharpe on low-vol / high-vol market bars
@@ -98,6 +99,14 @@ def trend_split(rt, trd, ann):
             'tflat': regime_sharpe(rt[trd == 0.0], ann)}
 
 
+def trend_bar_counts(ctx):
+    """How many TEST bars each direction bucket holds — one number per bucket for the
+    whole batch: the split is the MARKET's calendar, identical for every formula."""
+    lab = ctx['trend'][ctx['tmask']]
+    return {'up': int((lab == 1.0).sum()), 'down': int((lab == -1.0).sum()),
+            'flat': int((lab == 0.0).sum())}
+
+
 def trade_stats(formula, ctx):
     """{long, short, win, act, dd, cagr, sortino, calm, storm, tup, tdown, tflat} for one
     formula on TEST — act =
@@ -167,7 +176,7 @@ def main():
                           'error': f'{type(e).__name__}: {e}'}))
         return
     out = {f: trade_stats(f, ctx) for f in formulas}
-    print(json.dumps({'ok': True, 'metrics': out}))
+    print(json.dumps({'ok': True, 'metrics': out, 'trend_bars': trend_bar_counts(ctx)}))
 
 
 if __name__ == '__main__':

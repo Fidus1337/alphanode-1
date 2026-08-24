@@ -1564,6 +1564,9 @@ class App:
         self.tree.configure(displaycolumns=disp)
         self._lb_cols_fixed = [c for c in disp if c != 'formula']
         self._update_headings()                          # show the sort arrow on the active column
+        if hasattr(self, '_trend_tip_base'):
+            del self._trend_tip_base                     # theme rebuild rewrote the tips — rebase
+        self._apply_trend_bars()                         # restamp known bucket sizes after a rebuild
         # one-line definitions per column header (the card-title tooltip nobody hovered is gone)
         self._HEAD_TIP = {
             'fav': 'favorites — click a row\'s ★ cell to star/unstar the formula;\n'
@@ -3501,7 +3504,30 @@ class App:
         doc = json.loads(out.strip().splitlines()[-1])   # the engine may print warnings first
         if not doc.get('ok'):
             raise RuntimeError(doc.get('error', 'metrics worker failed'))
+        bars = doc.get('trend_bars')
+        if isinstance(bars, dict) and bars != getattr(self, '_trend_bars', None):
+            self._trend_bars = bars                      # worker thread -> headers on the main one
+            self.root.after(0, self._apply_trend_bars)
         return doc.get('metrics') or {}
+
+    def _apply_trend_bars(self):
+        """Stamp the TEST bucket sizes into the T↑/T↓/T~ headers ('T ↑ ·196') and their
+        tooltips. ONE number per column, not per cell: the split is the market's calendar,
+        identical for every row — a per-cell count would repeat itself all the way down."""
+        bars = getattr(self, '_trend_bars', None)
+        if not isinstance(bars, dict):
+            return
+        if not hasattr(self, '_trend_tip_base'):
+            self._trend_tip_base = {c: self._HEAD_TIP[c] for c in ('tup', 'tdown', 'tflat')}
+        for col, key, base in (('tup', 'up', 'T ↑'), ('tdown', 'down', 'T ↓'),
+                               ('tflat', 'flat', 'T ~')):
+            n = bars.get(key)
+            if isinstance(n, int):
+                self._HEAD[col] = f'{base} ·{n}'
+                self._HEAD_TIP[col] = (self._trend_tip_base[col] +
+                                       f'\nBars in this bucket on TEST: {n} — the sample size\n'
+                                       'behind every number in the column.')
+        self._update_headings()
 
     def _apply_metrics(self, seq):
         """Set the computed metric cells into the already shown rows (main thread). The paint is

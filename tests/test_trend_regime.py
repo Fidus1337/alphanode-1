@@ -102,9 +102,8 @@ def test_worker_lags_labels_and_keeps_buckets_alive_on_real_data():
     got, want = ctx['trend'][1:], raw[:-1]
     assert np.isnan(ctx['trend'][0])
     assert (((got == want) | (np.isnan(got) & np.isnan(want)))).all()   # exactly one bar of lag
-    lab = ctx['trend'][ctx['tmask']]
-    up, dn, fl = int((lab == 1.0).sum()), int((lab == -1.0).sum()), int((lab == 0.0).sum())
-    assert up > 100 and dn > 40 and fl > 600             # frozen data: every bucket usable
+    bars = mw.trend_bar_counts(ctx)                      # what the header '·N' shows
+    assert bars['up'] > 100 and bars['down'] > 40 and bars['flat'] > 600
     r = mw.trade_stats('tanh(ret)', ctx)
     assert isinstance(r, dict)
     for k in ('tup', 'tdown', 'tflat'):
@@ -126,6 +125,21 @@ def test_trend_split_maps_buckets_to_the_right_keys():
     assert abs(s['tflat']) < abs(s['tup'])
     thin = mw.trend_split(rt[:40], trd[:40], ann=365.0)
     assert thin['tdown'] is None and thin['tflat'] is None   # under 30 bars -> honest None
+
+
+def test_gui_headers_carry_the_bucket_sizes(gui_app):
+    """'T ↑ ·196': the sample size lives in the HEADER (one split for every row), and a
+    theme rebuild must not lose it."""
+    app, rec, state = gui_app
+    app._trend_bars = {'up': 196, 'down': 81, 'flat': 1005}
+    app._apply_trend_bars()
+    assert '·196' in app.tree.heading('tup')['text']
+    assert '·81' in app.tree.heading('tdown')['text']
+    assert '·1005' in app.tree.heading('tflat')['text']
+    assert '196' in app._HEAD_TIP['tup']
+    app._apply_trend_bars()                              # idempotent — no double suffix
+    assert app.tree.heading('tup')['text'].count('·196') == 1
+    assert app._HEAD_TIP['tup'].count('196') == 1
 
 
 def test_gui_trend_columns_render_from_the_cache(gui_app):
