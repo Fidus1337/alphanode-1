@@ -318,3 +318,30 @@ def test_gui_migrates_legacy_ids_on_first_touch(gui_app):
     app._fwd_lib()
     ids = [e['id'] for e in json.loads((state / 'forward.json').read_text())['entries']]
     assert ids == ['aaaaaa']
+
+
+@pytest.mark.gui
+def test_gui_leaderboard_search_filters_by_id_and_formula(gui_app):
+    """The find box: substring of the 6-char id or of the formula text, live, Esc clears.
+    The same identifiers the table displays — so what you see is what you can find."""
+    app, rec, state = gui_app
+    rows = [{'formula': 'ts_sum:40(ts_roc:120(tanh(slog(high))))', 'base': 1.1,
+             'test': {'sharpe': 1.8}},
+            {'formula': 'ema:103(ts_mean:120(tanh(body)))', 'base': 0.8,
+             'test': {'sharpe': 1.7}}]
+    ids = [hashlib.md5(r['formula'].encode()).hexdigest()[:6] for r in rows]
+
+    app._lib_cache.update(all=rows, families=rows, computed=True)
+    app._fill_tree(rows)
+    assert len(app.tree.get_children()) == 2
+
+    app.v_lb_q.set(ids[0][:4])                           # prefix of the first id
+    assert len(app.tree.get_children()) == 1
+    assert ids[0] in str(app.tree.item(app.tree.get_children()[0])['values'])
+
+    app.v_lb_q.set('TANH(BODY')                          # formula text, case-insensitive
+    assert len(app.tree.get_children()) == 1
+    app.v_lb_q.set('нет-такого')
+    assert len(app.tree.get_children()) == 0
+    app.v_lb_q.set('')                                   # cleared -> everything is back
+    assert len(app.tree.get_children()) == 2

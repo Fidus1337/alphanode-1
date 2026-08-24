@@ -1499,6 +1499,15 @@ class App:
                                       button_color=TXT, fg_color=HEAD_BG, switch_width=34,
                                       switch_height=16)
         self.sw_lbfam.pack(side='right', padx=(0, 4))
+        self.v_lb_q = tk.StringVar()
+        self.e_lb_q = ctk.CTkEntry(hrow, textvariable=self.v_lb_q, width=170, height=24,
+                                   font=(self.UI, 12), placeholder_text='find: id or formula',
+                                   fg_color=HEAD_BG, border_color=BORDER, text_color=TXT)
+        self.e_lb_q.pack(side='right', padx=(0, 12))
+        self.v_lb_q.trace_add('write', lambda *_a: self._on_lb_query())
+        self.e_lb_q.bind('<Escape>', lambda _e: self.v_lb_q.set(''))
+        self._tip(self.e_lb_q, 'Filter the table live: substring of the ID (the 6-char md5)\n'
+                               'or of the formula text, case-insensitive. Esc clears.')
         self.lbl_lb_head.pack(side='left', anchor='w')
         # interaction hints pack AFTER everything and hide as a whole when the row gets tight —
         # the heading used to clip mid-shortcut ('right-click / Ctrl+') and read as the switch's
@@ -3219,9 +3228,31 @@ class App:
         self._lib_cache.update(all=rows, families=families, mtime=mtime, select=select,
                                computing=False, dirty=True, computed=True)
 
+    def _on_lb_query(self):
+        self._lb_query = self.v_lb_q.get().strip().lower()
+        self._treesig = None                             # the sig carries the query: force redraw
+        self._render_lb(self._lb_rows())                 # instant — no waiting for the poll tick
+
+    def _lb_filter(self, rows):
+        """Live search: substring of the displayed 6-char id, the full library id, or the
+        formula text — the same identifiers the table shows."""
+        q = getattr(self, '_lb_query', '')
+        if not q:
+            return rows
+        out = []
+        for c in rows:
+            f = c.get('formula') or ''
+            aid = (hashlib.md5(f.encode()).hexdigest()[:6] if f
+                   else str(c.get('id', ''))[:6])
+            if q in f.lower() or q in aid.lower() or q in str(c.get('id', '')).lower():
+                out.append(c)
+        return out
+
     def _fill_tree(self, best):
+        best = self._lb_filter(best)
         best = self._sorted(best)                        # order by the clicked column (no dedup — see the toggle)
         sig = (self._lb_mode, self._sort_col, self._sort_desc, len(best),
+               getattr(self, '_lb_query', ''),
                (best[0].get('formula') or best[0].get('id', '')) if best else '')
         if getattr(self, '_treesig', None) == sig:
             return
