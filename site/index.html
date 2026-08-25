@@ -40,13 +40,14 @@ body{
   font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif;
 }
 .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.wrap{max-width:1180px;margin:0 auto;padding:0 28px}
+.wrap{max-width:1180px;margin:0 auto;padding:0 28px}  /* side gutters: rules stacked on a .wrap element must use padding-block, a padding shorthand zeroes these */
 a{color:var(--ink)}
 a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
 
 /* ---------- nav ---------- */
 nav{border-bottom:1px solid var(--line)}
-.nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
+.nav-in{display:flex;align-items:center;gap:28px;padding-block:18px}
+.nav-in .btn{white-space:nowrap}
 .logo{display:flex;align-items:center;gap:11px;font-weight:650;font-size:19px;letter-spacing:-.01em;text-decoration:none}
 .dot{width:10px;height:10px;overflow:visible;flex:none}
 .dot circle{fill:var(--acc);transform-box:fill-box;transform-origin:center}
@@ -80,7 +81,7 @@ h2{font-size:34px;font-weight:650;margin-bottom:14px}
 
 /* ---------- hero ---------- */
 .hero{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr);gap:56px;align-items:center;
-  padding:96px 0}
+  padding-block:96px}
 h1{font-size:clamp(38px,5vw,56px);font-weight:680;line-height:1.06}
 h1 .quiet{color:var(--mut);font-weight:500}
 .hero p{margin:22px 0 30px}
@@ -230,7 +231,7 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
 
 @media (max-width: 900px){
   .hero,.get{grid-template-columns:minmax(0,1fr);gap:36px}
-  .hero{padding:64px 0}
+  .hero{padding-block:64px}
   .steps{grid-template-columns:repeat(2,1fr)}
   .feats{grid-template-columns:1fr 1fr}
   .truths{grid-template-columns:1fr}
@@ -243,6 +244,9 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   .nav-in > .btn{margin-left:auto}
 }
 @media (max-width: 560px){
+  .nav-in{gap:14px}
+  .logo{font-size:17px}
+  .nav-in .btn{padding:9px 12px;font-size:13px}
   .steps,.feats{grid-template-columns:1fr}
   .term .f{max-width:150px}
   .gp{padding:18px}

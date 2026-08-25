@@ -116,7 +116,8 @@ footer{border-top:1px solid var(--line);padding:36px 0 56px;color:var(--mut);fon
 }
 
 nav{border-bottom:1px solid var(--line)}
-.nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
+.nav-in{display:flex;align-items:center;gap:28px;padding-block:18px}
+.nav-in .btn{white-space:nowrap}
 .nav-logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none;color:var(--ink)}
 .nav-links{display:flex;gap:22px;margin-left:auto}
 .nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
@@ -124,7 +125,11 @@ nav{border-bottom:1px solid var(--line)}
 .btn{display:inline-block;background:var(--ink);color:var(--paper);border:1px solid var(--ink);
   border-radius:3px;padding:10px 20px;font-size:14px;font-weight:550;text-decoration:none;cursor:pointer}
 .btn:hover{opacity:.85}
-@media (max-width:560px){.nav-links{display:none}.nav-in > .btn{margin-left:auto}}
+@media (max-width:560px){.nav-links{display:none}.nav-in > .btn{margin-left:auto}
+  .nav-in{gap:14px}
+  .logo{font-size:17px}
+  .nav-in .btn{padding:9px 12px;font-size:13px}
+}
 </style>
 </head>
 <body>

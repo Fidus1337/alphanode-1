@@ -46,7 +46,8 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset
 
 /* ---------- nav ---------- */
 nav{border-bottom:1px solid var(--line)}
-.nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
+.nav-in{display:flex;align-items:center;gap:28px;padding-block:18px}
+.nav-in .btn{white-space:nowrap}
 .logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none}
 .dot{width:9px;height:9px;overflow:visible;flex:none}
 .dot circle{fill:var(--acc);transform-box:fill-box;transform-origin:center}
@@ -79,7 +80,7 @@ h2{font-size:30px;font-weight:650;margin-bottom:14px}
 .lead{color:var(--mut);font-size:18px;max-width:62ch;margin:0}
 
 /* ---------- hero ---------- */
-.hero{padding:80px 0 64px;border-bottom:1px solid var(--line)}
+.hero{padding-block:80px 64px;border-bottom:1px solid var(--line)}
 .hero p.lead{margin:22px 0 0}
 .assure{display:grid;grid-template-columns:repeat(3,1fr);gap:24px;margin-top:44px}
 .as{background:var(--card);border:1px solid var(--line);border-radius:3px;padding:18px 20px}
@@ -200,6 +201,10 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   .pane.dim{display:none}
 }
 @media (max-width: 560px){
+  .ui{white-space:normal;box-decoration-break:clone;-webkit-box-decoration-break:clone}
+  .nav-in{gap:14px}
+  .logo{font-size:17px}
+  .nav-in .btn{padding:9px 12px;font-size:13px}
   .nav-links{display:none}
   .nav-in > .btn{margin-left:auto}
   .stepitem{grid-template-columns:minmax(0,1fr);gap:8px;padding:36px 0}

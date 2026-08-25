@@ -44,7 +44,8 @@ a{color:var(--ink)}
 a:focus-visible,button:focus-visible{outline:2px solid var(--acc);outline-offset:3px}
 
 nav{border-bottom:1px solid var(--line)}
-.nav-in{display:flex;align-items:center;gap:28px;padding:18px 0}
+.nav-in{display:flex;align-items:center;gap:28px;padding-block:18px}
+.nav-in .btn{white-space:nowrap}
 .logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none}
 .dot{width:9px;height:9px;overflow:visible;flex:none}
 .dot circle{fill:var(--acc);transform-box:fill-box;transform-origin:center}
@@ -132,6 +133,10 @@ footer{padding:44px 0 60px;color:var(--mut);font-size:13px}
   .srv,.lic{grid-template-columns:1fr}
 }
 @media (max-width: 560px){
+  .nav-in{gap:14px}
+  .logo{font-size:17px}
+  .nav-in .btn{padding:9px 12px;font-size:13px}
+  .nav-in .btn{white-space:normal;text-align:center;max-width:150px;line-height:1.25;padding:7px 12px}
   .nav-links{display:none}
   .nav-in > .btn{margin-left:auto}
 }
