@@ -624,22 +624,64 @@ def _cb(msg):
 
 
 def ensure_data():
-    """First start with no market data next to the node: download a starter universe of
-    10 liquid majors (BTC, ETH, SOL, XRP, …) at the active timeframe so the search can run."""
+    """Headless twin of the GUI's Start-time data gate: make sure the snapshot exists AND
+    holds every configured pair. ALPHANODE_UNIVERSE names the basket ('all'/empty falls back
+    to the 10-major starter set); a missing file or a missing pair triggers a fetch of that
+    exact basket at the active timeframe."""
+    global UNIVERSE
     path = load_config()['data']
-    if os.path.exists(path):
+    if UNIVERSE.lower() in ('all', '*', ''):
+        want = None                                    # starter set — presence check on file only
+    else:                                              # dedup, upper, order kept (the GUI parser)
+        want = list(dict.fromkeys(x.strip().upper()
+                                  for x in UNIVERSE.split(',') if x.strip())) or None
+
+    def _tickers():
+        try:
+            import pickle
+            return list(pickle.load(open(path, 'rb'))[0])
+        except Exception:                              # noqa: BLE001 — unreadable = absent
+            return None
+    why, have = None, None
+    if not os.path.exists(path):
+        why = f'no market data at {path}'
+    elif want:
+        have = _tickers()
+        if have is None:
+            why = f'snapshot at {path} is unreadable'
+        else:
+            missing = [s for s in want if s not in set(have)]
+            if missing:
+                why = f'snapshot lacks {", ".join(missing)}'
+    if why is None:
         return
     if PROJ not in sys.path:                           # fetch_data.py lives at the repo root
         sys.path.insert(0, PROJ)
     import fetch_data
-    names = ', '.join(s.replace('USDT', '') for s in fetch_data.DEFAULT_SYMBOLS)
-    print(f'no market data at {path} — downloading a starter universe of 10 majors '
-          f'({names}) as {TF} candles…', flush=True)
-    rc = fetch_data.run(path, interval=TF, symbols=list(fetch_data.DEFAULT_SYMBOLS))
+    symbols = want or list(fetch_data.DEFAULT_SYMBOLS)
+    if want and have:                                  # top up a live snapshot WITHOUT dropping
+        symbols = list(dict.fromkeys(list(have) + want))   # pairs other universes rely on — the
+        #                                                    old ensure_data never touched an
+        #                                                    existing file, we must not shrink it
+    names = ', '.join(s.replace('USDT', '') for s in symbols[:10])
+    print(f'{why} — downloading {len(symbols)} pairs ({names}) as {TF} candles…', flush=True)
+    rc = fetch_data.run(path, interval=TF, symbols=symbols)
     if rc != 0 or not os.path.exists(path):
         raise SystemExit(f'✗ data bootstrap failed (code {rc}) — check the internet connection '
                          'or run fetch_data.py manually')
-    print('✓ starter data ready', flush=True)
+    if want:                                           # the fetch SKIPS pairs Binance does not
+        got = set(_tickers() or [])                    # serve and still exits 0 — verify, drop
+        gone = [s for s in want if s not in got]       # the unfetchable ones LOUDLY, and mine on
+        if gone:
+            keep = [s for s in want if s in got]
+            if not keep:
+                raise SystemExit(f'✗ none of the configured pairs exist on Binance futures: '
+                                 f'{", ".join(gone)} — fix ALPHANODE_UNIVERSE')
+            print(f'⚠ Binance futures does not serve: {", ".join(gone)} — '
+                  f'mining on {", ".join(keep)}', flush=True)
+            UNIVERSE = ','.join(keep)                  # build_cfg and status read this global
+            os.environ['ALPHANODE_UNIVERSE'] = UNIVERSE
+    print('✓ market data ready', flush=True)
 
 
 def main():

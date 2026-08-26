@@ -70,8 +70,6 @@ METRICS_PY = os.path.join(HERE, 'metrics_worker.py')    # leaderboard trade stat
 PDF_PY = os.path.join(HERE, 'pdf_worker.py')            # analytics PDF dashboard (own process)
 SIGNAL_PORT = 8799                                      # BASE port: each service takes the next free one
 DATA_PICKLE = apppaths.user_data_pickle()               # where the data fetcher writes fresh data
-# First-run starter universe (no data snapshot yet): 10 liquid majors, matches fetch_data.DEFAULT_SYMBOLS.
-BOOTSTRAP_SYMBOLS = 'BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT,DOGEUSDT,ADAUSDT,LINKUSDT,AVAXUSDT,LTCUSDT'
 STATE_DIR = apppaths.state_dir()
 STATUS_FILE = os.path.join(STATE_DIR, 'status.json')
 SIGNALS_JSON = os.path.join(STATE_DIR, 'signals.json')  # registry of served APIs (survives a restart)
@@ -134,6 +132,12 @@ def _tf_suffix(tf):
     return '' if (tf or '1d') == '1d' else f'_{tf}'
 
 
+def _parse_universe(raw):
+    """'btc , ethusdt,,ETHUSDT' -> unique upper tickers, order kept. The ONE parser every
+    consumer shares — the panel, the env producers and the worker payloads."""
+    return list(dict.fromkeys(x.strip().upper() for x in (raw or '').split(',') if x.strip()))
+
+
 def _tf_clean(tf):
     """Coerce a stored timeframe to a supported one — settings saved before a timeframe was
     dropped from the product ('5m') must fall back to daily instead of crashing the pipeline."""
@@ -154,12 +158,11 @@ def _child_cmd(role):
 
 DEFAULTS = {
     # resources / universe
-    'cpu': 50, 'universe_all': True,
-    'universe_list': 'BTCUSDT,ETHUSDT,BNBUSDT,XRPUSDT,ADAUSDT,DOGEUSDT,LINKUSDT',
+    'cpu': 50,
+    'universe_list': 'BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,BNBUSDT',
     # search
     'pop': 200, 'gens': 25, 'seed': 0, 'pause': 5, 'port': 8787,   # seed 0 = auto (unique per node)
     # data
-    'fetch_n': 150, 'fetch_years': 3,
     'timeframe': '1d',      # bar size for the whole pipeline: 1d | 4h | 1h | 15m
     # node mode
     'explore_every': 4, 'seed_from_lib': True, 'max_rounds': 0, 'leaderboard': 20,
@@ -348,6 +351,17 @@ class App:
         for dead in ('ui_mode', 'welcomed'):             # retired with Simple mode — drop them so
             saved.pop(dead, None)                        # a legacy file stops carrying them forward
         self.cfg.update(saved)
+        # 2026-08: the universe simplifies to ONE explicit list. 'All loaded pairs' migrates to
+        # the pairs actually in that user's active snapshot — same basket, zero surprise; the
+        # top-N / min-history download knobs retire (Start now fetches the configured list).
+        if self.cfg.pop('universe_all', False):
+            tick = self._snapshot_tickers()
+            if tick:
+                self.cfg['universe_list'] = ','.join(tick)
+        for dead in ('fetch_n', 'fetch_years'):
+            self.cfg.pop(dead, None)
+        if not _parse_universe(self.cfg.get('universe_list') or ''):
+            self.cfg['universe_list'] = DEFAULTS['universe_list']
 
     @staticmethod
     def _gi(var, d):
@@ -367,12 +381,11 @@ class App:
         d = DEFAULTS
         return dict(
             cpu=self._gi(self.v_cpu, d['cpu']),
-            universe_all=bool(self.v_uniall.get()),
-            universe_list=self.v_unilist.get().strip(),
+            universe_list=(','.join(_parse_universe(self.v_unilist.get()))
+                           or d['universe_list']),
             pop=self._gi(self.v_pop, d['pop']), gens=self._gi(self.v_gens, d['gens']),
             seed=self._gi(self.v_seed, d['seed']), pause=self._gi(self.v_pause, d['pause']),
-            port=self._gi(self.v_port, d['port']), fetch_n=self._gi(self.v_fetchn, d['fetch_n']),
-            fetch_years=self._gi(self.v_minyears, d['fetch_years']),
+            port=self._gi(self.v_port, d['port']),
             timeframe=_tf_clean(self.v_tf.get()),
             explore_every=max(1, self._gi(self.v_explore, d['explore_every'])),
             seed_from_lib=bool(self.v_seedlib.get()),
@@ -1004,34 +1017,16 @@ class App:
         self._tip(self.lbl_cpu, cpu_tip)
         self._tip(sc, cpu_tip)
 
-        # --- pairs universe ---
+        # --- pairs universe (ONE explicit list — the search, signals and metrics all
+        #     run on exactly this basket; market data downloads itself at Start) ---
         self._lbl(inner, text='Which pairs to trade', text_color=MUT,
                      font=(self.UI, 13)).pack(anchor='w', pady=(0, 2))
-        self.v_uniall = tk.BooleanVar(value=self.cfg['universe_all'])
-        rb1 = self._radio(inner, 'All loaded pairs', self.v_uniall, True)
-        rb1.pack(anchor='w', pady=2)
-        rb2 = self._radio(inner, 'Custom list:', self.v_uniall, False)
-        rb2.pack(anchor='w', pady=2)
         self.v_unilist = tk.StringVar(value=self.cfg['universe_list'])
         self.e_uni = self._entry(inner, self.v_unilist)
         self.e_uni.pack(fill='x', pady=(3, 4))
-        self._uni_toggle()
-        self._tip(rb1, 'Search across all downloaded pairs.')
-        self._tip(rb2, 'Search only your own pairs (tickers, comma-separated).')
-        self._tip(self.e_uni, 'Your pairs, comma-separated, e.g. BTCUSDT,ETHUSDT,SOLUSDT.')
-
-        # --- market data (Binance) ---
-        self._lbl(inner, text='MARKET DATA (BINANCE)', text_color=ACC,
-                     font=(self.UI, 12, 'bold')).pack(anchor='w', pady=(14, 1))
-        self._lbl(inner, text='candles the search runs on (pick the bar size below)', text_color=MUT,
-                     font=(self.UI, 11)).pack(anchor='w', pady=(0, 6))
-        g = self._box(inner)
-        g.pack(fill='x')
-        g.columnconfigure(0, weight=1)
-        self.v_fetchn = self._num(g, 'How many pairs (top by turnover)', self.cfg.get('fetch_n', 150), 0, 5, 530, 10,
-                                  tip='How many of the most liquid pairs to download from Binance.')
-        self.v_minyears = self._num(g, 'Min. history (years)', self.cfg.get('fetch_years', 3), 1, 0, 7, 1,
-                                    tip='Take only pairs older than N years — young ones have too little data.')
+        self._tip(self.e_uni, 'Tickers, comma-separated — e.g. BTCUSDT,ETHUSDT,SOLUSDT.\n'
+                              'The search, signals and metrics all run on exactly this basket.\n'
+                              'Leave it empty and Save brings the default five back.')
         tfrow = self._box(inner)
         tfrow.pack(fill='x', pady=(6, 0))
         self._lbl(tfrow, text='Timeframe (bar size)', text_color=TXT,
@@ -1044,19 +1039,20 @@ class App:
         self._tip(tf_box, 'Bar size for the WHOLE pipeline: search, metrics, signals.\n'
                           '1d — the classic daily engine. Intraday (4h/1h/15m):\n'
                           '• each timeframe keeps its own data snapshot (data_<tf>.pickle)\n'
-                          '  and its own alpha library — download data for it first;\n'
+                          '  and its own alpha library — data downloads itself at Start;\n'
                           '• picking a timeframe fills in its recommended date segments\n'
-                          '  and pair count (intraday history is shorter and denser);\n'
+                          '  (intraday history is shorter and denser);\n'
                           '• portfolio build and the forward track are daily-only for now.')
         self.lbl_tf_note = self._lbl(inner, text='', text_color=MUT, font=(self.UI, 11),
                                      anchor='w', justify='left', wraplength=330)
         # wraplength: the intraday note is the widest line in the pane — unwrapped it would
         # change the pane's width on every timeframe pick
         self.lbl_tf_note.pack(anchor='w', pady=(3, 0))
-        self.btn_fetch = self._btn(inner, 'Download fresh data from Binance', self._fetch_data)
-        self.btn_fetch.pack(fill='x', pady=(10, 0))
-        self._tip(self.btn_fetch, 'Download fresh candles at the selected timeframe from Binance\n'
-                                  '(overwrites that timeframe\'s current data).')
+        self._lbl(inner, text='Market data for these pairs downloads itself when the node starts:'
+                              ' first run, a new pair,\na new timeframe or a stale snapshot all'
+                              ' top up automatically.',
+                  text_color=FAINT, font=(self.UI, 11), anchor='w', justify='left',
+                  wraplength=330).pack(anchor='w', pady=(10, 0))
 
         # --- search ---
         g = self._section(inner, 'SEARCH')
@@ -1178,12 +1174,6 @@ class App:
         return ctk.CTkEntry(parent, height=30, corner_radius=9,
                             fg_color=HEAD_BG, border_color=BORDER, border_width=1,
                             text_color=TXT, font=(self.UI, 13), **kw)
-
-    def _radio(self, parent, text, var, value):
-        return ctk.CTkRadioButton(parent, text=text, variable=var, value=value,
-                                  command=self._uni_toggle, font=(self.UI, 13), text_color=TXT,
-                                  fg_color=ACC, hover_color=ACC_HI, border_color=FAINT,
-                                  radiobutton_width=17, radiobutton_height=17)
 
     def _head(self, parent, text):
         """A panel heading — the small caps line above every card's content."""
@@ -1918,9 +1908,6 @@ class App:
         pct = int(self.v_cpu.get())
         self.lbl_cpu.configure(text=f'{pct}%  →  {max(1, round(pct/100*CORES))} of {CORES} cores')
 
-    def _uni_toggle(self):
-        self.e_uni.configure(state='disabled' if self.v_uniall.get() else 'normal')
-
     def _reset(self):
         keep = {k: self.cfg.get(k) for k in ('theme', 'settings_open')}   # appearance, not search
         self.cfg = dict(DEFAULTS)
@@ -1983,29 +1970,79 @@ class App:
         self._reset_ui_after_wipe()
         messagebox.showinfo('Done', 'History cleared. You can start the search from scratch.', parent=self.root)
 
-    def _fetch_data(self):
-        if self.proc and self.proc.poll() is None:
-            messagebox.showwarning('Node is running',
-                                   'Stop the node before updating data — it uses the data for the search.',
-                                   parent=self.root)
+    STALE_DAYS = 5                                       # snapshot older than this -> refresh at Start
+
+    def _data_gap(self):
+        """What (if anything) Start must download first: (symbols_to_fetch|None, reason).
+        A gap is a missing/unreadable snapshot, a configured pair the snapshot lacks, or a
+        snapshot whose newest bar is more than STALE_DAYS behind — the presence check the
+        user asked to replace the manual Download button with."""
+        want = self._universe_tickers() or _parse_universe(DEFAULTS['universe_list'])
+        path = self._data_file()
+        if not os.path.exists(path):
+            return want, 'no market data for this timeframe yet'
+        try:
+            tick, dfs = pickle.load(open(path, 'rb'))
+        except Exception:                                # noqa: BLE001 — unreadable = absent
+            return want, 'the data snapshot is unreadable'
+        missing = [s for s in want if s not in set(tick)]
+        if missing:
+            gone = ', '.join(missing[:4]) + ('…' if len(missing) > 4 else '')
+            return want, f'the snapshot has no {gone}'
+        try:
+            last = max(df.index[-1] for df in dfs if len(df))
+            if last.tzinfo is None:
+                last = last.tz_localize('UTC')
+            age = (datetime.now(timezone.utc) - last.to_pydatetime()).days
+            if age > self.STALE_DAYS:
+                return want, f'the snapshot is {age} days old'
+        except Exception:                                # noqa: BLE001 — can't date it, don't block
+            pass
+        return None, ''
+
+    def _start_after_fetch(self):
+        """START resumes after its data download. Pairs the fetch did NOT deliver — delisted
+        or typo'd, Binance simply has nothing to give — leave the universe here, loudly.
+        Without this, one such ticker looped Start into download-then-error forever (the
+        universe_all migration inherits whatever an old snapshot held, the user may never
+        have typed the name being complained about)."""
+        need, _why = self._data_gap()
+        if need:
+            have = set(self._snapshot_tickers() or [])
+            want = self._universe_tickers() or []
+            gone = [s for s in want if s not in have]
+            if gone and have:
+                keep = [s for s in want if s in have]
+                self.cfg['universe_list'] = ','.join(keep) or DEFAULTS['universe_list']
+                if hasattr(self, 'v_unilist'):
+                    self.v_unilist.set(self.cfg['universe_list'])
+                self._save()
+                messagebox.showwarning(
+                    'Market data',
+                    f'Binance futures does not serve: {", ".join(gone)}.\n'
+                    'Dropped from the pairs universe — continuing with '
+                    f'{self.cfg["universe_list"]}.', parent=self.root)
+            else:                                        # nothing to drop, yet the gap persists
+                self._fetch_tried = repr((sorted(need), self._tf()))   # (unreadable file, …) —
+        self.start()                                     # arm the backstop and let start() speak
+
+    def _auto_fetch(self, symbols, why, on_success=None):
+        """Start's own data step: download the configured basket at the active timeframe.
+        Replaces both the manual 'Download fresh data' button and the first-run bootstrap —
+        one path, always the exact pairs from Settings."""
+        if self._fetching:                               # a silent no-op read as a dead button
+            messagebox.showinfo('Market data', 'A data download is already running — wait '
+                                'for it to finish, then press START again.', parent=self.root)
             return
-        n = self._gi(self.v_fetchn, 150)
-        yrs = self._gi(self.v_minyears, 3)
-        if not messagebox.askyesno(
-                'Download fresh data',
-                f'Download the {n} highest-turnover Binance pairs (only those with history ≥ {yrs} years) '
-                f'as {self._tf()} candles and update the market data?\n\n'
-                f'The current {self._tf()} snapshot will be replaced. It will take a few minutes '
-                '(intraday: longer, much more data) and needs internet.\n'
-                'After the update the pairs universe will change — clear history and restart the search.',
-                icon='warning', default='no', parent=self.root):
-            return
-        self._save()
-        self._run_fetch(['--top', str(n), '--min-years', str(yrs), '--interval', self._tf(),
+        tf = self._tf()
+        self._run_fetch(['--symbols', ','.join(symbols), '--interval', tf,
                          '--out', self._data_file()],
-                        f'Data update — top-{n} from Binance',
-                        f'Downloading the {n} highest-turnover Binance pairs (history ≥ {yrs} years)…\n\n',
-                        '✓ Done — data updated. Clear history and restart the search.')
+                        f'Market data — {len(symbols)} pairs ({tf})',
+                        f'{why} — downloading {len(symbols)} pairs '
+                        f'({", ".join(s.replace("USDT", "") for s in symbols[:8])}'
+                        f'{"…" if len(symbols) > 8 else ""}) as {tf} candles from Binance…\n\n',
+                        '✓ Data ready.' + ('' if on_success else ' Press START to begin.'),
+                        on_success=on_success)
 
     def _run_fetch(self, args, title, intro, done_msg, on_success=None):
         """Console dialog + fetch_data subprocess; shared by the manual data update and the
@@ -2040,12 +2077,19 @@ class App:
                 q.put(line)
             q.put(None)
         threading.Thread(target=_reader, daemon=True).start()
-        self.btn_fetch.configure(state='disabled')
+
+        def _cancel():                                   # closing the console cancels the fetch:
+            try:                                         # a detached writer would race the next
+                if proc.poll() is None:                  # Start's own download onto the same file
+                    proc.terminate()                     # (fetch writes .tmp + os.replace, so a
+            except Exception:                            # noqa: BLE001 — mid-write kill leaves
+                pass                                     # the old snapshot untouched)
+            win.destroy()
+        win.protocol('WM_DELETE_WINDOW', _cancel)
 
         def pump():
             if not win.winfo_exists():
-                self.btn_fetch.configure(state='normal')   # the process will finish on its own, re-enable the button
-                self._fetching = False
+                self._fetching = False                   # the process will finish on its own
                 return
             try:
                 while True:
@@ -2054,7 +2098,6 @@ class App:
                         code = proc.poll()
                         add('\n' + (done_msg if code == 0
                                     else f'✗ Error (code {code}). Data left untouched.') + '\n')
-                        self.btn_fetch.configure(state='normal')
                         self._fetching = False
                         self._lib_cache['mtime'] = None
                         self._metrics_cache = {}         # fresh data: stats measured on the old
@@ -2069,26 +2112,12 @@ class App:
         win.after(150, pump)
 
     def _maybe_bootstrap(self):
-        """First run: no market data next to the node -> download a starter universe on our own."""
+        """First run: no market data next to the node -> download the configured basket."""
         if os.path.exists(self._data_file()) or (self.proc and self.proc.poll() is None):
             return
-        self._bootstrap_data()
-
-    def _bootstrap_data(self, on_success=None):
-        tf = self._tf()
-        intro = ('No market data found next to the node.\n'
-                 'Downloading a starter universe of 10 majors — BTC, ETH, SOL, XRP, BNB, DOGE, '
-                 f'ADA, LINK, AVAX, LTC — as {tf} candles from Binance…\n\n'
-                 'You can widen the universe any time: Settings → MARKET DATA → '
-                 '"Download fresh data from Binance".\n\n')
-        if tf != '1d':
-            intro += ('Note: intraday history is shorter — if the search has nothing to evaluate, '
-                      'set later TRAIN/VAL dates in Settings.\n\n')
-        self._run_fetch(['--symbols', BOOTSTRAP_SYMBOLS, '--interval', tf, '--out', self._data_file()],
-                        f'First run — market data bootstrap ({tf})', intro,
-                        '✓ Starter data ready.' + ('' if on_success
-                                                   else ' Press START to begin the search.'),
-                        on_success=on_success)
+        need, why = self._data_gap()
+        if need:
+            self._auto_fetch(need, why)
 
     def _reset_ui_after_wipe(self):
         for i in self.tree.get_children():
@@ -2110,10 +2139,9 @@ class App:
     def _apply_cfg_to_widgets(self):
         c = self.cfg
         self.v_cpu.set(c['cpu']); self._cpu_lbl()
-        self.v_uniall.set(c['universe_all']); self.v_unilist.set(c['universe_list']); self._uni_toggle()
+        self.v_unilist.set(c['universe_list'])
         self.v_pop.set(c['pop']); self.v_gens.set(c['gens']); self.v_seed.set(c['seed'])
         self.v_pause.set(c['pause']); self.v_port.set(c['port'])
-        self.v_fetchn.set(c['fetch_n']); self.v_minyears.set(c['fetch_years'])
         self.v_tf.set(_tf_clean(c.get('timeframe', '1d'))); self._tf_note()
         self.v_explore.set(c['explore_every']); self.v_maxrounds.set(c['max_rounds'])
         self.v_leader.set(c['leaderboard']); self.v_seedlib.set(c['seed_from_lib'])
@@ -2150,7 +2178,6 @@ class App:
         seg = t.segments
         self.v_train.set(seg['train_start']); self.v_val.set(seg['val_start'])
         self.v_test.set(seg['test_start']); self.v_end.set(seg['test_end'])
-        self.v_fetchn.set(t.max_pairs)
         self._tf_note()
 
     def _tf_note(self):
@@ -2478,10 +2505,20 @@ class App:
             return
         self._save()
         os.makedirs(STATE_DIR, exist_ok=True)
-        if not os.path.exists(self._data_file()):
-            # first run without a snapshot: fetch the starter universe, then continue START
-            self._bootstrap_data(on_success=self.start)
+        need, why = self._data_gap()
+        if need:                                         # missing/stale/short snapshot: fetch the
+            sig = repr((sorted(need), self._tf()))       # basket, then START resumes through the
+            if getattr(self, '_fetch_tried', '') == sig:   # reconcile step below. The guard arms
+                messagebox.showerror(                    # only THERE — after a download that
+                    'Market data',                       # succeeded yet closed nothing — so a
+                    f'Still {why} even after a successful download.\n\n'   # failed/offline fetch
+                    'Check the pair names in Settings — they must be Binance USDT-perpetual '
+                    'tickers (e.g. BTCUSDT, SOLUSDT).', parent=self.root)    # retries freely
+                self._fetch_tried = ''
+                return
+            self._auto_fetch(need, why, on_success=self._start_after_fetch)
             return
+        self._fetch_tried = ''                           # gap closed — the guard resets
         # the vault is always on: seal every mined formula to the vendor's key. No user toggle —
         # the subscription decides what the customer can unlock, not whether the library is sealed.
         vault_pub = _vault_pub_path()
@@ -2545,7 +2582,7 @@ class App:
             env.pop('ALPHANODE_VAULT_LICENSE', None)
         env.update(
             ALPHANODE_CPU_PERCENT=str(c['cpu']),
-            ALPHANODE_UNIVERSE=('all' if c['universe_all'] else c['universe_list']),
+            ALPHANODE_UNIVERSE=c['universe_list'],
             ALPHANODE_POP=str(c['pop']), ALPHANODE_GENS=str(c['gens']),
             ALPHANODE_SEED=(str(c['seed']) if c['seed'] else 'auto'),   # 0 -> per-install node-ID seed
             ALPHANODE_PAUSE=str(c['pause']),
@@ -2759,21 +2796,18 @@ class App:
         return None
 
     def _universe_tickers(self):
-        """universe_all -> tickers of the ACTIVE timeframe's snapshot (the basket the alphas
-        were mined on); an explicit list otherwise. Reading the 1d data.pickle here for an
-        intraday tf served/froze a 1h alpha on a DIFFERENT basket (50 pairs vs the 10 it was
-        mined on): cross-sectional normalization diverged from the leaderboard, and the signal
-        service cold-fetched 5x the klines. The 1d file stays as fallback only."""
-        c = self.cfg
-        if not c.get('universe_all', True):
-            return [x.strip().upper()
-                    for x in c.get('universe_list', '').split(',') if x.strip()] or None
-        for p in (self._data_file(), apppaths.data_path()):
-            try:
-                return list(pickle.load(open(p, 'rb'))[0])
-            except Exception:                             # noqa: BLE001  missing/odd -> fallback
-                continue
-        return None
+        """The configured basket, parsed. Empty/garbage -> None (callers warn)."""
+        return _parse_universe(self.cfg.get('universe_list', '')) or None
+
+    def _snapshot_tickers(self):
+        """Tickers inside the ACTIVE timeframe's snapshot; None if unreadable. Deliberately
+        NO 1d fallback: migrating a 1h user off the 50-pair daily file would hand them a
+        50-pair intraday universe and a monster first download — better to keep the saved
+        list (or the default five) than to invent a basket from the wrong timeframe."""
+        try:
+            return list(pickle.load(open(self._data_file(), 'rb'))[0])
+        except Exception:                                 # noqa: BLE001  missing/odd -> None
+            return None
 
     def _serve_signal(self, formulas, label):
         # tf-aware since the intraday branch landed in signal_service (fastsim math,
@@ -3481,8 +3515,7 @@ class App:
         c = self.cfg
         payload = {
             'formulas': list(formulas),
-            'instruments': (None if c.get('universe_all', True) else
-                            [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]),
+            'instruments': (_parse_universe(c.get('universe_list', '')) or None),
             'vol': float(c.get('target_vol', 0.25)), 'exec': float(c.get('exec_cost', 0.001)),
             'train_start': c.get('train_start'), 'test_start': c.get('test_start'),
             'test_end': c.get('test_end'),
@@ -3983,8 +4016,8 @@ class App:
                    ALPHANODE_TF=self._tf(),
                    ALPHANODE_CONFIG_INI=apppaths.config_ini(),
                    # combine on the SAME universe the search optimizes — not all of data.pickle
-                   ALPHANODE_UNIVERSE=('all' if self.cfg.get('universe_all', True)
-                                       else self.cfg.get('universe_list', '')),
+                   ALPHANODE_UNIVERSE=self.cfg.get('universe_list',
+                                                   DEFAULTS['universe_list']),
                    # the GUI's date fields, node.py-style — the ini only has daily defaults
                    ALPHANODE_TRAIN_START=self.cfg.get('train_start', ''),
                    ALPHANODE_VAL_START=self.cfg.get('val_start', ''),
@@ -4329,9 +4362,9 @@ class App:
         import pandas as pd
         cfg = load_config()
         c = self.cfg
-        if not c.get('universe_all', True):
-            lst = [x.strip().upper() for x in c.get('universe_list', '').split(',') if x.strip()]
-            cfg['instruments'] = lst or cfg.get('instruments')
+        lst = _parse_universe(c.get('universe_list', ''))
+        if lst:
+            cfg['instruments'] = lst
         cfg['vol'] = float(c.get('target_vol', cfg['vol']))
         cfg['exec'] = float(c.get('exec_cost', cfg['exec']))
         # the GUI's timeframe selector wins over config.ini (load_config in THIS process only
@@ -5156,9 +5189,7 @@ class App:
         reproduce what the leaderboard searched with. Shared by the PDF worker payloads."""
         c = self.cfg
         return {
-            'instruments': (None if c.get('universe_all', True) else
-                            [x.strip().upper() for x in c.get('universe_list', '').split(',')
-                             if x.strip()] or None),
+            'instruments': (_parse_universe(c.get('universe_list', '')) or None),
             'vol': float(c.get('target_vol', 0.25)), 'exec': float(c.get('exec_cost', 0.001)),
             'train_start': c.get('train_start'), 'val_start': c.get('val_start'),
             'test_start': c.get('test_start'), 'test_end': c.get('test_end'),

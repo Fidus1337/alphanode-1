@@ -61,7 +61,10 @@ def load_config(path=None):
     # the right file); otherwise 1d keeps the historical data.pickle and intraday gets its own
     # data_<tf>.pickle — so switching timeframes never clobbers another timeframe's history.
     if os.environ.get('ALPHANODE_DATA'):
-        data = DATA
+        data = os.environ['ALPHANODE_DATA']          # read at CALL time — the module-level DATA
+        #                                              froze the env as it was at import, so a
+        #                                              process that re-points ALPHANODE_DATA later
+        #                                              silently kept loading the old snapshot
     else:
         suffix = '' if tf_fields['tf'] == '1d' else f'_{tf_fields["tf"]}'
         data = os.path.join(PROJ, f'data{suffix}.pickle')
