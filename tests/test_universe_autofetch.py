@@ -255,3 +255,165 @@ def test_gui_backstop_when_reconcile_cannot_help(gui_app, tmp_path, monkeypatch)
     app.start()
     assert any(c[0] == 'showerror' and 'successful download' in str(c[2]) for c in rec.calls)
 
+
+
+# ---- the chip editor (the universe as removable chips over the same v_unilist) ----
+
+def test_chips_render_and_wrap(gui_app):
+    app, _rec, _state = gui_app
+    app.v_unilist.set('BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT,ZECUSDT,DOGEUSDT,BNBUSDT,'
+                      'LINKUSDT,1000PEPEUSDT,SUIUSDT')
+    app.root.update_idletasks()
+    wrap = int(app.UNI_WRAP * app.SCALE)
+    rows = [w for w in app.uni_chips.winfo_children() if w.winfo_manager()]
+    assert len(rows) > 1                                  # a long list wraps to more rows
+    assert all(r.winfo_reqwidth() <= wrap + 4 for r in rows)   # none widens the pane
+    texts = [c.winfo_children()[0].cget('text')
+             for r in rows for c in r.winfo_children()]
+    assert texts == app.v_unilist.get().split(',')        # chips ARE the var, in order
+
+
+def test_chips_commit_parses_paste(gui_app):
+    app, _rec, _state = gui_app
+    app.v_unilist.set('BTCUSDT')
+    app.e_uni.delete(0, 'end')
+    app.e_uni.insert(0, ' adausdt, avaxusdt  btcusdt ')   # commas, spaces, a duplicate
+    app._uni_commit()
+    assert app.v_unilist.get() == 'BTCUSDT,ADAUSDT,AVAXUSDT'
+    assert app.e_uni.get() == ''
+
+
+def test_chips_whitespace_paste_splits(gui_app):
+    """A newline/tab paste (spreadsheet column) splits into chips, never one giant token."""
+    app, _rec, _state = gui_app
+    app.v_unilist.set('')
+    app.e_uni.delete(0, 'end')
+    app.e_uni.insert(0, 'solusdt\nadausdt\tavaxusdt')
+    app._uni_commit()
+    assert app.v_unilist.get() == 'SOLUSDT,ADAUSDT,AVAXUSDT'
+
+
+def test_chips_remove_edit_backspace(gui_app):
+    app, _rec, _state = gui_app
+    app.v_unilist.set('BTCUSDT,ETHUSDT,SOLUSDT')
+    app._uni_remove('ETHUSDT')
+    assert app.v_unilist.get() == 'BTCUSDT,SOLUSDT'
+    app._uni_edit('BTCUSDT')                              # click a chip -> edit in the entry
+    assert app.e_uni.get() == 'BTCUSDT'
+    assert app.v_unilist.get() == 'SOLUSDT'
+    app._uni_commit()                                     # and back
+    assert app.v_unilist.get() == 'SOLUSDT,BTCUSDT'
+    app.e_uni.delete(0, 'end')
+    app._uni_backspace()                                  # empty box: the LAST CHIP drops down
+    assert app.v_unilist.get() == 'SOLUSDT'               # into the box for editing —
+    assert app.e_uni.get() == 'BTCUSDT'                   # never deleted outright
+    app.e_uni.delete(0, 'end')
+    app.e_uni.insert(0, 'X')
+    assert app._uni_backspace() is None                   # text present: an ordinary backspace
+    assert app.v_unilist.get() == 'SOLUSDT'
+    app.e_uni.delete(0, 'end')
+
+
+def test_chips_backspace_autorepeat_guard(gui_app):
+    """X11 delivers a held key as a machine-gun of KeyPresses — without the 500ms guard a
+    one-second hold emptied a whole hand-curated basket."""
+    import types
+    app, _rec, _state = gui_app
+    app.v_unilist.set('BTCUSDT,ETHUSDT,SOLUSDT')
+    app.e_uni.delete(0, 'end')
+    app._uni_backspace(types.SimpleNamespace(time=1000))  # pulls SOLUSDT down
+    assert app.e_uni.get() == 'SOLUSDT'
+    app.e_uni.delete(0, 'end')                            # the held key erased it, then…
+    app._uni_backspace(types.SimpleNamespace(time=1200))  # …auto-repeat 200ms later: guarded
+    assert app.e_uni.get() == ''
+    assert app.v_unilist.get() == 'BTCUSDT,ETHUSDT'
+    app._uni_backspace(types.SimpleNamespace(time=1900))  # a deliberate later press acts
+    assert app.e_uni.get() == 'ETHUSDT'
+
+
+def test_chips_rollover_commits_only_complete_tokens(gui_app):
+    """The comma's KeyRelease may arrive AFTER the next letter's KeyPress (rollover):
+    committing the whole buffer at release time shredded 'btc,eth' into BTC + E + TH."""
+    app, _rec, _state = gui_app
+    app.v_unilist.set('BTCUSDT')
+    app.e_uni.delete(0, 'end')
+    app.e_uni.insert(0, 'eth,s')                          # the buffer at the comma's release
+    app._uni_key()
+    assert app.v_unilist.get() == 'BTCUSDT,ETH'
+    assert app.e_uni.get() == 's'                         # the tail stays typed, not a chip
+    app.e_uni.delete(0, 'end')
+
+
+def test_chips_collect_commits_pending_entry_text(gui_app):
+    """Type a pair and click START without Enter: CTk buttons never steal focus, so no
+    FocusOut fires — _collect commits the box itself or the run drops the pair."""
+    app, _rec, _state = gui_app
+    app.v_unilist.set('BTCUSDT')
+    app.e_uni.delete(0, 'end')
+    app.e_uni.insert(0, 'dogeusdt')
+    assert app._collect()['universe_list'] == 'BTCUSDT,DOGEUSDT'
+    assert app.e_uni.get() == ''
+
+
+def test_chips_reset_clears_pending_entry_text(gui_app):
+    """Reset/session load must not leave typed text to ghost-commit on a later FocusOut."""
+    app, _rec, _state = gui_app
+    app.e_uni.delete(0, 'end')
+    app.e_uni.insert(0, 'dogeusdt')
+    app._apply_cfg_to_widgets()
+    assert app.e_uni.get() == ''
+
+
+def test_chips_save_shows_the_fallback_universe(gui_app):
+    """All chips removed + Save/Start: _collect falls back to the default five — the panel
+    shows what actually runs instead of keeping the 'no pairs' hint."""
+    app, _rec, _state = gui_app
+    app.v_unilist.set('')
+    app._save()
+    assert app.v_unilist.get() == G.DEFAULTS['universe_list']
+
+
+def test_chips_giant_token_cannot_widen_the_pane(gui_app):
+    """One unbroken pasted blob becomes a clamped chip, not a pane-widening one — and its
+    ✕ stays visible so it can be removed."""
+    app, _rec, _state = gui_app
+    app.v_unilist.set('A' * 60)
+    app.root.update_idletasks()
+    wrap = int(app.UNI_WRAP * app.SCALE)
+    rows = [w for w in app.uni_chips.winfo_children() if w.winfo_manager()]
+    assert rows and all(r.winfo_reqwidth() <= wrap for r in rows)
+
+
+def test_chips_ghost_double_click_is_dropped(gui_app):
+    """A chip action re-renders and slides the neighbour under the cursor — the second
+    press of a double-click must not act on it."""
+    import types
+    app, _rec, _state = gui_app
+    app.v_unilist.set('BTCUSDT,ETHUSDT,SOLUSDT')
+    app.root.update_idletasks()
+
+    def ev(w, t):
+        w.winfo_containing = lambda *_a: w                # pointer is over the widget
+        return types.SimpleNamespace(widget=w, x_root=0, y_root=0, time=t)
+
+    def first_label():
+        row = app.uni_chips.winfo_children()[0]
+        return row.winfo_children()[0].winfo_children()[0]
+
+    app._uni_hit(ev(first_label(), 1000), app._uni_edit, 'BTCUSDT')
+    assert app.e_uni.get() == 'BTCUSDT'                   # the real click acts
+    app.root.update_idletasks()
+    app._uni_hit(ev(first_label(), 1200), app._uni_edit, 'ETHUSDT')
+    assert app.e_uni.get() == 'BTCUSDT'                   # the 200ms ghost is dropped
+    assert 'ETHUSDT' in app.v_unilist.get()
+    app._uni_hit(ev(first_label(), 1700), app._uni_edit, 'ETHUSDT')
+    assert app.e_uni.get() == 'ETHUSDT'                   # a deliberate later click acts
+
+
+def test_chips_empty_state_hint_and_collect_fallback(gui_app):
+    app, _rec, _state = gui_app
+    app.v_unilist.set('')
+    app.root.update_idletasks()
+    kids = app.uni_chips.winfo_children()
+    assert kids and 'default five' in kids[0].cget('text')
+    assert app._collect()['universe_list'] == G.DEFAULTS['universe_list']

@@ -378,6 +378,10 @@ class App:
             return d
 
     def _collect(self):
+        if hasattr(self, 'e_uni'):
+            self._uni_commit()                       # a pair still sitting in the add-box counts:
+                                                     # CTk buttons never steal focus, so Start /
+                                                     # Save / theme switch would read a stale list
         d = DEFAULTS
         return dict(
             cpu=self._gi(self.v_cpu, d['cpu']),
@@ -410,6 +414,10 @@ class App:
 
     def _save(self):
         self.cfg.update(self._collect())
+        if (hasattr(self, 'v_unilist')
+                and self.v_unilist.get() != self.cfg['universe_list']):
+            self.v_unilist.set(self.cfg['universe_list'])   # empty list fell back to the default
+                                                            # five — show what actually runs
         try:
             json.dump(self.cfg, open(SETTINGS, 'w'), indent=2)
         except Exception:
@@ -1022,11 +1030,7 @@ class App:
         self._lbl(inner, text='Which pairs to trade', text_color=MUT,
                      font=(self.UI, 13)).pack(anchor='w', pady=(0, 2))
         self.v_unilist = tk.StringVar(value=self.cfg['universe_list'])
-        self.e_uni = self._entry(inner, self.v_unilist)
-        self.e_uni.pack(fill='x', pady=(3, 4))
-        self._tip(self.e_uni, 'Tickers, comma-separated — e.g. BTCUSDT,ETHUSDT,SOLUSDT.\n'
-                              'The search, signals and metrics all run on exactly this basket.\n'
-                              'Leave it empty and Save brings the default five back.')
+        self._uni_build(inner)
         tfrow = self._box(inner)
         tfrow.pack(fill='x', pady=(6, 0))
         self._lbl(tfrow, text='Timeframe (bar size)', text_color=TXT,
@@ -1174,6 +1178,175 @@ class App:
         return ctk.CTkEntry(parent, height=30, corner_radius=9,
                             fg_color=HEAD_BG, border_color=BORDER, border_width=1,
                             text_color=TXT, font=(self.UI, 13), **kw)
+
+
+    # ----- pairs editor: the universe as removable chips ---------------------------------
+    # v_unilist (a CSV StringVar) stays the single source of truth — _collect, the
+    # universe_all migration and _start_after_fetch's reconcile all read/write IT; the
+    # chips are only a view. Every var write re-renders them (trace), every chip action
+    # writes the var back. The old single Entry hid the tail of the list past its edge.
+
+    UNI_WRAP = 330                                       # pre-scale px — the pane's label wraplength
+
+    def _uni_build(self, parent):
+        self.uni_chips = self._box(parent)
+        self.uni_chips.pack(fill='x', pady=(3, 0))
+        self.e_uni = self._entry(parent, None, placeholder='add pair — Enter or comma')
+        self.e_uni.pack(fill='x', pady=(4, 4))
+        self.e_uni.bind('<Return>', self._uni_commit)
+        self.e_uni.bind('<FocusOut>', self._uni_commit)
+        self.e_uni.bind('<KeyRelease>', self._uni_key)
+        self.e_uni.bind('<KeyPress-BackSpace>', self._uni_backspace)
+        self.e_uni.bind('<ButtonPress-2>', self._uni_mpaste)
+        self._tip(self.e_uni,
+                  'The search, signals and metrics run on exactly this basket.\n'
+                  'Enter or comma turns what you typed into a chip; paste a whole\n'
+                  'list — commas, spaces or line breaks all split it.\n'
+                  '✕ removes a pair; clicking a chip pulls it back down for editing;\n'
+                  'Backspace in the empty box pulls the last chip down.\n'
+                  'Remove everything and the default five come back at Start/Save.')
+        self.v_unilist.trace_add('write', lambda *_: self._uni_render())
+        self._uni_render()
+
+    def _uni_render(self):
+        box = getattr(self, 'uni_chips', None)
+        if not (box and box.winfo_exists()):
+            return
+        for w in box.winfo_children():
+            w.destroy()
+        syms = _parse_universe(self.v_unilist.get())
+        if not syms:
+            self._lbl(box, text='no pairs — Start or Save brings the default five back',
+                      text_color=FAINT, font=(self.UI, 11)).pack(anchor='w')
+            return
+        ft = self._font(self.UI, 12, 'bold')
+        fx = self._font(self.UI, 11, 'normal')
+        wrap = int(self.UNI_WRAP * self.SCALE)
+        gap = max(4, int(5 * self.SCALE))
+        pad = int(7 * self.SCALE)
+        xpad = int(4 * self.SCALE)
+        tail = int(2 * self.SCALE)
+        row, used = None, 0
+        for s in syms:
+            # exact, not estimated: both labels are bd=0, so a chip is text + ✕ + paddings
+            # + the frame's 1px highlight ring — an undercount here widens the whole pane
+            # (the settings canvas takes its width from the content's reqwidth)
+            w = (ft.measure(s) + 2 * pad) + (fx.measure('✕') + 2 * xpad + tail) + 2
+            if row is None or (used and used + w > wrap):
+                row = self._box(box)
+                row.pack(anchor='w', pady=(0, gap))
+                used = 0
+            chip = tk.Frame(row, bg=HEAD_BG, highlightbackground=BORDER, highlightthickness=1)
+            chip.pack(side='left', padx=(0, gap))
+            t = tk.Label(chip, text=s, fg=TXT, bg=HEAD_BG, font=ft, bd=0, anchor='w',
+                         padx=pad, pady=int(3 * self.SCALE), cursor='hand2')
+            x = tk.Label(chip, text='✕', fg=MUT, bg=HEAD_BG, font=fx, bd=0,
+                         padx=xpad, cursor='hand2')
+            if w > wrap:                             # one unbroken pasted blob: clamp the chip
+                chip.pack_propagate(False)           # so it cannot widen the pane — ✕ is packed
+                chip.configure(width=wrap - gap,     # first and stays visible to remove it
+                               height=ft.metrics('linespace') + 2 * int(3 * self.SCALE) + 2)
+                w = wrap - gap
+            x.pack(side='right', padx=(0, tail))     # ✕ before the text: it survives clipping
+            t.pack(side='left', fill='x')
+            x.bind('<ButtonRelease-1>', lambda e, sym=s: self._uni_hit(e, self._uni_remove, sym))
+            x.bind('<Enter>', lambda _e, l=x: l.configure(fg=NEG))
+            x.bind('<Leave>', lambda _e, l=x: l.configure(fg=MUT))
+            t.bind('<ButtonRelease-1>', lambda e, sym=s: self._uni_hit(e, self._uni_edit, sym))
+            used += w + gap
+
+    def _uni_hit(self, e, fn, sym):
+        """Chip actions run on ButtonRelease, and only when the pointer is still over the
+        widget (drag off = cancel). The re-render slides the NEXT chip under the cursor, so
+        the second press of a double-click would edit/remove an unintended pair — any chip
+        action within 350ms of the previous one is that ghost, and is dropped."""
+        try:
+            if e.widget.winfo_containing(e.x_root, e.y_root) is not e.widget:
+                return
+        except Exception:                            # noqa: BLE001 — teardown mid-click
+            return
+        if e.time - getattr(self, '_uni_act_t', -10 ** 9) < 350:
+            return
+        self._uni_act_t = e.time
+        fn(sym)
+
+    @staticmethod
+    def _uni_raw(s):
+        """Whitespace of ANY kind separates tickers — a newline/tab paste from a
+        spreadsheet must split into chips, not become one giant token."""
+        return ''.join(',' if ch.isspace() else ch for ch in (s or ''))
+
+    def _uni_commit(self, _e=None):
+        """The WHOLE entry -> chips. Bound to Enter and FocusOut; _collect also calls it,
+        so a pair still sitting in the box is never lost to Start/Save/theme switch."""
+        try:
+            raw = self._uni_raw(self.e_uni.get())
+        except Exception:                            # noqa: BLE001 — teardown mid-FocusOut
+            return None
+        if raw.strip(','):
+            self.v_unilist.set(','.join(_parse_universe(self.v_unilist.get() + ',' + raw)))
+        try:
+            self.e_uni.delete(0, 'end')
+        except Exception:                            # noqa: BLE001
+            pass
+        return 'break'
+
+    def _uni_key(self, _e=None):
+        """A typed separator commits only the COMPLETE tokens — everything before the last
+        comma; the tail stays in the box. Fast typists press the next letter before the
+        comma's KeyRelease (rollover): committing the whole buffer at release time shredded
+        'btc,eth' into BTC + E + TH."""
+        raw = self._uni_raw(self.e_uni.get())
+        if ',' not in raw:
+            return
+        head, _, rest = raw.rpartition(',')
+        if head.strip(','):
+            self.v_unilist.set(','.join(_parse_universe(self.v_unilist.get() + ',' + head)))
+        self.e_uni.delete(0, 'end')
+        if rest:
+            self.e_uni.insert(0, rest)
+            self.e_uni.icursor('end')
+
+    def _uni_backspace(self, e=None):
+        """KeyPress fires BEFORE the class binding erases a character — an empty box here
+        means it was ALREADY empty, so Backspace pulls the LAST CHIP down into the box for
+        editing (never deletes it outright: X11 auto-repeat delivers a held key as a
+        machine-gun of presses, and outright deletion emptied a whole basket in under a
+        second). The 500ms guard stops auto-repeat from eating chip after chip."""
+        if self.e_uni.get():
+            return None                              # ordinary backspace inside text
+        t = getattr(e, 'time', None)
+        if t is not None:
+            if t - getattr(self, '_uni_bs_t', -10 ** 9) < 500:
+                return 'break'
+            self._uni_bs_t = t
+        syms = _parse_universe(self.v_unilist.get())
+        if syms:
+            self._uni_edit(syms[-1])
+        return 'break'
+
+    def _uni_mpaste(self, _e=None):
+        """Middle-click PRIMARY paste goes straight to the inner tk.Entry via the Entry
+        class binding, bypassing CTkEntry.insert() — with the placeholder active the pasted
+        text would glue itself onto the ghost text. Deactivate it before the class binding
+        pastes (widget-tag bindings fire first)."""
+        try:
+            self.e_uni._deactivate_placeholder()
+        except Exception:                            # noqa: BLE001
+            pass
+
+    def _uni_remove(self, sym):
+        self.v_unilist.set(','.join(
+            s for s in _parse_universe(self.v_unilist.get()) if s != sym))
+
+    def _uni_edit(self, sym):
+        """Click a chip -> it drops back into the entry for editing."""
+        self._uni_commit()                           # half-typed text becomes its own chip first
+        self._uni_remove(sym)
+        self.e_uni.delete(0, 'end')
+        self.e_uni.insert(0, sym)
+        self.e_uni.focus_set()
+        self.e_uni.icursor('end')
 
     def _head(self, parent, text):
         """A panel heading — the small caps line above every card's content."""
@@ -2140,6 +2313,10 @@ class App:
         c = self.cfg
         self.v_cpu.set(c['cpu']); self._cpu_lbl()
         self.v_unilist.set(c['universe_list'])
+        try:
+            self.e_uni.delete(0, 'end')              # a half-typed pair must not outlive a
+        except Exception:                            # noqa: BLE001 — reset / session load
+            pass
         self.v_pop.set(c['pop']); self.v_gens.set(c['gens']); self.v_seed.set(c['seed'])
         self.v_pause.set(c['pause']); self.v_port.set(c['port'])
         self.v_tf.set(_tf_clean(c.get('timeframe', '1d'))); self._tf_note()
