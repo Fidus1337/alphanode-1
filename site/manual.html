@@ -233,12 +233,12 @@ nav{border-bottom:1px solid var(--line)}
           <li><a href="#e1-10"><span class="num">1.10</span><span class="txt">Light / Dark</span><span class="pg" data-num="1.10">5</span></a></li>
           <li><a href="#e1-11"><span class="num">1.11</span><span class="txt">Activate node / Unlock</span><span class="pg" data-num="1.11">6</span></a></li>
           <li><a href="#e1-12"><span class="num">1.12</span><span class="txt">ROUNDS · FORMULAS TRIED · ALPHAS FOUND</span><span class="pg" data-num="1.12">6</span></a></li>
-          <li><a href="#e1-13"><span class="num">1.13</span><span class="txt">BEST FITNESS</span><span class="pg" data-num="1.13">6</span></a></li>
+          <li><a href="#e1-13"><span class="num">1.13</span><span class="txt">BEST FITNESS · noise floor</span><span class="pg" data-num="1.13">6</span></a></li>
           <li><a href="#e1-14"><span class="num">1.14</span><span class="txt">The live log</span><span class="pg" data-num="1.14">6</span></a></li>
           <li><a href="#e1-15"><span class="num">1.15</span><span class="txt">SIGNAL API — running services</span><span class="pg" data-num="1.15">7</span></a></li>
           <li><a href="#e1-16"><span class="num">1.16</span><span class="txt">LEADERBOARD</span><span class="pg" data-num="1.16">7</span></a></li>
           <li><a href="#e1-17"><span class="num">1.17</span><span class="txt">PORTFOLIO — top-N combined</span><span class="pg" data-num="1.17">7</span></a></li>
-          <li><a href="#e1-18"><span class="num">1.18</span><span class="txt">FORWARD TRACK — paper steps</span><span class="pg" data-num="1.18">7</span></a></li>
+          <li><a href="#e1-18"><span class="num">1.18</span><span class="txt">FORWARD TRACK — paper steps</span><span class="pg" data-num="1.18">8</span></a></li>
         </ol>
       </div>
       <div class="cpart">
@@ -313,7 +313,7 @@ nav{border-bottom:1px solid var(--line)}
           <li><a href="#e6-12"><span class="num">6.12</span><span class="txt">tr/yr·a</span><span class="pg" data-num="6.12">24</span></a></li>
           <li><a href="#e6-13"><span class="num">6.13</span><span class="txt">win%</span><span class="pg" data-num="6.13">24</span></a></li>
           <li><a href="#e6-14"><span class="num">6.14</span><span class="txt">win ↑</span><span class="pg" data-num="6.14">24</span></a></li>
-          <li><a href="#e6-15"><span class="num">6.15</span><span class="txt">win ↓</span><span class="pg" data-num="6.15">24</span></a></li>
+          <li><a href="#e6-15"><span class="num">6.15</span><span class="txt">win ↓</span><span class="pg" data-num="6.15">25</span></a></li>
           <li><a href="#e6-16"><span class="num">6.16</span><span class="txt">ID</span><span class="pg" data-num="6.16">25</span></a></li>
           <li><a href="#e6-17"><span class="num">6.17</span><span class="txt">formula</span><span class="pg" data-num="6.17">25</span></a></li>
         </ol>
@@ -421,9 +421,9 @@ nav{border-bottom:1px solid var(--line)}
         <p class="warn"><b>Watch out.</b> Switching timeframe does NOT move these tiles — the table below re-reads that library at once, the tiles keep the last run&#x27;s numbers until you press Start. FORMULAS TRIED is genuinely cross-timeframe: it comes from one shared status file.</p>
       </div>
       <div class="item" id="e1-13">
-        <div class="hd"><h3><span class="num">1.13</span>BEST FITNESS</h3></div>
-        <p>The fitness of the current number-one champion — the same min(TRAIN, VAL) figure, drawn in the accent colour because it is the number that says whether the search is getting anywhere. It only moves at round boundaries, so a mid-round silence is not a stall. Expect a jump in the first handful of rounds and then a creep; a long flat stretch means the easy structure is exhausted at these settings — widen the universe, raise the complexity limits, or move to the Portfolio card. Shows &quot;—&quot; until the first round finishes, and never shows a TEST number.</p>
-        <p class="warn"><b>Watch out.</b> In win-rate mode this tile still formats the value as a Sharpe-style &quot;+0.56&quot; instead of &quot;56%&quot; — the node always writes &#x27;sharpe&#x27; into its status file. The leaderboard&#x27;s fitness column tags each row from the row itself, so trust the column over the tile.</p>
+        <div class="hd"><h3><span class="num">1.13</span>BEST FITNESS · noise floor</h3></div>
+        <p>The fitness of the current number-one champion — the same min(TRAIN, VAL) figure, drawn in the accent colour because it is the number that says whether the search is getting anywhere. It only moves at round boundaries, so a mid-round silence is not a stall. Expect a jump in the first handful of rounds and then a creep. Under it sits the NOISE FLOOR: what the best of all the formulas tried so far would score on luck alone, given how widely their scores spread. A search that tries forty thousand formulas is not testing one idea, it is testing forty thousand and quoting the maximum — and the maximum of that many coin flips is a long way above zero. The floor is the bar that champion has to clear to mean anything, it turns red when the champion has not cleared it, and the leaderboard dims every row underneath it. Both numbers are computed without TEST.</p>
+        <p class="warn"><b>Watch out.</b> The floor RISES as you mine — it grows with the number of tries, slowly but only upwards — so a long run raises the bar rather than lowering it, and a champion that stopped improving while the floor kept climbing is going backwards. It also assumes the tries were independent, and bred formulas are relatives, so the true floor sits somewhat below the one shown. In win-rate mode the tile still formats fitness as a Sharpe-style &quot;+0.56&quot; instead of &quot;56%&quot; — the node always writes &#x27;sharpe&#x27; into its status file; trust the leaderboard&#x27;s column over the tile.</p>
       </div>
       <div class="item" id="e1-14">
         <div class="hd"><h3><span class="num">1.14</span>The live log</h3></div>
@@ -656,7 +656,7 @@ nav{border-bottom:1px solid var(--line)}
       </div>
       <div class="item" id="e6-3">
         <div class="hd"><h3><span class="num">6.03</span>fitness</h3><span class="pill">default <b>always shown · the default sort</b></span></div>
-        <p>The score the search ranked by: the WORSE of the TRAIN and VAL Sharpe. The only column that is honest for picking — TEST never touched it. As a rough rule on daily bars, above roughly +1.5 is worth opening; well above +2.5 is usually too good and worth suspecting rather than celebrating.</p>
+        <p>The score the search ranked by: the WORSE of the TRAIN and VAL Sharpe. The only column that is honest for picking — TEST never touched it. Rows printed in grey are the ones that have not cleared the noise floor shown under the BEST FITNESS tile: their score is no better than the best of that many random tries would have been anyway. Read the grey as &quot;this number is not evidence&quot;, and start from the rows that are not grey.</p>
         <p class="warn"><b>Watch out.</b> The tooltip does not mention that a concentration guard is on by default and docks this number when the book averages under 3 meaningful positions, nor that the value shown is BEFORE the size and similarity penalties the engine uses to pick tournament winners. With &quot;Optimize by win rate&quot; on the cell shows a percentage, and clicking this header sorts rows mined under your ACTIVE objective to the top as a block — a 0.57 win rate and a +1.8 Sharpe are not on the same ladder.</p>
       </div>
       <div class="item" id="e6-4">

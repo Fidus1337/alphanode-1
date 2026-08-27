@@ -34,6 +34,7 @@ import pandas as pd                                     # noqa: E402
 
 from config import load_config                         # noqa: E402
 from evolution import evolve                           # noqa: E402
+from deflate import TrialStats                         # noqa: E402
 
 
 def env(k, d):
@@ -261,6 +262,10 @@ status = {'app': 'AlphaNode', 'state': 'starting', 'started': iso(), 'updated': 
           'version': _BUILD.get('version'), 'build_id': _BUILD.get('build_id'),
           'current': '', 'gen': '', 'best': []}
 
+# the spread of every score the search has ever looked at — three numbers, from which
+# the noise floor (what the best of N tries reaches on luck alone) is read back
+trials = TrialStats()
+
 
 def save_status():
     status['updated'] = iso()
@@ -335,7 +340,11 @@ def load_existing():
                            max((c.get('round', 0) for c in leaderboard), default=0))
     try:                                               # keep the lifetime trials counter across restarts
         with open(STATUS_FILE, encoding='utf-8') as f:
-            status['trials_total'] = int(json.load(f).get('trials_total', 0) or 0)
+            _prev = json.load(f)
+        status['trials_total'] = int(_prev.get('trials_total', 0) or 0)
+        # …and the trial spread with it: the noise floor is a lifetime figure, so a restart
+        # must not reset the bar a champion has to clear back down to nothing
+        trials.load(_prev)
     except (OSError, ValueError, json.JSONDecodeError):
         pass
     status['found'] = len(seen)
@@ -450,6 +459,14 @@ def _html_formula(c):
     return c['formula']
 
 
+def _floor_s():
+    """The noise floor as text — what the best of this many tries scores on luck alone."""
+    f = status.get('noise_floor')
+    if f is None:
+        return '—'
+    return f'{f * 100:.0f}%' if FIT_METRIC == 'winrate' else f'{f:+.2f}'
+
+
 def render_html():
     rows = ''.join(
         f"<tr><td>{i + 1}</td>"
@@ -519,7 +536,8 @@ white-space:pre-wrap;word-break:break-word;color:var(--mut)}}
 <p class=sub>background alpha-search node · page refreshes itself</p>
 <div class=grid>
   <div class=card><div class=k>rounds</div><div class=num>{status['rounds']}</div></div>
-  <div class=card><div class=k>formulas tried</div><div class=num>{status['trials_total']:,}</div></div>
+  <div class=card><div class=k>formulas tried</div><div class=num>{status['trials_total']:,}</div>
+    <span class=k>noise floor {_floor_s()}</span></div>
   <div class=card><div class=k>alphas found</div><div class=num>{len(seen)}</div></div>
   <div class=card><div class=k>resources</div><div class=num>{status['cpu_percent']}%</div><span class=k>{status['n_jobs']}/{status['cores']} cores</span></div>
   <div class=card><div class=k>universe</div><div class=num>{status['universe']}</div><span class=k>pop {status['pop']} · gens {status['gens']}</span></div>
@@ -798,18 +816,29 @@ def main():
                 f.write(json.dumps(entry, ensure_ascii=False) + '\n')
         except OSError:
             pass
+        # every candidate this round scored — not just the champions. The floor is read off
+        # the spread of the WHOLE attempt, so a search that only ever looked at near-identical
+        # formulas gets a low bar and one that ranged widely gets a high one, which is right:
+        # the wider you cast, the better the best of your casts looks on luck alone.
+        trials.add(r['base_fit'] for r in cache.values() if r is not None)
+        floor = trials.floor()
+        floor_val = round(floor, 3) if floor is not None else None
         status.update(rounds=rnd, trials_total=status['trials_total'] + len(cache),
                       # status.json reaches disk AND the :8787 status HTTP — vault mode must
                       # seal here too, or the library lock would leak through the side door
                       found=len(seen), best=[_disk_doc(c) for c in leaderboard[:KEEP]],
                       best_base=bb_val, best_test=bt_val, fit_metric=FIT_METRIC,
+                      noise_floor=floor_val, **trials.to_dict(),
                       history=history[-300:],
                       current=f'round {rnd} done [{mode}]: +{new} new · fitness {bb_s} · '
                               f'TEST(OOS) {bt_s} · {time.time()-t0:.0f}s')
         champs_s = (f'+{new} champion{"s" if new != 1 else ""} kept'
                     if new else 'none kept — the library held its bar')
+        floor_s = (f' · noise floor {floor_val:+.2f}' if floor_val is not None
+                   and FIT_METRIC != 'winrate' else '')
         log_event('round', f'✓ round {rnd} · {time.time() - t0:.0f}s · {len(cache):,} formulas '
-                           f'tried · {champs_s} · best fitness {bb_s} · held-out TEST {bt_s}')
+                           f'tried · {champs_s} · best fitness {bb_s} · held-out TEST {bt_s}'
+                           f'{floor_s}')
         save_status()
         print(status['current'])
 
