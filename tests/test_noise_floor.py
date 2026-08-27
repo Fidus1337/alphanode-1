@@ -158,97 +158,7 @@ def test_a_search_over_noise_produces_a_champion_at_the_floor():
     assert sum(ratios) / len(ratios) == pytest.approx(1.0, abs=0.06)
 
 
-# ---------------- what the user actually sees ----------------
-def test_gui_tile_carries_the_floor_and_flags_a_champion_under_it(gui_app):
-    """The tile is the only place the bar is visible, so it has to arrive from status.json
-    and it has to change colour when the champion has not cleared it."""
-    import json as _json
-
-    import alphanode_gui as G
-    app, _rec, _state = gui_app
-    with open(G.STATUS_FILE, 'w', encoding='utf-8') as fh:
-        _json.dump({'state': 'running', 'rounds': 9, 'trials_total': 40_000, 'found': 12,
-                    'fit_metric': 'sharpe', 'noise_floor': 1.68, 'best': [],
-                    'history': [{'round': 9, 'best_base': 1.42, 'best_test': -0.2}]}, fh)
-    app._poll()
-    assert app.s_fit.cget('text') == '+1.42'
-    assert app.s_fit.sub.cget('text') == 'noise floor +1.68'
-    assert app.s_fit.sub.cget('fg') == G.NEG              # +1.42 has not cleared +1.68
-    assert app._noise_floor == 1.68
-
-    with open(G.STATUS_FILE, 'w', encoding='utf-8') as fh:
-        _json.dump({'state': 'running', 'fit_metric': 'sharpe', 'noise_floor': 1.68, 'best': [],
-                    'history': [{'round': 9, 'best_base': 2.9, 'best_test': 0.4}]}, fh)
-    app._poll()
-    assert app.s_fit.sub.cget('fg') == G.FAINT            # +2.90 clears it — no flag
-    assert not app._test_tk_errors
-
-
-def test_gui_tile_says_nothing_before_the_first_round(gui_app):
-    """A fresh install has no trials, so there is no bar — and an empty line is honest
-    where a 0.00 would read as 'anything beats nothing'."""
-    import json as _json
-
-    app, _rec, _state = gui_app
-    import alphanode_gui as G
-    with open(G.STATUS_FILE, 'w', encoding='utf-8') as fh:
-        _json.dump({'state': 'starting', 'best': [], 'history': []}, fh)
-    app._poll()
-    assert app.s_fit.sub.cget('text') == ''
-    assert app._noise_floor is None
-
-
-def test_gui_dims_the_rows_that_have_not_cleared_the_floor(gui_app):
-    app, _rec, _state = gui_app
-    app._noise_floor, app._fit_metric = 1.5, 'sharpe'
-    rows = [{'formula': 'aa', 'base': 2.40, 'test': {'sharpe': -0.1}},
-            {'formula': 'bb', 'base': 1.50, 'test': {'sharpe': -0.1}},
-            {'formula': 'cc', 'base': 0.90, 'test': {'sharpe': -0.1}},
-            {'formula': 'dd', 'base': 0.60, 'fit_metric': 'winrate', 'test': {'sharpe': -0.1}}]
-    app._treesig = None
-    app._fill_tree(rows)
-    tags = [app.tree.item(i, 'tags') for i in app.tree.get_children()]
-    assert 'noise' not in tags[0]        # clears the bar
-    assert 'noise' in tags[1]            # exactly at it is not a win: the bar IS the average luck
-    assert 'noise' in tags[2]
-    assert 'noise' not in tags[3]        # a win-rate base is a share — not in the floor's units
-    assert not app._test_tk_errors
-
-
-def test_gui_keeps_the_held_out_tint_under_the_dimming(gui_app):
-    """'noise' sets a foreground only, so a dimmed row still shows whether TEST survived."""
-    app, _rec, _state = gui_app
-    app._noise_floor, app._fit_metric = 1.5, 'sharpe'
-    app._treesig = None
-    app._fill_tree([{'formula': 'ee', 'base': 0.4, 'test': {'sharpe': 0.2}}])
-    tags = app.tree.item(app.tree.get_children()[0], 'tags')
-    assert 'pos' in tags and 'noise' in tags
-    assert not app._test_tk_errors
-
-
-def test_gui_forgets_the_floor_when_history_is_cleared(gui_app):
-    """status.json goes with the history, and the floor was a lifetime figure."""
-    app, _rec, _state = gui_app
-    app._noise_floor = 1.68
-    app.s_fit.sub.configure(text='noise floor +1.68')
-    app._reset_ui_after_wipe()
-    assert app._noise_floor is None
-    assert app.s_fit.sub.cget('text') == ''
-
-
 # ---------------- the node's side of the wire ----------------
-def test_node_renders_the_floor_for_its_status_page(monkeypatch):
-    import node as nd
-    monkeypatch.setitem(nd.status, 'noise_floor', 1.675)
-    monkeypatch.setattr(nd, 'FIT_METRIC', 'sharpe')
-    assert nd._floor_s() == '+1.68'
-    monkeypatch.setattr(nd, 'FIT_METRIC', 'winrate')
-    monkeypatch.setitem(nd.status, 'noise_floor', 0.532)
-    assert nd._floor_s() == '53%'                        # a win-rate floor is a share
-    monkeypatch.setitem(nd.status, 'noise_floor', None)
-    assert nd._floor_s() == '—'                          # before the first round
-
-
 def test_node_writes_the_keys_it_reads_back(monkeypatch):
     """The restart path: what the node puts in status.json must be what it parses out of
     it next launch, or the floor silently resets to zero on every restart."""
@@ -258,3 +168,22 @@ def test_node_writes_the_keys_it_reads_back(monkeypatch):
     revived = TrialStats.from_dict(status_like)
     assert (revived.n, revived.sd) == (stats.n, stats.sd)
     assert isinstance(nd.trials, TrialStats)             # the node owns one accumulator
+
+
+def test_the_gaussian_bar_overshoots_a_thin_tailed_search():
+    """Why nothing draws this number yet, kept as a test so the reason cannot be forgotten.
+
+    Measured on a real round: 1,197 scored candidates, mean -0.64, sd 0.95, skew +0.14 and
+    excess kurtosis -0.71 — near-symmetric but THIN-tailed, with a hard ceiling near +1.6.
+    Every trial is a function of the same finite price history, so the trials are neither
+    independent nor unbounded, and extrapolating a Gaussian tail to the 1-in-N quantile
+    reaches for a tail the data does not have: the estimate came out at +4.5 on a run whose
+    actual best over 9,900 trials was +1.86. A uniform draw reproduces the same failure.
+    """
+    rng = random.Random(11)
+    scores = [rng.uniform(-1.0, 1.0) for _ in range(1_200)]      # thin-tailed and bounded
+    stats = TrialStats().add(scores)
+    assert stats.floor() > max(scores) * 1.7        # not slightly off — the wrong shape
+    # …while the same estimator is right when the trials really are Gaussian, which is
+    # what test_floor_predicts_the_maximum_of_pure_noise checks. The maths is sound; the
+    # assumption it needs is what a formula search over one price history does not supply.

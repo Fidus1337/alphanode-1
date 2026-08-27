@@ -299,8 +299,7 @@ class App:
         self._metrics_proc = None                         # the metrics child process
         self._metrics_seq = 0                             # to discard stale background computations
         self._row_items = {}                              # formula -> table row id (to update cells)
-        self._noise_floor = None                          # score the best of N random tries reaches
-        self._fit_metric = 'sharpe'                       # …and the units that floor is in
+        self._fit_metric = 'sharpe'                       # objective the node last ran under
         self._pf_proc = None                              # portfolio-build subprocess
         self._fwd_proc = None                             # forward-track step subprocess
         self._fwd_entries = []                            # rows currently shown in the FORWARD table
@@ -1609,22 +1608,14 @@ class App:
         self.s_trials = self._stat(stats, 'formulas tried', 1)
         self.s_found = self._stat(stats, 'alphas found', 2)
         self.s_fit = self._stat(stats, 'best fitness', 3,   # the old PROGRESS chart, as one number
-                                accent=True,             # — and the row's anchor, not a fourth twin
-                                sub=True)                # …over the bar luck alone would clear
+                                accent=True)             # — and the row's anchor, not a fourth twin
         self.s_fit.configure(text='—')
         for i in range(4):
             stats.columnconfigure(i, weight=1)           # share the card width: half of the
         #                                                  flagship card was dead space
         self._tip(self.s_fit, 'Best fitness so far — min(TRAIN, VAL) Sharpe of the top alpha.\n'
                               'Grows round by round as the search improves; TEST stays held-out\n'
-                              '(see the TEST OOS column in the leaderboard).\n\n'
-                              'NOISE FLOOR is what the best of all the formulas tried would score\n'
-                              'on luck alone, given how widely their scores spread. A champion at\n'
-                              'or under it is the maximum of a lot of coin flips, not an edge —\n'
-                              'the leaderboard dims those rows. The floor RISES as you mine, so a\n'
-                              'long run raises the bar rather than lowering it. It assumes the\n'
-                              'tries were independent; bred formulas are relatives, so the true\n'
-                              'floor sits somewhat below this one.')
+                              '(see the TEST OOS column in the leaderboard).')
         self.lbl_cur = self._lbl(pad, text='', text_color=MUT, font=(self.MONO, 12),
                                     anchor='w', justify='left')
         self.lbl_cur.pack(anchor='w', fill='x', pady=(12, 0))
@@ -1803,9 +1794,6 @@ class App:
         # minority. Ink stays neutral everywhere: whole-row red carried one bit per row, painted
         # positive fitness in 'loss' red, and made the rare green rows the strongest focal point.
         self.tree.tag_configure('pos', background=_mix(CARD, POS, 0.12))
-        # 'noise' sets only a FOREGROUND, so it composes with the stripe/pos backgrounds
-        # rather than fighting them: a dimmed row still shows its held-out tint
-        self.tree.tag_configure('noise', foreground=FAINT)
         self.tree.tag_configure('odd', background=STRIPE)
         self.tree.tag_configure('even', background=CARD)
         vsb = ctk.CTkScrollbar(wrap, orientation='vertical', command=self.tree.yview, fg_color=CARD,
@@ -2093,10 +2081,9 @@ class App:
         for b in (self.btn_pf_csv, self.btn_pf_sig, self.btn_pf_track):
             b.configure(state='disabled')
 
-    def _stat(self, parent, label, col, accent=False, sub=False):
+    def _stat(self, parent, label, col, accent=False):
         """A stat tile: big number + caption on its own soft rounded surface. `accent` marks the
-        one tile the eye should land on (value in the accent colour, hairline accent border).
-        `sub` adds a second caption line, reachable as the returned widget's `.sub`."""
+        one tile the eye should land on (value in the accent colour, hairline accent border)."""
         tile = ctk.CTkFrame(parent, fg_color=HEAD_BG, corner_radius=12,
                             border_width=(1 if accent else 0),
                             border_color=_mix(HEAD_BG, ACC, 0.55))
@@ -2108,10 +2095,6 @@ class App:
         val.pack(anchor='w')
         self._lbl(f, text=label.upper(), text_color=FAINT, font=(self.UI, 10, 'bold'),
                   bg=HEAD_BG, anchor='w').pack(anchor='w')
-        if sub:
-            val.sub = self._lbl(f, text='', text_color=FAINT, font=(self.UI, 10),
-                                bg=HEAD_BG, anchor='w')
-            val.sub.pack(anchor='w')
         return val
 
     # ---------- helpers ----------
@@ -2340,8 +2323,6 @@ class App:
         self._lib_cache = {'mtime': None, 'all': [], 'families': [], 'computing': False,
                            'dirty': False, 'ts': 0.0, 'computed': False, 'select': None}
         self.s_fit.configure(text='—')
-        self.s_fit.sub.configure(text='', fg=FAINT)       # status.json goes with the history,
-        self._noise_floor = None                          # and the floor was a lifetime figure
         self.s_rounds.configure(text='0')
         self.s_trials.configure(text='0')
         self.s_found.configure(text='0')
@@ -3304,16 +3285,12 @@ class App:
                 and 0.0 <= fit <= 1.0                    # a winrate base is a share
             self.s_fit.configure(text=('—' if fit is None
                                        else f'{fit * 100:.0f}%' if wr else f'{fit:+.2f}'))
-            # the bar the champion has to clear: the best score N random tries would reach
-            nf = st.get('noise_floor')
-            self._noise_floor = nf if isinstance(nf, (int, float)) else None
-            self._fit_metric = st.get('fit_metric') or 'sharpe'   # the floor's units
-            self.s_fit.sub.configure(
-                text=('' if self._noise_floor is None
-                      else f'noise floor {self._noise_floor * 100:.0f}%' if wr
-                      else f'noise floor {self._noise_floor:+.2f}'),
-                fg=(NEG if (self._noise_floor is not None and fit is not None
-                            and fit <= self._noise_floor) else FAINT))
+            # The noise floor is NOT drawn: measured against a real library the Gaussian
+            # estimate overstated it 2.4x (9,900 trials, sd 1.17 -> predicted max +4.5,
+            # actual max +1.86). min(TRAIN, VAL) has a fat left tail and a thin right one,
+            # so a spread-based extrapolation is the wrong shape. The spread is still
+            # collected; the bar comes back when it is measured against a null, not assumed.
+            self._fit_metric = st.get('fit_metric') or 'sharpe'
         # the leaderboard is a view of the LIBRARY FILE, not of the node: it must fill
         # even when no status.json exists yet (fresh start, restored session)
         self._refresh_leaderboard(st.get('best', []))
@@ -3598,13 +3575,6 @@ class App:
             base = c.get('base')
             stripe = 'odd' if i % 2 else 'even'
             tags = ('pos',) if (ts is not None and ts >= 0) else (stripe,)
-            # a champion at or under the noise floor is the maximum of a lot of coin flips.
-            # Only rows mined under the ACTIVE objective are comparable to it: a win-rate
-            # base is a share and a Sharpe base is not, and the floor is in one of those units.
-            if (self._noise_floor is not None and base is not None
-                    and c.get('fit_metric', 'sharpe') == self._fit_metric
-                    and base <= self._noise_floor):
-                tags += ('noise',)
             formula = c.get('formula', '')
             locked = bool(c.get('locked')) and not formula   # vault doc: metrics visible, text sealed
             if locked:

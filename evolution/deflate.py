@@ -15,6 +15,16 @@ tried, and it grows only logarithmically with N — mining ten times longer rais
 bar a champion must clear, it does not lower it.
 
 Everything here is stdlib on purpose: the frozen build must not gain a scipy import.
+
+NOT WIRED TO THE UI, and the reason is measured rather than suspected. The formula needs
+trials that are independent and roughly normal. A formula search supplies neither: every
+candidate is scored on the SAME finite price history, so the scores are bounded by what
+that history can produce and their tail is far thinner than normal. A real round came out
+near-symmetric (skew +0.14) but thin-tailed (excess kurtosis -0.71) with a ceiling around
++1.6, and the estimate read +4.5 against an actual best of +1.86 over 9,900 trials — a bar
+that would grey out every row ever mined. The accumulator below is kept because the spread
+is cheap and the honest version needs it; the bar itself has to be MEASURED against a null
+(the same search over returns whose drift has been destroyed), not extrapolated.
 """
 import math
 
