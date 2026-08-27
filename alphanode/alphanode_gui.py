@@ -178,6 +178,7 @@ DEFAULTS = {
     # fitness
     'parsimony': 0.010, 'corr_threshold': 0.70, 'corr_penalty': 0.5, 'hof_capacity': 15,
     'fit_blocks': 0,        # robust multi-block fitness (experimental); 0 = legacy min(TRAIN,VAL)
+    'opt_winrate': False,   # objective: False = Sharpe, True = per-bar win rate (min TRAIN/VAL)
     # date segments (TRAIN < VAL < TEST)
     'train_start': '2019-09-05', 'val_start': '2021-11-01',
     'test_start': '2023-01-01', 'test_end': '2026-07-05',
@@ -393,6 +394,7 @@ class App:
             timeframe=_tf_clean(self.v_tf.get()),
             explore_every=max(1, self._gi(self.v_explore, d['explore_every'])),
             seed_from_lib=bool(self.v_seedlib.get()),
+            opt_winrate=bool(self.v_optwr.get()),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -1072,6 +1074,13 @@ class App:
                                  tip='Pause between rounds so the machine gets a breather.')
         self.v_port = self._num(g, 'Status port', self.cfg['port'], 4, 1024, 65535, 1,
                                 tip='Port for the status web page (http://localhost:PORT).')
+        self.v_optwr = self._chk(g, 'Optimize by win rate', self.cfg.get('opt_winrate', False), 5,
+                                 tip='The search maximizes min(TRAIN, VAL) of the per-bar win rate,\n'
+                                     'shrunk by evidence (damped by activity share, minus a binomial SE)\n'
+                                     'so sparse lucky streaks can\'t outrank dense honest ones.\n'
+                                     'CAUTION: win rate ignores magnitude — many small wins can hide rare\n'
+                                     'big losses; judge champions by TEST Sharpe and maxDD as usual.\n'
+                                     'Takes effect at the next Start.')
 
         # --- node mode ---
         g = self._section(inner, 'NODE MODE (continuous search)')
@@ -1698,7 +1707,7 @@ class App:
         wrap.pack(fill='both', expand=True)
         self._lbwrap = wrap                              # smooth pixel resize (its in-card grip)
         cols = ('fav', 'rank', 'fit', 'test', 'dd', 'cagr', 'srt',
-                'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'id', 'formula')
+                'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
                                  height=int(self.cfg.get('lb_rows') or 12))
         self._HEAD = {}
@@ -1711,9 +1720,11 @@ class App:
                                ('cagr', 'CAGR', 72, 'e'), ('srt', 'sortino', 80, 'e'),
                                ('tup', 'T ↑', 64, 'e'), ('tdown', 'T ↓', 64, 'e'),
                                ('tflat', 'T ~', 64, 'e'),
-                               ('ls', 'trades L/S', 100, 'center'),
+                               ('ls', 'L/S /yr·a', 100, 'center'),
                                ('act', 'tr/yr·a', 72, 'e'),
-                               ('win', 'win%', 62, 'e'), ('id', 'ID', 72, 'center'),
+                               ('win', 'win%', 62, 'e'),
+                               ('wup', 'win ↑', 64, 'e'), ('wdown', 'win ↓', 64, 'e'),
+                               ('id', 'ID', 72, 'center'),
                                ('formula', 'formula', 260, 'w')):
             self._HEAD[c] = txt
             kw = {} if c in ('fav', 'rank', 'id') else {'command': (lambda c=c: self._sort_by(c))}
@@ -1734,7 +1745,10 @@ class App:
             'fav': 'favorites — click a row\'s ★ cell to star/unstar the formula;\n'
                    'the ★ Favorites button opens the starred list',
             'rank': 'position in the current sort',
-            'fit': 'fitness = min(TRAIN, VAL) Sharpe — the number the search optimizes',
+            'fit': 'fitness = min(TRAIN, VAL) Sharpe — the number the search optimizes.\n'
+                   'With \'Optimize by win rate\' on: min(TRAIN, VAL) of the evidence-\n'
+                   'shrunk win rate (damped by activity share, minus a binomial SE) —\n'
+                   'such rows show a percentage, slightly below the raw win% column.',
             'test': 'held-out TEST Sharpe (out-of-sample) — never optimized;\n'
                     'picking rows by it is peeking',
             'dd': 'worst peak-to-trough drawdown on TEST',
@@ -1750,9 +1764,15 @@ class App:
                      'Same direction regime as T↑ — see that column\'s tooltip.',
             'tflat': 'TEST Sharpe on FLAT market bars — no statistically confident drift\n'
                      '(|t| below 1.28). Same direction regime as T↑ — see its tooltip.',
-            'ls': 'positions OPENED over TEST: long / short',
+            'ls': 'positions opened per asset per year on TEST: long / short\n'
+                  '(an annualized rate — comparable across universes and periods)',
             'act': 'trades per asset per year — relative activity',
             'win': 'share of profitable days on TEST',
+            'wup': 'win rate on TRENDING-UP market bars only — the same direction\n'
+                   'regime as T↑ (see its tooltip). \'—\' = under 30 such bars on TEST,\n'
+                   'or fewer than 5 bars where the formula actually traded there.',
+            'wdown': 'win rate on TRENDING-DOWN market bars only.\n'
+                     'Same direction regime as T↑ — see that column\'s tooltip.',
             'id': 'stable ID — the md5 tail of the formula; the forward track uses the SAME id',
             'formula': 'the alpha itself — right-click: copy / choose columns',
         }
@@ -1764,7 +1784,7 @@ class App:
                                     'flat halves of TEST (market direction regime; causal, lagged one bar).\n'
                                     'Analysis, not selection: picking alphas by TEST numbers is another\n'
                                     'layer of TEST peeking;\n'
-                                    'trades L/S = total number of long / short positions OPENED over TEST\n'
+                                    'L/S /yr·a = positions opened per asset per year on TEST, long / short\n'
                                     '(a trade = crossing into long/short from flat or the opposite side);\n'
                                     'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
                                     'filter drops barely-trading alphas); win% = share of days with profit.\n'
@@ -2329,6 +2349,7 @@ class App:
         self.v_pars.set(c['parsimony']); self.v_corrt.set(c['corr_threshold'])
         self.v_corrp.set(c['corr_penalty']); self.v_hof.set(c['hof_capacity'])
         self.v_fitblocks.set(c.get('fit_blocks', 5))
+        self.v_optwr.set(c.get('opt_winrate', False))
         self.v_train.set(c['train_start']); self.v_val.set(c['val_start'])
         self.v_test.set(c['test_start']); self.v_end.set(c['test_end'])
 
@@ -2781,6 +2802,7 @@ class App:
             ALPHANODE_CORR_PENALTY=str(c['corr_penalty']),
             ALPHANODE_HOF_CAPACITY=str(c['hof_capacity']),
             ALPHANODE_FIT_BLOCKS=str(c['fit_blocks']),
+            ALPHANODE_FIT_METRIC=('winrate' if c.get('opt_winrate') else 'sharpe'),
             ALPHANODE_TRAIN_START=c['train_start'], ALPHANODE_VAL_START=c['val_start'],
             ALPHANODE_TEST_START=c['test_start'], ALPHANODE_TEST_END=c['test_end'],
         )
@@ -3258,7 +3280,10 @@ class App:
             hist = st.get('history') or []               # the retired PROGRESS chart, as one number
             fit = next((p.get('best_base', p.get('best_test')) for p in reversed(hist)
                         if p.get('best_base', p.get('best_test')) is not None), None)
-            self.s_fit.configure(text=f'{fit:+.2f}' if fit is not None else '—')
+            wr = st.get('fit_metric') == 'winrate' and isinstance(fit, (int, float)) \
+                and 0.0 <= fit <= 1.0                    # a winrate base is a share
+            self.s_fit.configure(text=('—' if fit is None
+                                       else f'{fit * 100:.0f}%' if wr else f'{fit:+.2f}'))
         # the leaderboard is a view of the LIBRARY FILE, not of the node: it must fill
         # even when no status.json exists yet (fresh start, restored session)
         self._refresh_leaderboard(st.get('best', []))
@@ -3293,7 +3318,7 @@ class App:
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
     _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt',
-                 'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'formula')
+                 'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown', 'formula')
 
     @staticmethod
     def _finite(v):
@@ -3316,7 +3341,7 @@ class App:
                 else self._finite(m.get(col))
         if col == 'srt':
             return self._finite(m.get('sortino'))
-        if col in ('tup', 'tdown', 'tflat'):
+        if col in ('tup', 'tdown', 'tflat', 'wup', 'wdown'):
             return self._finite(m.get(col))
         if col == 'ls':
             return m.get('long', 0) + m.get('short', 0)
@@ -3330,6 +3355,14 @@ class App:
         col, desc = self._sort_col, self._sort_desc
         if col == 'formula':
             return sorted(rows, key=lambda c: c.get('formula', ''), reverse=desc)
+        if col == 'fit':                                 # two-tier: active objective's rows ALWAYS
+            act = 'winrate' if self.cfg.get('opt_winrate') else 'sharpe'
+
+            def bk(c):                                   # first (their bases share a scale), the
+                b = c.get('base')                        # click only flips base order inside tiers
+                b = b if isinstance(b, (int, float)) else float('-inf')
+                return ((c.get('fit_metric') or 'sharpe') != act, -b if desc else b)
+            return sorted(rows, key=bk)
 
         def k(c):
             v = self._sort_key(c, col)
@@ -3342,8 +3375,8 @@ class App:
             self.tree.heading(c, text=txt.upper() + arrow)
 
     _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt',
-                     'tup', 'tdown', 'tflat', 'ls', 'act', 'win')
-    _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'tup', 'tdown', 'tflat')
+                     'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown')
+    _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'wup', 'wdown', 'tup', 'tdown', 'tflat')
 
     def _adv_cols(self):
         """Advanced display columns: the honest core (#/fitness/TEST/formula) plus the user's
@@ -3481,8 +3514,12 @@ class App:
             rows = [c for c in rows if self._LB_TESTKEY(c) is not None]
             rows.sort(key=self._LB_TESTKEY, reverse=True)        # top by held-out TEST OOS (cherry-pick)
         else:
+            act = 'winrate' if self.cfg.get('opt_winrate') else 'sharpe'
             rows = [c for c in rows if c.get('base') is not None]
-            rows.sort(key=lambda c: c.get('base'), reverse=True)  # top by honest fitness min(train,val)
+            # active objective first: winrate bases (<=1.0) and Sharpe bases (~1-2.5) are
+            # different units — one raw ladder sinks every row of the other mode
+            rows.sort(key=lambda c: ((c.get('fit_metric') or 'sharpe') != act,
+                                     -c.get('base')))
         families = self._families(rows, self._lb_target)
         self._lib_cache.update(all=rows, families=families, mtime=mtime, select=select,
                                computing=False, dirty=True, computed=True)
@@ -3544,14 +3581,18 @@ class App:
                 m = self._metrics_cache.get(formula)
             need = max(need, self._tree_font.measure(f))   # row; the two spaces are the gutter to
             #                                                the neighbour cell's right-flush value
-            ls, act, win, srt, tup, tdn, tfl = self._fmt_metrics(m)
+            ls, act, win, wup, wdn, srt, tup, tdn, tfl = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
+            fitcell = ('—' if base is None                        # win-rate-mined rows carry a
+                       else f'{base * 100:.0f}%'                  # fit_metric tag: their 'base'
+                       if c.get('fit_metric') == 'winrate'        # is a share, not a Sharpe
+                       else f'{base:+.2f}')
             item = self.tree.insert('', 'end', values=(
                 ('★' if aid in self._fav_ids else ''),
-                i + 1, f'{base:+.2f}' if base is not None else '—',
+                i + 1, fitcell,
                 f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt,
-                tup, tdn, tfl, ls, act, win, aid, f),
+                tup, tdn, tfl, ls, act, win, wup, wdn, aid, f),
                 tags=tags)
             self._row_items[formula or ('id:' + aid)] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
@@ -3617,7 +3658,7 @@ class App:
     def _pump_metrics(self):
         """After a redraw: compute the visible rows' stats. Sorting BY a stat column is the one case
         that needs every value at once (else the order is wrong), so there we compute the full set."""
-        if self._sort_col in ('ls', 'act', 'win', 'srt',
+        if self._sort_col in ('ls', 'act', 'win', 'wup', 'wdown', 'srt',
                               'tup', 'tdown', 'tflat', 'dd', 'cagr'):
             self._start_metrics(self._shown)
         else:
@@ -3642,16 +3683,25 @@ class App:
         return self._fmt_ratio(v, pct=pct)               # which read as truncated content
 
     @staticmethod
+    def _fmt_winpct(v):
+        return f'{v * 100:.0f}%' if isinstance(v, (int, float)) else '—'
+
+    @staticmethod
     def _fmt_metrics(m):
-        """('L/S', 'tr/yr·a', 'win%', 'sortino', 'T↑', 'T↓', 'T~') strings from the cache:
-        None=still computing, 'err'=failed."""
+        """('L/S', 'tr/yr·a', 'win%', 'win↑', 'win↓', 'sortino', 'T↑', 'T↓', 'T~') strings
+        from the cache: None=still computing, 'err'=failed."""
         if m is None:
-            return ('·',) * 7                            # still computing (quiet placeholder)
+            return ('·',) * 9                            # still computing (quiet placeholder)
         if m == 'err':
-            return ('—',) * 7
+            return ('—',) * 9
         a = m.get('act', 0.0)
         astr = f'{a:.1f}' if a < 10 else f'{a:.0f}'
-        return (f'{m["long"]:.0f}/{m["short"]:.0f}', astr, f'{m["win"] * 100:.0f}%',
+        if m.get('long_yr') is not None and m.get('short_yr') is not None:
+            ls = f'{m["long_yr"]:.1f}/{m["short_yr"]:.1f}'   # entries / asset / year, by side
+        else:                                            # a cache doc from an older worker
+            ls = f'{m["long"]:.0f}/{m["short"]:.0f}'
+        return (ls, astr, f'{m["win"] * 100:.0f}%',
+                App._fmt_winpct(m.get('wup')), App._fmt_winpct(m.get('wdown')),
                 App._fmt_ratio(m.get('sortino')), App._fmt_ratio(m.get('tup')),
                 App._fmt_ratio(m.get('tdown')), App._fmt_ratio(m.get('tflat')))
 
@@ -3747,10 +3797,12 @@ class App:
             if formula.startswith('id:'):                # locked row: no plaintext to simulate —
                 continue                                 # leave its '—' cells, don't repaint to '·'
             m = self._metrics_cache.get(formula)
-            ls, act, win, srt, tup, tdn, tfl = self._fmt_metrics(m)
+            ls, act, win, wup, wdn, srt, tup, tdn, tfl = self._fmt_metrics(m)
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
+            self.tree.set(item, 'wup', wup)
+            self.tree.set(item, 'wdown', wdn)
             self.tree.set(item, 'srt', srt)
             self.tree.set(item, 'tup', tup)
             self.tree.set(item, 'tdown', tdn)
@@ -3761,7 +3813,7 @@ class App:
                         self.tree.set(item, col, self._fmt_ratio(m.get(col), pct=True))
         if seq != self._metrics_seq:
             return
-        if self._sort_col in ('ls', 'act', 'win', 'srt',
+        if self._sort_col in ('ls', 'act', 'win', 'wup', 'wdown', 'srt',
                               'tup', 'tdown', 'tflat', 'dd', 'cagr'):
             self._treesig = None
             self._render_lb(self._lb_rows() or self._shown)
@@ -3933,7 +3985,7 @@ class App:
             v = (c.get(seg) or {}).get('sharpe')
             return f'{v:+.2f}' if v is not None else '—'
         txt = (f"{c.get('formula', '')}\n"
-               f"fitness(base)={c.get('base')}  train={sh('train')}  val={sh('val')}  TEST(OOS)={sh('test')}")
+               f"fitness(base)={c.get('base')}{' (win rate)' if c.get('fit_metric') == 'winrate' else ''}  train={sh('train')}  val={sh('val')}  TEST(OOS)={sh('test')}")
         self._to_clipboard(txt, '✓ formula + metrics copied')
 
     # ---------- favorites (starred formulas) ----------
@@ -4001,9 +4053,12 @@ class App:
             for f in favdb.load(STATE_DIR):
                 t = f.get('test') if isinstance(f.get('test'), dict) else {}
                 ts, base = t.get('sharpe'), f.get('base')
+                fitc = ('—' if not isinstance(base, (int, float))
+                        else f'{base * 100:.0f}%' if f.get('fit_metric') == 'winrate'
+                        else f'{base:+.2f}')
                 iid = tv.insert('', 'end', values=(
                     f.get('added', '—'), favdb.alpha_id(f['formula']), f.get('tf', '—'),
-                    f'{base:+.2f}' if isinstance(base, (int, float)) else '—',
+                    fitc,
                     f'{ts:+.2f}' if isinstance(ts, (int, float)) else '—',
                     '  ' + f['formula']))
                 rows[iid] = f
@@ -4107,6 +4162,7 @@ class App:
             base = c.get('base')
             out.append([i + 1,
                         round(base, 4) if isinstance(base, (int, float)) else '',
+                        c.get('fit_metric', ''),
                         self._seg(c, 'train', 'sharpe'), self._seg(c, 'val', 'sharpe'),
                         self._seg(c, 'test', 'sharpe'), self._seg(c, 'test', 'dd'),
                         self._seg(c, 'test', 'cagr'),
@@ -4115,14 +4171,19 @@ class App:
                         round(m['tdown'], 3) if isinstance(m.get('tdown'), (int, float)) else '',
                         round(m['tflat'], 3) if isinstance(m.get('tflat'), (int, float)) else '',
                         m.get('long', ''), m.get('short', ''),
+                        round(m['long_yr'], 2) if isinstance(m.get('long_yr'), (int, float)) else '',
+                        round(m['short_yr'], 2) if isinstance(m.get('short_yr'), (int, float)) else '',
                         round(m['act'], 2) if 'act' in m else '',
                         round(m['win'] * 100, 1) if 'win' in m else '',
+                        round(m['wup'] * 100, 1) if isinstance(m.get('wup'), (int, float)) else '',
+                        round(m['wdown'] * 100, 1) if isinstance(m.get('wdown'), (int, float)) else '',
                         aid, fcell])
-        self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
+        self._save_csv(path, ('rank', 'fitness', 'fit_metric', 'train_sharpe', 'val_sharpe', 'test_sharpe',
                               'test_dd', 'test_cagr', 'test_sortino',
                               'test_sh_trend_up', 'test_sh_trend_down',
-                              'test_sh_flat', 'long', 'short', 'tr_yr_a',
-                              'win_pct', 'id', 'formula'), out, 'rows')
+                              'test_sh_flat', 'long', 'short', 'long_yr_a', 'short_yr_a',
+                              'tr_yr_a', 'win_pct', 'win_up_pct', 'win_down_pct',
+                              'id', 'formula'), out, 'rows')
 
     def _export_library(self):
         """Everything the node has ever mined — no dedup, no TEST filter. The table on screen is a
@@ -4952,6 +5013,10 @@ class App:
             self._lbl(head, text=f"TEST by market direction:   T↑ {self._fmt_ratio(_m.get('tup'))}"
                                  f"   ·   T↓ {self._fmt_ratio(_m.get('tdown'))}"
                                  f"   ·   T~ {self._fmt_ratio(_m.get('tflat'))}  (Sharpe)",
+                      text_color=MUT, anchor='w', font=(self.UI, 11)).pack(anchor='w')
+        if isinstance(_m, dict) and any(_m.get(k) is not None for k in ('wup', 'wdown')):
+            self._lbl(head, text=f"win rate by direction:   W↑ {self._fmt_winpct(_m.get('wup'))}"
+                                 f"   ·   W↓ {self._fmt_winpct(_m.get('wdown'))}",
                       text_color=MUT, anchor='w', font=(self.UI, 11)).pack(anchor='w')
         self._lbl(head, text=champ.get('formula', ''), text_color=MUT, justify='left', anchor='w',
                      wraplength=img_w - 30, font=(self.MONO, 12)).pack(anchor='w', pady=(6, 0))

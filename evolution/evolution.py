@@ -26,7 +26,8 @@ def fit_cfg(cfg):
     return {'blocks': cfg.get('fit_blocks', 0), 'quantile': cfg.get('fit_quantile', 0.25),
             'se_penalty': cfg.get('fit_se_penalty', 1.0),
             'conc_penalty': cfg.get('fit_conc_penalty', 0.0),
-            'min_eff_n': cfg.get('fit_min_eff_n', 3.0)}
+            'min_eff_n': cfg.get('fit_min_eff_n', 3.0),
+            'metric': cfg.get('fit_metric', 'sharpe')}
 
 
 def _winit(data, start, end, splits, vol, exec_rate, instruments, freq, vol_window, ann,
@@ -100,11 +101,15 @@ def fitness(res, hof, cfg):
     base = res['base_fit']                  # legacy min(train,val) or robust blocks — evaluate() decides
     if not np.isfinite(base):
         return -1e9
-    fit = base - cfg['parsimony'] * res['size']
+    # parsimony/corr penalties are calibrated in Sharpe units (~2.5-wide scale); the
+    # win-rate objective lives on ~0.25, so unscaled parsimony alone (~0.2 for a 20-node
+    # tree) would swamp the whole signal and collapse the GP into stumps
+    scale = 0.1 if cfg.get('fit_metric') == 'winrate' else 1.0
+    fit = base - scale * cfg['parsimony'] * res['size']
     if hof:
         mc = max(corr(res['rv'], h['rv']) for h in hof)
         if mc > cfg['corr_thresh']:
-            fit -= cfg['corr_penalty'] * (mc - cfg['corr_thresh'])
+            fit -= scale * cfg['corr_penalty'] * (mc - cfg['corr_thresh'])
     return fit
 
 

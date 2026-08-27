@@ -61,9 +61,11 @@ def _rescore_one(row):
     from evaluator import evaluate
     cfg = _G['cfg']
     try:
+        met = (row.get('fit_metric') or 'sharpe').strip().lower()
         res = evaluate(parse(row['formula']), _G['tk'], _G['panel'], _G['market'],
                        cfg['splits'], cfg['vol'], cfg['exec'],
-                       ann=cfg.get('ann', 365.0), ewma_lambda=cfg.get('ewma_lambda', 0.06))
+                       ann=cfg.get('ann', 365.0), ewma_lambda=cfg.get('ewma_lambda', 0.06),
+                       fit={'metric': met})
     except Exception:                                    # noqa: BLE001
         res = None
     if res is None:                                      # degenerate under honest rules
@@ -71,7 +73,9 @@ def _rescore_one(row):
     rm = lambda m: ({k: round(float(v), 4) for k, v in m.items()} if m else None)  # noqa: E731
     out = dict(row)
     out['train'], out['val'], out['test'] = rm(res['train']), rm(res['val']), rm(res['test'])
-    out['base'] = round(min(res['train_sharpe'], res['val_sharpe']), 3)
+    out['base'] = round(res['base_fit'], 3)          # in the row's OWN objective — a winrate
+    #                                                  row must not wake up rescored in Sharpe
+    #                                                  units under a still-'winrate' tag
     return out
 
 
