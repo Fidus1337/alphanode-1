@@ -303,19 +303,20 @@ nav{border-bottom:1px solid var(--line)}
           <li><a href="#e6-2"><span class="num">6.02</span><span class="txt">#</span><span class="pg" data-num="6.02">22</span></a></li>
           <li><a href="#e6-3"><span class="num">6.03</span><span class="txt">fitness</span><span class="pg" data-num="6.03">22</span></a></li>
           <li><a href="#e6-4"><span class="num">6.04</span><span class="txt">TEST OOS</span><span class="pg" data-num="6.04">22</span></a></li>
-          <li><a href="#e6-5"><span class="num">6.05</span><span class="txt">maxDD</span><span class="pg" data-num="6.05">22</span></a></li>
-          <li><a href="#e6-6"><span class="num">6.06</span><span class="txt">CAGR</span><span class="pg" data-num="6.06">23</span></a></li>
-          <li><a href="#e6-7"><span class="num">6.07</span><span class="txt">sortino</span><span class="pg" data-num="6.07">23</span></a></li>
-          <li><a href="#e6-8"><span class="num">6.08</span><span class="txt">T ↑</span><span class="pg" data-num="6.08">23</span></a></li>
-          <li><a href="#e6-9"><span class="num">6.09</span><span class="txt">T ↓</span><span class="pg" data-num="6.09">23</span></a></li>
-          <li><a href="#e6-10"><span class="num">6.10</span><span class="txt">T ~</span><span class="pg" data-num="6.10">23</span></a></li>
-          <li><a href="#e6-11"><span class="num">6.11</span><span class="txt">L/S /yr·a</span><span class="pg" data-num="6.11">24</span></a></li>
-          <li><a href="#e6-12"><span class="num">6.12</span><span class="txt">tr/yr·a</span><span class="pg" data-num="6.12">24</span></a></li>
-          <li><a href="#e6-13"><span class="num">6.13</span><span class="txt">win%</span><span class="pg" data-num="6.13">24</span></a></li>
-          <li><a href="#e6-14"><span class="num">6.14</span><span class="txt">win ↑</span><span class="pg" data-num="6.14">24</span></a></li>
-          <li><a href="#e6-15"><span class="num">6.15</span><span class="txt">win ↓</span><span class="pg" data-num="6.15">24</span></a></li>
-          <li><a href="#e6-16"><span class="num">6.16</span><span class="txt">ID</span><span class="pg" data-num="6.16">25</span></a></li>
-          <li><a href="#e6-17"><span class="num">6.17</span><span class="txt">formula</span><span class="pg" data-num="6.17">25</span></a></li>
+          <li><a href="#e6-5"><span class="num">6.05</span><span class="txt">steadiness</span><span class="pg" data-num="6.05">22</span></a></li>
+          <li><a href="#e6-6"><span class="num">6.06</span><span class="txt">maxDD</span><span class="pg" data-num="6.06">23</span></a></li>
+          <li><a href="#e6-7"><span class="num">6.07</span><span class="txt">CAGR</span><span class="pg" data-num="6.07">23</span></a></li>
+          <li><a href="#e6-8"><span class="num">6.08</span><span class="txt">sortino</span><span class="pg" data-num="6.08">23</span></a></li>
+          <li><a href="#e6-9"><span class="num">6.09</span><span class="txt">T ↑</span><span class="pg" data-num="6.09">23</span></a></li>
+          <li><a href="#e6-10"><span class="num">6.10</span><span class="txt">T ↓</span><span class="pg" data-num="6.10">24</span></a></li>
+          <li><a href="#e6-11"><span class="num">6.11</span><span class="txt">T ~</span><span class="pg" data-num="6.11">24</span></a></li>
+          <li><a href="#e6-12"><span class="num">6.12</span><span class="txt">L/S /yr·a</span><span class="pg" data-num="6.12">24</span></a></li>
+          <li><a href="#e6-13"><span class="num">6.13</span><span class="txt">tr/yr·a</span><span class="pg" data-num="6.13">24</span></a></li>
+          <li><a href="#e6-14"><span class="num">6.14</span><span class="txt">win%</span><span class="pg" data-num="6.14">24</span></a></li>
+          <li><a href="#e6-15"><span class="num">6.15</span><span class="txt">win ↑</span><span class="pg" data-num="6.15">25</span></a></li>
+          <li><a href="#e6-16"><span class="num">6.16</span><span class="txt">win ↓</span><span class="pg" data-num="6.16">25</span></a></li>
+          <li><a href="#e6-17"><span class="num">6.17</span><span class="txt">ID</span><span class="pg" data-num="6.17">25</span></a></li>
+          <li><a href="#e6-18"><span class="num">6.18</span><span class="txt">formula</span><span class="pg" data-num="6.18">25</span></a></li>
         </ol>
       </div>
       <div class="cpart">
@@ -665,64 +666,69 @@ nav{border-bottom:1px solid var(--line)}
         <p class="warn"><b>Watch out.</b> Clicking this header does far more than re-sort: the whole library is re-read and re-ranked by held-out TEST, every row with no TEST number is dropped, and the heading changes to &quot;cherry-picked ⚠&quot;. That is peeking by construction. Click &quot;fitness&quot; to get the honest population back.</p>
       </div>
       <div class="item" id="e6-5">
-        <div class="hd"><h3><span class="num">6.05</span>maxDD</h3><span class="pill">default <b>shown by default</b></span></div>
+        <div class="hd"><h3><span class="num">6.05</span>steadiness</h3><span class="pill">default <b>shown by default · 12 blocks over the whole loaded history</b></span></div>
+        <p>The one column that answers a question a single number cannot: was this level all along, or was it one good quarter? The whole loaded history — TRAIN, VAL and TEST together — is cut into twelve equal stretches of CALENDAR time, and each block is that stretch&#x27;s Sharpe. Mid height is zero, full height is +2 or better, an empty block is −2 or worse, and · is a stretch with too little to measure. The scale is fixed rather than per-row, so strips can be read against each other straight down the column. A strip that is level at +0.8 is worth more than one averaging +2.5 out of a single block. The header tooltip names the exact span and says how many of the twelve blocks fall inside the held-out stretch. It costs nothing to compute — the return series was already simulated for the other columns, this only slices it.</p>
+        <p class="warn"><b>Watch out.</b> A twelfth of history is a short window, so each block is a noisy Sharpe: a genuine, constant edge still shows some losing blocks, and one low block on its own is not evidence of anything. Read the SHAPE, not the individual heights. That is also why sorting this column ranks by the MEDIAN block, which one lucky stretch cannot lift, rather than by the average. The first blocks cover the years the search was fitted on, so they flatter every row by construction — the comparison worth making is early blocks against the held-out ones at the end.</p>
+      </div>
+      <div class="item" id="e6-6">
+        <div class="hd"><h3><span class="num">6.06</span>maxDD</h3><span class="pill">default <b>shown by default</b></span></div>
         <p>Worst peak-to-trough fall of the TEST equity curve, as a negative percentage. The pain metric — this is what decides whether you could actually hold the thing. Two formulas with the same Sharpe and drawdowns of −15% versus −45% are completely different products. It moves with your target-vol setting: halve the target and the drawdown comes down roughly in step.</p>
         <p class="warn"><b>Watch out.</b> Unlike the recomputed cells, this prefers the value STORED when the alpha was mined. Change target vol, fee, pairs or dates and maxDD and CAGR still describe the OLD settings while every other recomputed cell in the same row describes the new ones.</p>
       </div>
-      <div class="item" id="e6-6">
-        <div class="hd"><h3><span class="num">6.06</span>CAGR</h3><span class="pill">default <b>shown by default</b></span></div>
+      <div class="item" id="e6-7">
+        <div class="hd"><h3><span class="num">6.07</span>CAGR</h3><span class="pill">default <b>shown by default</b></span></div>
         <p>Compound annual growth rate on TEST. A dash means the equity ended at or below zero, so no growth rate exists. Pair it with maxDD, never read it alone: CAGR ÷ |maxDD| is a quick sense of return per unit of pain. Like maxDD it moves with your target-vol dial, so it says as much about your risk setting as about the alpha&#x27;s edge.</p>
         <p class="warn"><b>Watch out.</b> Same stale-value trap as maxDD — taken from the library row first.</p>
       </div>
-      <div class="item" id="e6-7">
-        <div class="hd"><h3><span class="num">6.07</span>sortino</h3><span class="pill">default <b>hidden — right-click a header to switch it on</b></span></div>
+      <div class="item" id="e6-8">
+        <div class="hd"><h3><span class="num">6.08</span>sortino</h3><span class="pill">default <b>hidden — right-click a header to switch it on</b></span></div>
         <p>Like Sharpe, but only losing bars count toward the wobble in the denominator; upside volatility is free. Look at it when a Sharpe seems unfairly low: a big sortino-to-Sharpe gap means the volatility Sharpe punished was mostly good volatility. If it is barely above Sharpe, the returns are symmetric and Sharpe was telling the truth.</p>
         <p class="warn"><b>Watch out.</b> A dash here can mean the opposite of failure — with no losing bars at all the downside deviation is zero and the code returns nothing rather than infinity. In practice that almost always means an alpha that traded a handful of bars; cross-check tr/yr·a.</p>
       </div>
-      <div class="item" id="e6-8">
-        <div class="hd"><h3><span class="num">6.08</span>T ↑</h3><span class="pill">default <b>shown by default · the header carries the bucket&#x27;s bar count</b></span></div>
+      <div class="item" id="e6-9">
+        <div class="hd"><h3><span class="num">6.09</span>T ↑</h3><span class="pill">default <b>shown by default · the header carries the bucket&#x27;s bar count</b></span></div>
         <p>TEST Sharpe measured only on bars where the market as a whole was trending UP. The regime is decided by the market, not the formula: an equal-weight basket of your universe has its drift measured over the trailing ~30 calendar days, and if that drift is statistically confident (t ≥ 1.28) the bar takes the drift&#x27;s sign. This is the regime question — does the alpha only make money when everything rises, in which case you have bought beta, not alpha? T↑ and T↓ both meaningfully positive is genuinely direction-neutral and much more valuable.</p>
         <p class="warn"><b>Watch out.</b> The label is deliberately lagged one bar; without that lag a plain market-clone showed roughly +1.3 of pure T↑-minus-T↓ Sharpe out of thin air. Two different causes of a dash: under 30 TEST bars in the bucket (hits every row at once, since the split is the market&#x27;s calendar) or the formula sat flat through the whole bucket (per-row).</p>
       </div>
-      <div class="item" id="e6-9">
-        <div class="hd"><h3><span class="num">6.09</span>T ↓</h3><span class="pill">default <b>shown by default</b></span></div>
+      <div class="item" id="e6-10">
+        <div class="hd"><h3><span class="num">6.10</span>T ↓</h3><span class="pill">default <b>shown by default</b></span></div>
         <p>The same measurement on confidently DOWN-trending bars. The most informative of the three for crypto: most formulas quietly make their money long, and a positive T↓ is the evidence that the alpha survives a bear leg. If you plan to run this through a drawdown, read this column first.</p>
       </div>
-      <div class="item" id="e6-10">
-        <div class="hd"><h3><span class="num">6.10</span>T ~</h3><span class="pill">default <b>shown by default</b></span></div>
+      <div class="item" id="e6-11">
+        <div class="hd"><h3><span class="num">6.11</span>T ~</h3><span class="pill">default <b>shown by default</b></span></div>
         <p>TEST Sharpe on FLAT bars — where the basket&#x27;s drift was not confident either way. Usually the largest of the three buckets. This is where mean-reversion and relative-value formulas earn their keep and where trend-followers bleed. Strong in T~ and weak in T↑/T↓ is a chop specialist: useful, but it underperforms exactly when the market is most exciting.</p>
       </div>
-      <div class="item" id="e6-11">
-        <div class="hd"><h3><span class="num">6.11</span>L/S /yr·a</h3><span class="pill">default <b>hidden — right-click a header to switch it on</b></span></div>
+      <div class="item" id="e6-12">
+        <div class="hd"><h3><span class="num">6.12</span>L/S /yr·a</h3><span class="pill">default <b>hidden — right-click a header to switch it on</b></span></div>
         <p>Long entries and short entries, per asset, per year, on TEST — &quot;3.2/1.8&quot; is roughly three new longs and two new shorts per coin per year. An entry is the moment the target weight crosses into long or short from flat or the opposite side. The alpha&#x27;s directional personality: 4.0/0.1 is a long-only formula wearing a long/short costume and will die in a bear market whatever its TEST Sharpe says; near 2.5/2.5 is genuinely two-sided. Normalised per asset, so a 5-coin universe compares directly with a 30-coin one.</p>
         <p class="warn"><b>Watch out.</b> Flipping straight from long to short counts as ONE entry, and holding for eight months counts as zero further entries — this measures decision frequency, not how much notional you push around.</p>
       </div>
-      <div class="item" id="e6-12">
-        <div class="hd"><h3><span class="num">6.12</span>tr/yr·a</h3><span class="pill">default <b>hidden — right-click a header to switch it on</b></span></div>
+      <div class="item" id="e6-13">
+        <div class="hd"><h3><span class="num">6.13</span>tr/yr·a</h3><span class="pill">default <b>hidden — right-click a header to switch it on</b></span></div>
         <p>Trades per asset per year on TEST: the two L/S numbers added together. The activity dial. Low single digits means a slow position-holder where fees barely matter; a few hundred means an alpha whose profitability lives or dies on your fee setting — re-check TEST Sharpe with a realistic fee before believing it.</p>
         <p class="warn"><b>Watch out.</b> It counts INTENDED entries, not fills: the simulator leaves a position alone whenever the required change is under 10% of the new target. Honest about how often the formula changes its mind, an overstatement of how often you would touch the exchange.</p>
       </div>
-      <div class="item" id="e6-13">
-        <div class="hd"><h3><span class="num">6.13</span>win%</h3><span class="pill">default <b>shown by default</b></span></div>
+      <div class="item" id="e6-14">
+        <div class="hd"><h3><span class="num">6.14</span>win%</h3><span class="pill">default <b>shown by default</b></span></div>
         <p>The share of bars on TEST where the strategy made money. The denominator counts only ACTIVE bars — flat bars are excluded entirely. Best read against tr/yr·a: a high win% on an alpha that trades constantly is a real edge, a high win% on one that trades rarely is a small sample dressed up as skill. Win rate and profitability are different questions — 45% with big winners beats 65% with big losers.</p>
         <p class="warn"><b>Watch out.</b> The tooltip says &quot;profitable days&quot; but on 4h/1h/15m these are bars. And do not read a win-rate-mined row&#x27;s fitness cell as a corrected version of this one: fitness is measured on TRAIN and VAL, this column on TEST. Different periods, not two views of the same number.</p>
       </div>
-      <div class="item" id="e6-14">
-        <div class="hd"><h3><span class="num">6.14</span>win ↑</h3><span class="pill">default <b>shown by default</b></span></div>
+      <div class="item" id="e6-15">
+        <div class="hd"><h3><span class="num">6.15</span>win ↑</h3><span class="pill">default <b>shown by default</b></span></div>
         <p>Win rate on confidently up-trending bars — same regime and same one-bar lag as T ↑. Use it with T ↑ to separate two failure modes: decent win↑ with poor T↑ means the formula wins often but its losses are large; poor win↑ with decent T↑ means it wins rarely and wins big. Both are real strategies, needing very different sizing and very different patience from you.</p>
         <p class="warn"><b>Watch out.</b> A stricter evidence bar than the T columns: 30 bars in the regime AND at least 5 where the formula made or lost something. A dash here beside a numeric T↑ just means it was mostly flat during up-trends.</p>
       </div>
-      <div class="item" id="e6-15">
-        <div class="hd"><h3><span class="num">6.15</span>win ↓</h3><span class="pill">default <b>shown by default</b></span></div>
+      <div class="item" id="e6-16">
+        <div class="hd"><h3><span class="num">6.16</span>win ↓</h3><span class="pill">default <b>shown by default</b></span></div>
         <p>Win rate on confidently down-trending bars, same definition and the same two evidence floors. The stress-test companion to T ↓: if win↓ collapses while win↑ stays high, the formula is a long-bias machine whatever its entry counts suggest.</p>
       </div>
-      <div class="item" id="e6-16">
-        <div class="hd"><h3><span class="num">6.16</span>ID</h3><span class="pill">default <b>shown by default</b></span></div>
+      <div class="item" id="e6-17">
+        <div class="hd"><h3><span class="num">6.17</span>ID</h3><span class="pill">default <b>shown by default</b></span></div>
         <p>A stable 6-character fingerprint of the formula (the first six of its md5). The same formula always gets the same ID. This is the handle used everywhere else — the forward track, favourites, the search box, both CSV exports.</p>
         <p class="warn"><b>Watch out.</b> The two exports do not print it the same way: &quot;Export table&quot; writes the 6 characters you see, &quot;Export full library&quot; writes 12, so a plain text match between the files fails unless you trim.</p>
       </div>
-      <div class="item" id="e6-17">
-        <div class="hd"><h3><span class="num">6.17</span>formula</h3><span class="pill">default <b>always shown</b></span></div>
+      <div class="item" id="e6-18">
+        <div class="hd"><h3><span class="num">6.18</span>formula</h3><span class="pill">default <b>always shown</b></span></div>
         <p>The alpha itself, in full. The column is sized to the widest formula rather than truncated, so long ones bring out the horizontal scrollbar. Length is itself information: the search subtracts a penalty per node, so a short formula that still made the library beat that handicap and is usually the more robust one. Click a cell to make the text selectable, or use Copy formula.</p>
         <p class="warn"><b>Watch out.</b> Absolute SCALE is meaningless — a formula and the same formula times 100 are literally the same strategy, so do not read big constants as &quot;aggressive&quot;. A locked row shows &quot;locked&quot; here and dashes in all nine recomputed cells, while fitness, TEST OOS, maxDD and CAGR still show real numbers, because those were stored before it was sealed.</p>
       </div>

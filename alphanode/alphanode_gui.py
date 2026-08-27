@@ -190,6 +190,7 @@ DEFAULTS = {
     'lb_rows': 12,          # leaderboard rows at natural height (when lb_h is 0)
     'lb_h': 0,              # leaderboard table height, dp; 0 = natural (lb_rows rows)
     'lb_cols': None,        # Advanced leaderboard: enabled OPTIONAL columns; None = default set
+    'lb_cols_v2': False,    # a saved lb_cols predating 'steadiness' gets it added once
     'fwd_rows': 4,          # forward-track rows at natural height (when fwd_h is 0)
     'fwd_h': 0,             # forward-track table height, dp; 0 = natural (fwd_rows rows)
     'pf_h': 0,              # portfolio equity-plot height, px; 0 = automatic (from width)
@@ -361,6 +362,11 @@ class App:
                 self.cfg['universe_list'] = ','.join(tick)
         for dead in ('fetch_n', 'fetch_years'):
             self.cfg.pop(dead, None)
+        # 2026-08: 'steadiness' joins the default columns. A saved lb_cols list predates it,
+        # so union it in ONCE — after that the user's own choice to hide it sticks.
+        if isinstance(self.cfg.get('lb_cols'), list) and not self.cfg.get('lb_cols_v2'):
+            self.cfg['lb_cols'] = sorted(set(self.cfg['lb_cols']) | {'strip'})
+        self.cfg['lb_cols_v2'] = True
         if not _parse_universe(self.cfg.get('universe_list') or ''):
             self.cfg['universe_list'] = DEFAULTS['universe_list']
 
@@ -1706,7 +1712,7 @@ class App:
         wrap = self._box(p2)
         wrap.pack(fill='both', expand=True)
         self._lbwrap = wrap                              # smooth pixel resize (its in-card grip)
-        cols = ('fav', 'rank', 'fit', 'test', 'dd', 'cagr', 'srt',
+        cols = ('fav', 'rank', 'fit', 'test', 'strip', 'dd', 'cagr', 'srt',
                 'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
                                  height=int(self.cfg.get('lb_rows') or 12))
@@ -1716,7 +1722,9 @@ class App:
         # which is what cut "3069/2100" down to "3069/:" and clipped the "tr/yr·a" heading itself.
         for c, txt, w, anc in (('fav', '★', 34, 'center'),
                                ('rank', '#', 40, 'center'), ('fit', 'fitness', 86, 'e'),
-                               ('test', 'TEST OOS', 86, 'e'), ('dd', 'maxDD', 74, 'e'),
+                               ('test', 'TEST OOS', 86, 'e'),
+                               ('strip', 'steadiness', 118, 'center'),
+                               ('dd', 'maxDD', 74, 'e'),
                                ('cagr', 'CAGR', 72, 'e'), ('srt', 'sortino', 80, 'e'),
                                ('tup', 'T ↑', 64, 'e'), ('tdown', 'T ↓', 64, 'e'),
                                ('tflat', 'T ~', 64, 'e'),
@@ -1751,6 +1759,15 @@ class App:
                    'such rows show a percentage, slightly below the raw win% column.',
             'test': 'held-out TEST Sharpe (out-of-sample) — never optimized;\n'
                     'picking rows by it is peeking',
+            'strip': 'STEADINESS — the whole loaded history cut into 12 equal stretches of\n'
+                     'calendar time, one block per stretch, showing that stretch\'s Sharpe.\n'
+                     'Mid height is 0, full height is +2 or better, empty is −2 or worse,\n'
+                     '\u00b7 is a stretch with too little to measure. The scale is FIXED, so\n'
+                     'strips can be read against each other down the column.\n'
+                     'A single TEST Sharpe cannot tell a formula that worked all along from\n'
+                     'one carried by a single quarter — this can. Level at +0.8 beats spiky\n'
+                     'at +2.5. Sorting uses the MEDIAN stretch, which one lucky quarter\n'
+                     'cannot lift. Costs nothing: the return series was simulated already.',
             'dd': 'worst peak-to-trough drawdown on TEST',
             'cagr': 'annualized growth on TEST',
             'srt': 'Sortino on TEST — like Sharpe, but only downside vol counts',
@@ -1801,6 +1818,11 @@ class App:
         # formulas render FULL length: the column is sized to the widest row and the horizontal
         # bar scrolls to the tail (_fit_formula_col); measuring needs the tree's own font
         self._tree_font = tkfont.Font(family=self.MONO, size=self._px(12))
+        # the strip is exactly twelve glyphs wide, so measure them instead of guessing a
+        # pixel width: a Treeview column is raw pixels while its text follows the DPI, and
+        # a strip clipped to eleven blocks is a wrong strip, not a narrow one
+        _sw = self._tree_font.measure('▅' * 12) + int(16 * self.SCALE)
+        self.tree.column('strip', width=_sw, minwidth=_sw, anchor='center', stretch=False)
         self._lb_need_px = 0
         hsb = ctk.CTkScrollbar(wrap, orientation='horizontal', command=self.tree.xview,
                                fg_color=CARD, button_color=BORDER, button_hover_color=FAINT,
@@ -2521,7 +2543,7 @@ class App:
                                        'workspace).', parent=self.root)
 
         _UI_KEYS = {'theme', 'settings_open', 'lb_mode', 'card_order', 'lb_rows', 'lb_h',
-                    'lb_cols', 'fwd_rows', 'fwd_h', 'pf_h', 'eula_accepted'}
+                    'lb_cols', 'lb_cols_v2', 'fwd_rows', 'fwd_h', 'pf_h', 'eula_accepted'}
 
         def _details(_event=None):
             path = _sel()
@@ -3317,7 +3339,7 @@ class App:
     _LB_TESTKEY = staticmethod(
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
-    _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt',
+    _SORTABLE = ('fit', 'test', 'strip', 'dd', 'cagr', 'srt',
                  'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown', 'formula')
 
     @staticmethod
@@ -3335,6 +3357,8 @@ class App:
             return c.get('formula', '')
         m = self._metrics_cache.get(c.get('formula', ''))    # the rest — from the metrics cache
         m = m if isinstance(m, dict) else {}
+        if col == 'strip':
+            return self._finite(self._strip_typical(m))
         if col in ('dd', 'cagr'):                            # library row first, worker fallback
             t = c.get('test') if isinstance(c.get('test'), dict) else {}
             return self._finite(t.get(col)) if self._finite(t.get(col)) is not None \
@@ -3374,9 +3398,10 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt.upper() + arrow)
 
-    _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt',
+    _LB_OPT_ORDER = ('strip', 'dd', 'cagr', 'id', 'srt',
                      'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown')
-    _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'wup', 'wdown', 'tup', 'tdown', 'tflat')
+    _LB_OPT_DEFAULT = ('strip', 'dd', 'cagr', 'id', 'win', 'wup', 'wdown',
+                       'tup', 'tdown', 'tflat')
 
     def _adv_cols(self):
         """Advanced display columns: the honest core (#/fitness/TEST/formula) plus the user's
@@ -3581,7 +3606,7 @@ class App:
                 m = self._metrics_cache.get(formula)
             need = max(need, self._tree_font.measure(f))   # row; the two spaces are the gutter to
             #                                                the neighbour cell's right-flush value
-            ls, act, win, wup, wdn, srt, tup, tdn, tfl = self._fmt_metrics(m)
+            ls, act, win, wup, wdn, srt, tup, tdn, tfl, stp = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
             fitcell = ('—' if base is None                        # win-rate-mined rows carry a
@@ -3591,7 +3616,7 @@ class App:
             item = self.tree.insert('', 'end', values=(
                 ('★' if aid in self._fav_ids else ''),
                 i + 1, fitcell,
-                f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt,
+                f'{ts:+.2f}' if ts is not None else '—', stp, dd, cagr, srt,
                 tup, tdn, tfl, ls, act, win, wup, wdn, aid, f),
                 tags=tags)
             self._row_items[formula or ('id:' + aid)] = item
@@ -3686,14 +3711,45 @@ class App:
     def _fmt_winpct(v):
         return f'{v * 100:.0f}%' if isinstance(v, (int, float)) else '—'
 
+    _BLOCKS = '▁▂▃▄▅▆▇█'                                 # eight heights, one per slice
+    _STRIP_LO, _STRIP_HI = -2.0, 2.0                     # the scale, FIXED so rows compare
+
+    @classmethod
+    def _fmt_strip(cls, vals):
+        """Twelve slices of history as twelve blocks. The scale is fixed rather than
+        per-row: a strip you cannot compare against the row above it is decoration. Mid
+        height is Sharpe 0, full is +2 or better, empty is −2 or worse, '·' is a slice
+        with too little to measure."""
+        if not isinstance(vals, (list, tuple)) or not vals:
+            return '—'
+        lo, hi, out = cls._STRIP_LO, cls._STRIP_HI, []
+        for v in vals:
+            if not isinstance(v, (int, float)) or v != v:
+                out.append('·')
+                continue
+            t = (min(max(float(v), lo), hi) - lo) / (hi - lo)
+            out.append(cls._BLOCKS[min(len(cls._BLOCKS) - 1, int(t * len(cls._BLOCKS)))])
+        return ''.join(out)
+
+    @staticmethod
+    def _strip_typical(m):
+        """The MEDIAN slice — what a normal stretch looked like. Sorting on it cannot be
+        carried by one lucky quarter the way the headline Sharpe can."""
+        vals = m.get('strip') if isinstance(m, dict) else None
+        got = sorted(v for v in (vals or []) if isinstance(v, (int, float)) and v == v)
+        if not got:
+            return None
+        mid = len(got) // 2
+        return got[mid] if len(got) % 2 else (got[mid - 1] + got[mid]) / 2.0
+
     @staticmethod
     def _fmt_metrics(m):
-        """('L/S', 'tr/yr·a', 'win%', 'win↑', 'win↓', 'sortino', 'T↑', 'T↓', 'T~') strings
-        from the cache: None=still computing, 'err'=failed."""
+        """('L/S', 'tr/yr·a', 'win%', 'win↑', 'win↓', 'sortino', 'T↑', 'T↓', 'T~',
+        'steadiness') strings from the cache: None=still computing, 'err'=failed."""
         if m is None:
-            return ('·',) * 9                            # still computing (quiet placeholder)
+            return ('·',) * 10                           # still computing (quiet placeholder)
         if m == 'err':
-            return ('—',) * 9
+            return ('—',) * 10
         a = m.get('act', 0.0)
         astr = f'{a:.1f}' if a < 10 else f'{a:.0f}'
         if m.get('long_yr') is not None and m.get('short_yr') is not None:
@@ -3703,7 +3759,8 @@ class App:
         return (ls, astr, f'{m["win"] * 100:.0f}%',
                 App._fmt_winpct(m.get('wup')), App._fmt_winpct(m.get('wdown')),
                 App._fmt_ratio(m.get('sortino')), App._fmt_ratio(m.get('tup')),
-                App._fmt_ratio(m.get('tdown')), App._fmt_ratio(m.get('tflat')))
+                App._fmt_ratio(m.get('tdown')), App._fmt_ratio(m.get('tflat')),
+                App._fmt_strip(m.get('strip')))
 
     def _start_metrics(self, champs):
         """Background computation of long/short/win (on TEST) for the shown alphas; cached by formula."""
@@ -3764,7 +3821,28 @@ class App:
         if isinstance(bars, dict) and bars != getattr(self, '_trend_bars', None):
             self._trend_bars = bars                      # worker thread -> headers on the main one
             self.root.after(0, self._apply_trend_bars)
+        meta = doc.get('strip_meta')
+        if isinstance(meta, dict) and meta != getattr(self, '_strip_meta', None):
+            self._strip_meta = meta
+            self.root.after(0, self._apply_strip_meta)
         return doc.get('metrics') or {}
+
+    def _apply_strip_meta(self):
+        """Say WHICH years the twelve blocks cover, and where the held-out stretch starts.
+        A strip whose span is unstated is a shape, not evidence — and the span moves the
+        moment the date fields do."""
+        meta = getattr(self, '_strip_meta', None)
+        if not isinstance(meta, dict):
+            return
+        n, oos = meta.get('n'), meta.get('oos')
+        if not isinstance(n, int) or not isinstance(oos, int):
+            return
+        base = self._HEAD_TIP.get('strip', '')
+        base = base.split('\nSpan: ')[0]
+        held = (f'the last {n - oos} of the {n} blocks are held out (TEST)'
+                if 0 <= oos < n else 'no block falls entirely inside TEST')
+        self._HEAD_TIP['strip'] = (base + f'\nSpan: {meta.get("start", "?")} to '
+                                          f'{meta.get("end", "?")} — {held}.')
 
     def _apply_trend_bars(self):
         """Stamp the TEST bucket sizes into the T↑/T↓/T~ headers ('T ↑ ·196') and their
@@ -3797,7 +3875,7 @@ class App:
             if formula.startswith('id:'):                # locked row: no plaintext to simulate —
                 continue                                 # leave its '—' cells, don't repaint to '·'
             m = self._metrics_cache.get(formula)
-            ls, act, win, wup, wdn, srt, tup, tdn, tfl = self._fmt_metrics(m)
+            ls, act, win, wup, wdn, srt, tup, tdn, tfl, stp = self._fmt_metrics(m)
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
@@ -3807,6 +3885,7 @@ class App:
             self.tree.set(item, 'tup', tup)
             self.tree.set(item, 'tdown', tdn)
             self.tree.set(item, 'tflat', tfl)
+            self.tree.set(item, 'strip', stp)
             if isinstance(m, dict):                      # dd/cagr fallback for legacy library rows
                 for col in ('dd', 'cagr'):
                     if self.tree.set(item, col) in ('·', '—'):
