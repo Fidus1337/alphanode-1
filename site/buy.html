@@ -1,0 +1,530 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light">
+<title>Buy activation — AlphaNode</title>
+<meta name="description" content="Activate AlphaNode: 499 USDT for the first activation and 30 days, then 99 USDT per 30 days. Register below and payment options in USDT (ERC20 and TRC20) arrive by email.">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="AlphaNode">
+<meta property="og:title" content="Buy activation — AlphaNode">
+<meta property="og:description" content="499 USDT for the first activation and 30 days, then 99 USDT per 30 days. Register and payment options in USDT (ERC20 / TRC20) arrive by email.">
+<meta property="og:image" content="https://alphanode.tech/og-card.png">
+<meta property="og:url" content="https://alphanode.tech/buy.html">
+<meta name="twitter:card" content="summary_large_image">
+<style>
+/* AlphaNode brand: warm paper, near-black ink, hairline rules, uppercase mono micro-labels,
+   periwinkle + orange, graphite bands. Single-theme by design — the paper IS the brand. */
+:root{
+  --paper:#f6f4f0; --card:#ffffff; --ink:#222121; --mut:#6f6b66;
+  --line:#dedddd; --soft:#eae9e6;
+  --acc:#7d8cff; --acctext:#5261d6; --orange:#f99c00;
+  --green:#1e7f4e; --red:#b3261e; --dark:#2e2b27; --darkline:#3f3b36;
+  --darkink:#f6f4f0; --darkmut:#a5a09a;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);
+  font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.wrap{max-width:960px;margin:0 auto;padding:0 28px}
+/* padding-block on anything stacked on a .wrap element — a same-specificity `padding: x 0`
+   shorthand later in the cascade would zero the side gutters and glue text to the screen edge */
+a{color:var(--acctext)}
+
+header{padding-block:72px 52px;border-bottom:1px solid var(--line)}
+.eyebrow{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  letter-spacing:.14em;text-transform:uppercase;color:var(--acctext);margin:0 0 16px}
+h1{font-size:clamp(34px,5.2vw,54px);font-weight:680;letter-spacing:-.025em;line-height:1.07;
+  margin:0;text-wrap:balance}
+h1 .quiet{color:var(--mut);font-weight:500}
+.lead{color:var(--mut);font-size:18.5px;max-width:62ch;margin:22px 0 0}
+
+/* ---- price cards ---- */
+.prices{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding-block:44px}
+.price{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:26px 26px 24px;
+  display:flex;flex-direction:column}
+.price.first{border-color:var(--ink)}
+.price .tag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--mut);margin:0 0 14px}
+.price.first .tag{color:var(--acctext)}
+.price .amt{font-size:40px;font-weight:680;letter-spacing:-.03em;line-height:1;
+  display:flex;align-items:baseline;gap:8px}
+.price .amt span{font-size:15px;font-weight:550;color:var(--mut);letter-spacing:0}
+.price .per{margin:10px 0 0;color:var(--mut);font-size:14.5px}
+.price ul{list-style:none;margin:18px 0 0;padding:16px 0 0;border-top:1px solid var(--line)}
+.price li{position:relative;padding-left:20px;margin:0 0 9px;font-size:14.5px;color:var(--mut)}
+.price li:last-child{margin-bottom:0}
+.price li::before{content:"";position:absolute;left:2px;top:.62em;width:7px;height:7px;
+  border-radius:50%;background:var(--acc)}
+.price.renew li::before{background:var(--line);border:1px solid var(--mut)}
+
+/* ---- how it works ---- */
+.flow{padding-block:8px 46px}
+.flow h2,.terms h2,.formsec h2{font-size:13px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--mut);font-weight:550;margin:0 0 22px}
+.steps{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;counter-reset:s}
+.step{background:var(--card);border:1px solid var(--line);border-radius:4px;padding:20px 20px 18px;
+  counter-increment:s}
+.step::before{content:counter(s,decimal-leading-zero);display:block;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;letter-spacing:.12em;
+  color:var(--orange);margin-bottom:12px}
+.step b{display:block;font-weight:600;font-size:15.5px;margin-bottom:6px}
+.step p{margin:0;color:var(--mut);font-size:14px;line-height:1.5}
+
+/* ---- form ---- */
+.formsec{border-top:1px solid var(--line);padding-block:46px}
+.formgrid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,340px);gap:44px;align-items:start}
+.req{max-width:46ch}
+.req label{display:block;font-size:13px;color:var(--mut);margin:0 0 6px}
+.req input[type=text],.req input[type=email],.req input[type=tel],.req textarea{
+  width:100%;box-sizing:border-box;background:var(--card);
+  border:1px solid var(--line);border-radius:3px;padding:11px 13px;font:inherit;font-size:15px;
+  color:var(--ink)}
+.req input:focus,.req textarea:focus{outline:none;border-color:var(--acc);
+  box-shadow:0 0 0 3px rgba(125,140,255,.18)}
+.req textarea{resize:vertical;min-height:76px}
+.req .gap{margin-top:16px}
+.req .btn{margin-top:20px;border:0}
+.req .btn[disabled]{opacity:.55;cursor:progress}
+.req .hp{position:absolute;left:-9999px;width:1px;height:1px;overflow:hidden}
+/* radio rows: the choice is part of the order, so it reads as a field, not as decoration */
+.opts{display:grid;gap:8px;margin-top:2px}
+.opt{display:flex;align-items:flex-start;gap:10px;background:var(--card);border:1px solid var(--line);
+  border-radius:3px;padding:11px 13px;cursor:pointer}
+.opt:hover{border-color:var(--mut)}
+.opt input{margin:3px 0 0;accent-color:var(--acctext);flex:none}
+.opt:focus-within{border-color:var(--acc);box-shadow:0 0 0 3px rgba(125,140,255,.18)}
+.opt .ot{font-size:14.5px;line-height:1.35}
+.opt .oh{color:var(--mut);font-size:13px;display:block;margin-top:2px}
+.req-msg{margin-top:14px;font-size:14px;min-height:1.2em}
+.req-msg.ok{color:var(--green)}
+.req-msg.err{color:var(--red)}
+.req-done{background:var(--soft);border:1px solid var(--line);border-radius:4px;padding:20px 22px;
+  max-width:46ch;outline:none}
+.req-done b{display:block;margin-bottom:8px;font-size:17px}
+.req-done p{margin:0 0 10px;color:var(--mut);font-size:14.5px}
+.req-done p:last-child{margin-bottom:0}
+.req-privacy{margin-top:18px;font-size:12.5px;line-height:1.55;color:var(--mut);max-width:46ch}
+.req-privacy a{color:var(--mut)}
+/* a browser that cannot run the submit handler must never see the fields: with no handler the
+   form's only behaviour is a plain GET that puts the buyer's details in the URL */
+.req-noscript{background:var(--soft);border:1px solid var(--line);border-radius:4px;
+  padding:18px 20px;max-width:46ch;font-size:14.5px}
+.req-noscript p{margin:0;color:var(--mut)}
+
+/* side panel next to the form */
+.aside{background:var(--dark);border-radius:4px;padding:26px 26px 24px;color:var(--darkink);
+  position:sticky;top:24px}
+.aside .tag{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+  letter-spacing:.13em;text-transform:uppercase;color:var(--orange);margin:0 0 16px}
+.aside h3{margin:0 0 14px;font-size:17px;font-weight:620}
+.aside ul{list-style:none;margin:0;padding:0}
+.aside li{position:relative;padding-left:18px;margin:0 0 10px;color:var(--darkmut);font-size:14px;
+  line-height:1.5}
+.aside li:last-child{margin-bottom:0}
+.aside li::before{content:"—";position:absolute;left:0;color:var(--orange)}
+.aside .sep{border-top:1px solid var(--darkline);margin:18px 0 16px}
+.aside .net{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:13px;
+  color:var(--darkink);letter-spacing:.02em}
+.aside .netnote{margin:8px 0 0;color:var(--darkmut);font-size:13px;line-height:1.5}
+
+/* ---- terms ---- */
+.terms{border-top:1px solid var(--line);padding-block:46px 56px}
+.tblock{display:grid;grid-template-columns:180px minmax(0,1fr);gap:14px 28px;padding:22px 0;
+  border-top:1px solid var(--line)}
+.tblock:first-of-type{border-top:0}
+.tblock h3{margin:0;font-size:15.5px;font-weight:620}
+.tblock .n{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;
+  letter-spacing:.12em;color:var(--mut);display:block;margin-bottom:6px}
+.tblock ul{list-style:none;margin:0;padding:0}
+.tblock li{position:relative;padding-left:18px;margin:0 0 10px;color:var(--mut);font-size:15px}
+.tblock li:last-child{margin-bottom:0}
+.tblock li::before{content:"";position:absolute;left:1px;top:.66em;width:6px;height:6px;
+  border-radius:50%;background:var(--line);border:1px solid var(--mut)}
+.tblock.risk li::before{background:var(--orange);border-color:var(--orange)}
+
+footer{border-top:1px solid var(--line);padding:36px 0 56px;color:var(--mut);font-size:13px}
+.foot-row{display:flex;gap:24px;flex-wrap:wrap;align-items:center}
+
+@media (max-width:860px){
+  .prices{grid-template-columns:1fr}
+  .steps{grid-template-columns:1fr 1fr}
+  .formgrid{grid-template-columns:1fr;gap:32px}
+  .aside{position:static}
+}
+@media (max-width:560px){
+  .steps{grid-template-columns:1fr}
+  .tblock{grid-template-columns:1fr;gap:10px}
+}
+
+nav{border-bottom:1px solid var(--line)}
+.nav-in{display:flex;align-items:center;gap:28px;padding-block:18px}
+.nav-in .btn{white-space:nowrap}
+.nav-logo{display:flex;align-items:center;gap:10px;font-weight:650;font-size:17px;letter-spacing:-.01em;text-decoration:none;color:var(--ink)}
+.nav-links{display:flex;gap:22px;margin-left:auto}
+.nav-links a{color:var(--mut);text-decoration:none;font-size:14px}
+.nav-links a:hover{color:var(--ink)}
+.dot{width:10px;height:10px;overflow:visible;flex:none}
+.dot circle{fill:var(--acc);transform-box:fill-box;transform-origin:center}
+.dot rect{fill:var(--acc);transform-box:fill-box;transform-origin:center;transform:scaleX(0);
+  animation:dot-link 6s ease-in-out infinite}
+.dot .da{animation:dot-split-a 6s ease-in-out infinite}
+.dot .db{animation:dot-split-b 6s ease-in-out infinite}
+@keyframes dot-split-a{0%,74%{transform:translateX(0) scale(1)}18%,58%{transform:translateX(-5.5px) scale(.82)}82%,100%{transform:scale(1)}88%{transform:scale(1.22)}}
+@keyframes dot-split-b{0%,74%{transform:translateX(0) scale(1)}18%,58%{transform:translateX(5.5px) scale(.82)}82%,100%{transform:scale(1)}88%{transform:scale(1.22)}}
+@keyframes dot-link{0%,20%{transform:scaleX(0)}32%,54%{transform:scaleX(1)}66%,100%{transform:scaleX(0)}}
+@media (prefers-reduced-motion: reduce){.dot .da,.dot .db,.dot rect{animation:none}}
+.btn{display:inline-block;background:var(--ink);color:var(--paper);border:1px solid var(--ink);
+  border-radius:3px;padding:10px 20px;font-size:14px;font-weight:550;text-decoration:none;cursor:pointer}
+.btn:hover{opacity:.85}
+@media (max-width:560px){.nav-links{display:none}.nav-in > .btn{margin-left:auto}
+  .nav-in{gap:14px}
+  .nav-in .btn{padding:9px 12px;font-size:13px}
+}
+</style>
+</head>
+<body data-api="https://api.alphanode.tech">
+
+<nav>
+  <div class="wrap nav-in">
+    <a class="nav-logo" href="index.html"><svg class="dot" viewBox="0 0 9 9" aria-hidden="true"><rect x="-1.5" y="3.75" width="12" height="1.5" rx=".75"/><circle class="da" cx="4.5" cy="4.5" r="4.5"/><circle class="db" cx="4.5" cy="4.5" r="4.5"/></svg>AlphaNode</a>
+    <div class="nav-links">
+      <a href="index.html">About AlphaNode</a>
+      <a href="start.html">Getting started</a>
+      <a href="download.html">Downloads</a>
+      <a href="roadmap.html">Roadmap</a>
+    </div>
+    <a class="btn" href="#order">Buy activation</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <p class="eyebrow">Activation &amp; subscription</p>
+    <h1>Buy your activation<br><span class="quiet">and unlock what your node mines.</span></h1>
+    <p class="lead">The app installs and starts mining without a key. Activation is what opens
+      the results: reading and analysing the formulas your node found, generating the signal
+      API, and every other locked function. Register below and payment options in USDT arrive
+      at your email.</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <section class="prices">
+    <div class="price first">
+      <p class="tag">First activation</p>
+      <div class="amt">499 <span>USDT</span></div>
+      <p class="per">One-time — and it is also your first 30 days.</p>
+      <ul>
+        <li>Unlocks the app on your machine</li>
+        <li>Opens every mined formula in your library for reading and analysis</li>
+        <li>Signal API generation, exports and reports</li>
+        <li>Automatically becomes the first 30-day subscription</li>
+      </ul>
+    </div>
+    <div class="price renew">
+      <p class="tag">After the first 30 days</p>
+      <div class="amt">99 <span>USDT / 30 days</span></div>
+      <p class="per">Bought per period, not billed automatically.</p>
+      <ul>
+        <li>You buy each further 30 days when you want them</li>
+        <li>Pause any time — an activated account is not lost</li>
+        <li>We keep the email of every activated account so access is restorable</li>
+        <li>Come back later and continue from where you stopped</li>
+      </ul>
+    </div>
+  </section>
+
+  <section class="flow">
+    <h2>How it works</h2>
+    <div class="steps">
+      <div class="step">
+        <b>Register</b>
+        <p>Fill in the form below. It takes a minute and reaches us directly.</p>
+      </div>
+      <div class="step">
+        <b>Install and mine</b>
+        <p>Download the app and start the node. It searches immediately — no key needed to mine.</p>
+      </div>
+      <div class="step">
+        <b>Pay in USDT</b>
+        <p>Payment options for USDT on ERC20 and TRC20 arrive at the email you gave us.</p>
+      </div>
+      <div class="step">
+        <b>Activate</b>
+        <p>Your keys arrive after payment. Paste them into the app and everything opens.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="formsec" id="order">
+    <h2>Registration and order</h2>
+    <div class="formgrid">
+      <div>
+        <noscript>
+          <div class="req-noscript">
+            <p>This form needs JavaScript to submit securely. Enable it, or email
+              <a href="mailto:support@alphanode.tech">support@alphanode.tech</a> with your name
+              and which plan you want — a person answers either way.</p>
+          </div>
+        </noscript>
+        <form class="req" id="buy-form" novalidate>
+          <label for="buy-name">Your name</label>
+          <input id="buy-name" name="name" type="text" autocomplete="name"
+                 placeholder="First and last name" required>
+
+          <div class="gap">
+            <label for="buy-email">Your email</label>
+            <input id="buy-email" name="email" type="email" autocomplete="email"
+                   placeholder="you@example.com" required>
+          </div>
+
+          <div class="gap">
+            <label for="buy-phone">Phone or Telegram <span style="opacity:.7">(optional)</span></label>
+            <input id="buy-phone" name="phone" type="tel" inputmode="tel" autocomplete="tel"
+                   placeholder="+82 10 1234 5678 or @handle">
+          </div>
+
+          <fieldset class="gap" style="border:0;padding:0;margin-inline:0">
+            <legend style="font-size:13px;color:var(--mut);padding:0;margin-bottom:6px">What are you buying?</legend>
+            <div class="opts">
+              <label class="opt">
+                <input type="radio" name="plan" value="first" checked>
+                <span class="ot">First activation — 499 USDT
+                  <span class="oh">Unlocks the app and includes the first 30 days.</span></span>
+              </label>
+              <label class="opt">
+                <input type="radio" name="plan" value="renew">
+                <span class="ot">Renewal — 99 USDT / 30 days
+                  <span class="oh">For an account that has already paid its first activation.</span></span>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset class="gap" style="border:0;padding:0;margin-inline:0">
+            <legend style="font-size:13px;color:var(--mut);padding:0;margin-bottom:6px">Which USDT network suits you?</legend>
+            <div class="opts">
+              <label class="opt">
+                <input type="radio" name="network" value="TRC20" checked>
+                <span class="ot">TRC20 <span class="oh">Tron — the cheaper transfer.</span></span>
+              </label>
+              <label class="opt">
+                <input type="radio" name="network" value="ERC20">
+                <span class="ot">ERC20 <span class="oh">Ethereum.</span></span>
+              </label>
+              <label class="opt">
+                <input type="radio" name="network" value="either">
+                <span class="ot">Send me both <span class="oh">We will include the addresses for both networks.</span></span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="gap">
+            <label for="buy-note">Anything we should know? <span style="opacity:.7">(optional)</span></label>
+            <textarea id="buy-note" name="note" rows="3"
+                      placeholder="Timeframe and pairs you'd run, the machine you'd run it on, or a question about the terms."></textarea>
+          </div>
+
+          <!-- honeypot. The name is deliberately meaningless: a field called "website" is a real
+               identity-manager field, so autofill could fill it and drop a real buyer as a bot. -->
+          <input class="hp" type="text" name="hp_ref2" tabindex="-1" autocomplete="off"
+                 aria-hidden="true" data-1p-ignore data-lpignore="true">
+
+          <button class="btn" type="submit" id="buy-btn">Send my order</button>
+          <p class="req-msg" id="buy-msg" role="status" aria-live="polite"></p>
+        </form>
+        <p class="req-privacy">These details go to us and nowhere else, for one purpose: sending
+          your payment options and your keys, and restoring your access after a pause. No mailing
+          lists, no resale. Email
+          <a href="mailto:support@alphanode.tech">support@alphanode.tech</a> any time to be
+          removed.</p>
+      </div>
+
+      <aside class="aside">
+        <p class="tag">Payment</p>
+        <h3>USDT only — ERC20 or TRC20</h3>
+        <ul>
+          <li>No card details are collected on this site, ever.</li>
+          <li>Addresses are sent to your email after you submit this form — never published here.</li>
+          <li>Send the exact amount; the network fee is paid by the sender.</li>
+          <li>Keys follow once the transfer confirms on-chain.</li>
+        </ul>
+        <div class="sep"></div>
+        <p class="net">499 USDT → activation + 30 days<br>99 USDT → each further 30 days</p>
+        <p class="netnote">Confirm every address against the email we send you. We will never ask
+          for your seed phrase, your exchange keys, or a payment through a third party.</p>
+      </aside>
+    </div>
+  </section>
+
+  <section class="terms">
+    <h2>Terms of use and payment</h2>
+
+    <div class="tblock">
+      <h3><span class="n">01</span>Activation and access</h3>
+      <ul>
+        <li>After you complete the form, you install the app.</li>
+        <li>Without activation you cannot open and analyse the formulas you have mined,
+            generate the API, or use the other functions.</li>
+        <li>Full access requires purchasing an activation, which automatically becomes your
+            first 30-day subscription.</li>
+        <li>After payment you receive the keys that activate the app and open every capability
+            of the platform.</li>
+        <li>When the first 30 days end, you continue on a subscription, buying each further
+            30 days.</li>
+      </ul>
+    </div>
+
+    <div class="tblock">
+      <h3><span class="n">02</span>Payment</h3>
+      <ul>
+        <li>After you submit the form, payment options in USDT (ERC20 and TRC20) arrive at
+            your email address.</li>
+        <li>The first activation, including 30 days of use, costs 499 USDT.</li>
+        <li>After that the subscription is 99 USDT for each further 30 days.</li>
+        <li>A client who has already paid the first activation may pause using the app.</li>
+        <li>We store the records of activated accounts (email addresses) so that you can
+            restore access after a pause.</li>
+      </ul>
+    </div>
+
+    <div class="tblock risk">
+      <h3><span class="n">03</span>Disclaimer</h3>
+      <ul>
+        <li>AlphaNode is research software, not investment advice.</li>
+        <li>All figures shown on this site are illustrative and simulated.</li>
+        <li>Hypothetical and simulated performance carries inherent limitations.</li>
+        <li>No representation is made that any account will achieve similar results.</li>
+      </ul>
+    </div>
+  </section>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-row">
+      <span>© 2026 AlphaNode</span>
+      <a href="index.html" style="color:var(--mut)">About AlphaNode</a>
+      <a href="start.html" style="color:var(--mut)">Getting started</a>
+      <a href="download.html" style="color:var(--mut)">Downloads</a>
+      <span style="margin-left:auto" class="mono">research software · not investment advice</span>
+    </div>
+  </div>
+</footer>
+
+<script>
+// Order form -> AlphaHub's /request-access. Its own <script> on purpose: nothing else on this
+// page may take the submit handler down with it — a form with no handler is a form that does a
+// plain GET and puts the buyer's details in the URL.
+(function () {
+  var form = document.getElementById('buy-form');
+  if (!form) return;
+  var btn = document.getElementById('buy-btn');
+  var msg = document.getElementById('buy-msg');
+  var local = location.protocol === 'file:' ||
+              /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+  var API = local ? 'http://127.0.0.1:8790'
+                  : (document.body.getAttribute('data-api') || 'https://api.alphanode.tech');
+
+  function say(text, kind) { msg.textContent = text; msg.className = 'req-msg' + (kind ? ' ' + kind : ''); }
+  // form.elements[...], never form.<field>: HTMLFormElement already owns a `name` property, so
+  // form.name is the form's own attribute and never the input we just added.
+  function val(field) { return (form.elements[field].value || '').trim(); }
+  function picked(field) {
+    var g = form.elements[field];
+    if (!g) return '';
+    if (g.value !== undefined && !g.length) return g.value;   // a lone radio has no .length
+    for (var i = 0; i < g.length; i++) if (g[i].checked) return g[i].value;
+    return '';
+  }
+  function fieldError(field, text) {
+    // the error lands on the field, not only on the shared line: the shared line differs from
+    // "Sending…" by colour alone, and colour is not a signal everyone receives
+    var el = form.elements[field];
+    el.setAttribute('aria-invalid', 'true');
+    el.setAttribute('aria-describedby', 'buy-msg');
+    say('Error: ' + text, 'err');
+    el.focus();
+  }
+
+  form.addEventListener('submit', function (e) {
+    e.preventDefault();
+    for (var i = 0; i < form.elements.length; i++) form.elements[i].removeAttribute('aria-invalid');
+    var name = val('name');
+    var email = val('email');
+    var phone = val('phone');
+    if (!name) { fieldError('name', 'Enter your name.'); return; }
+    if (!email || email.indexOf('@') < 1) { fieldError('email', 'Enter a valid email address.'); return; }
+    // Optional, so an empty box is fine — but a stray "12" is a typo, not a number we can call.
+    // A Telegram handle is a legitimate answer here, so only digit-ish input is checked.
+    if (phone && !/^@|[a-z]/i.test(phone) && (phone.match(/\d/g) || []).length < 5) {
+      fieldError('phone', 'Enter a full phone number or a Telegram handle, or leave it empty.'); return;
+    }
+    var plan = picked('plan') === 'renew' ? 'renewal 99 USDT / 30 days'
+                                          : 'first activation 499 USDT (incl. 30 days)';
+    var net = picked('network');
+    // The order lives in `note`: the hub's waitlist row is the record the operator reads with
+    // `admin requests`, so the plan and network must travel inside a field it already stores.
+    var order = 'ORDER: ' + plan + ' · network: ' + net;
+    var extra = val('note');
+    btn.disabled = true;
+    say('Sending…');
+    // a hung connection must not park the button on "Sending…" forever
+    var ctrl = ('AbortController' in window) ? new AbortController() : null;
+    var timer = ctrl && setTimeout(function () { ctrl.abort(); }, 15000);
+    fetch(API + '/request-access', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: ctrl ? ctrl.signal : undefined,
+      body: JSON.stringify({ name: name, email: email, phone: phone,
+                             note: order + (extra ? '\n' + extra : ''),
+                             website: val('hp_ref2') })
+    }).then(function (r) {
+      // two-argument then, not .catch: success and network failure are separate branches, so a
+      // hiccup while rendering the confirmation cannot report "could not reach the server"
+      // about a request the server already committed
+      if (timer) clearTimeout(timer);
+      if (r.status === 422) { btn.disabled = false; fieldError('email', 'Enter a valid email address.'); return; }
+      if (r.status === 429) {
+        btn.disabled = false;
+        say('Error: too many requests from your network right now. Try again in an hour, or ' +
+            'email support@alphanode.tech.', 'err');
+        return;
+      }
+      if (!r.ok) {
+        btn.disabled = false;
+        say('Error: the server had a problem (HTTP ' + r.status + '). Try again in a minute, ' +
+            'or email support@alphanode.tech.', 'err');
+        return;
+      }
+      // Replace the form outright: a still-editable form after success invites a second order.
+      // The confirmation takes focus and role=status itself — the live region above sits inside
+      // the form and leaves the page with it.
+      var done = document.createElement('div');
+      done.className = 'req-done';
+      done.setAttribute('role', 'status');
+      done.setAttribute('tabindex', '-1');
+      done.innerHTML = '<b>Order received.</b>' +
+        '<p>Payment options in USDT (ERC20 and TRC20) are on their way to <b style="display:inline">' +
+        email.replace(/[<>&]/g, '') + '</b>. Check spam if it is not there within a few hours.</p>' +
+        '<p>Nothing stops you from starting now: <a href="download.html">download the app</a> ' +
+        'and let the node mine. Your keys unlock everything it has found by then.</p>';
+      form.replaceWith(done);
+      done.focus();
+    }, function () {
+      if (timer) clearTimeout(timer);
+      btn.disabled = false;
+      say('Error: could not reach the server. Check your connection and try again, or email ' +
+          'support@alphanode.tech.', 'err');
+    });
+  });
+})();
+</script>
+</body>
+</html>
