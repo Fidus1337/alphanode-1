@@ -12,11 +12,11 @@ GUI only ever waits on a pipe (which releases it).
 stdin  -> {"formulas": [...], "instruments": [...]|null, "vol": .., "exec": ..,
            "train_start": "YYYY-MM-DD", "test_start": ..., "test_end": ...}
 stdout -> {"ok": true, "trend_bars": {"up":n,"down":n,"flat":n},
-           "strip_meta": {"n":12,"oos":k,"start":"YYYY-MM-DD","end":...,"bars":[...]},
+           "strip_meta": {"n":6,"oos":k,"start":"YYYY-MM-DD","end":...,"bars":[...]},
            "metrics": {formula: {"long":n,"short":n,"win":f,"act":f,
-           "dd":f,"cagr":f|null,"sortino":f|null,"strip":[f|null x12],
+           "dd":f,"cagr":f|null,"sortino":f|null,"strip":[f|null x6],
            "tup":f|null,"tdown":f|null,"tflat":f|null} | "err"}}
-           strip = Sharpe in each of 12 equal CALENDAR slices of the WHOLE loaded
+           strip = Sharpe in each of 6 equal CALENDAR slices of the WHOLE loaded
            history — the shape a single number cannot show (see stability_strip);
            strip_meta says where those slices fall and which of them are held out
            tup/tdown/tflat = the alpha's TEST Sharpe on trending-up / trending-down /
@@ -99,7 +99,9 @@ def trend_split(rt, trd, ann):
             'tflat': regime_sharpe(rt[trd == 0.0], ann)}
 
 
-STRIP_N = 12                                             # slices of the stability strip
+# Six, not twelve: twice the bars behind each Sharpe, and six numbers can be READ where
+# twelve ran together into one dark smear that said nothing.
+STRIP_N = 6
 
 
 def calendar_buckets(index, n=STRIP_N):
@@ -118,8 +120,8 @@ def stability_strip(rt, buckets, ann, n=STRIP_N):
     """Sharpe in each of `n` consecutive slices of the whole loaded history.
 
     One number says how well a formula did; this says whether it did it all along. A
-    strip that is level at +0.8 is worth more than one that averages +2.5 out of a
-    single quarter, and no amount of decimal places on a single Sharpe shows that.
+    row that reads +0.8 +0.7 +0.9 +0.6 +0.8 +0.7 is worth more than one averaging +2.5
+    out of a single slice, and no amount of decimal places on one Sharpe shows that.
     Costs nothing: the return series was simulated already, this only slices it."""
     return [regime_sharpe(rt[buckets == k], ann) for k in range(n)]
 

@@ -32,9 +32,9 @@ def _index(n, freq='D'):
 # ---------------- the slicing ----------------
 def test_buckets_cut_equal_calendar_time():
     idx = _index(1200)
-    b = MW.calendar_buckets(idx, 12)
-    assert b.min() == 0 and b.max() == 11                # every slice used, none overflows
-    counts = [int((b == k).sum()) for k in range(12)]
+    b = MW.calendar_buckets(idx, MW.STRIP_N)
+    assert b.min() == 0 and b.max() == MW.STRIP_N - 1     # every slice used, none overflows
+    counts = [int((b == k).sum()) for k in range(MW.STRIP_N)]
     assert sum(counts) == 1200
     assert max(counts) - min(counts) <= 1                # an even grid cuts evenly
 
@@ -53,13 +53,13 @@ def test_buckets_are_equal_time_not_equal_bars():
 
 def test_every_bar_lands_in_a_slice_including_the_last():
     idx = _index(100)
-    b = MW.calendar_buckets(idx, 12)
+    b = MW.calendar_buckets(idx, MW.STRIP_N)
     assert b.shape == (100,)
-    assert b[0] == 0 and b[-1] == 11                     # the final bar must not fall off the end
+    assert b[0] == 0 and b[-1] == MW.STRIP_N - 1         # the final bar must not fall off the end
 
 
 def test_a_single_bar_history_does_not_divide_by_zero():
-    b = MW.calendar_buckets(_index(1), 12)
+    b = MW.calendar_buckets(_index(1), MW.STRIP_N)
     assert b.tolist() == [0]
 
 
@@ -67,9 +67,9 @@ def test_a_single_bar_history_does_not_divide_by_zero():
 def test_strip_returns_one_number_per_slice():
     rng = np.random.default_rng(4)
     rt = rng.normal(0.001, 0.01, 1200)
-    b = MW.calendar_buckets(_index(1200), 12)
+    b = MW.calendar_buckets(_index(1200), MW.STRIP_N)
     strip = MW.stability_strip(rt, b, ANN)
-    assert len(strip) == 12
+    assert len(strip) == MW.STRIP_N
     assert all(v is None or isinstance(v, float) for v in strip)
 
 
@@ -77,15 +77,15 @@ def test_a_thin_slice_reports_nothing_rather_than_a_number():
     """Under 30 bars there is no Sharpe worth printing — the same evidence floor the
     direction columns already use."""
     rng = np.random.default_rng(5)
-    rt = rng.normal(0.0, 0.01, 240)                      # 240 bars over 12 slices = 20 each
-    b = MW.calendar_buckets(_index(240), 12)
-    assert MW.stability_strip(rt, b, ANN) == [None] * 12
+    rt = rng.normal(0.0, 0.01, 150)                      # 150 bars over 6 slices = 25 each
+    b = MW.calendar_buckets(_index(150), MW.STRIP_N)
+    assert MW.stability_strip(rt, b, ANN) == [None] * MW.STRIP_N
 
 
 def test_a_slice_the_formula_sat_out_reports_nothing():
     rng = np.random.default_rng(6)
     rt = rng.normal(0.001, 0.01, 1200)
-    b = MW.calendar_buckets(_index(1200), 12)
+    b = MW.calendar_buckets(_index(1200), MW.STRIP_N)
     rt[b == 3] = 0.0                                     # flat through slice 3
     strip = MW.stability_strip(rt, b, ANN)
     assert strip[3] is None
@@ -98,7 +98,7 @@ def test_the_strip_separates_steady_from_spiky_where_the_headline_cannot():
     prefers the spike; the typical stretch does not."""
     n = 1200
     idx, rng = _index(n), np.random.default_rng(7)
-    b = MW.calendar_buckets(idx, 12)
+    b = MW.calendar_buckets(idx, MW.STRIP_N)
     noise = rng.normal(0.0, 0.01, n)
 
     steady = noise + 0.0016                              # a modest edge, every single day
@@ -117,17 +117,23 @@ def test_the_strip_separates_steady_from_spiky_where_the_headline_cannot():
     assert max(v for v in s_spiky if v is not None) > 3 * med(s_steady)   # one huge block
 
 
-def test_a_slice_is_a_noisy_sharpe_and_the_strip_shows_shape_not_precision():
-    """The honest limit of the column. A twelfth of history is a short window, so an edge
-    that is real still shows losing blocks — the strip is read for its SHAPE, and a single
-    low block is not evidence of anything. This is why sorting uses the median."""
-    n = 1200
-    idx, rng = _index(n), np.random.default_rng(3)
-    b = MW.calendar_buckets(idx, 12)
-    real_edge = rng.normal(0.0, 0.01, n) + 0.0016        # a genuine, constant edge
-    strip = MW.stability_strip(real_edge, b, ANN)
-    assert _sharpe(real_edge) > 2.0                      # unmistakable over the whole span…
-    assert any(v < 0 for v in strip if v is not None)    # …and still negative in some blocks
+def test_six_stretches_are_less_noisy_than_twelve():
+    """Why six and not twelve — measured, not asserted. The same real edge cut both ways:
+    twelve short stretches manufacture more losing blocks out of pure noise than six
+    longer ones do. Fewer, longer slices is not only easier to read, it is a better
+    estimate — and six is still not noise-free, which is why one low stretch on its own
+    is not evidence and why sorting uses the median."""
+    n, trials = 1200, 40
+    idx = _index(n)
+    b6, b12 = MW.calendar_buckets(idx, 6), MW.calendar_buckets(idx, 12)
+    neg6 = neg12 = 0
+    for seed in range(trials):
+        rng = np.random.default_rng(seed)
+        r = rng.normal(0.0, 0.01, n) + 0.0008                # a real, constant edge
+        neg6 += sum(1 for v in MW.stability_strip(r, b6, ANN, 6) if v is not None and v < 0)
+        neg12 += sum(1 for v in MW.stability_strip(r, b12, ANN, 12) if v is not None and v < 0)
+    assert neg12 / 12.0 > neg6 / 6.0                         # per slice, twelve invents more
+    assert neg6 > 0                                          # …and six is still not clean
 
 
 def test_strip_meta_marks_where_the_held_out_stretch_starts():
@@ -155,23 +161,34 @@ def _App():
     return G.App
 
 
-def test_blocks_map_the_fixed_scale():
+def test_the_cell_reads_as_six_numbers_oldest_first():
     App = _App()
-    assert App._fmt_strip([0.0] * 12) == '▅' * 12        # mid height is Sharpe zero
-    assert App._fmt_strip([9.0] * 12) == '█' * 12        # clipped at the top…
-    assert App._fmt_strip([-9.0] * 12) == '▁' * 12       # …and at the bottom
-    assert App._fmt_strip([None] * 12) == '·' * 12
-    assert len(App._fmt_strip([0.1 * k for k in range(12)])) == 12
+    assert App._fmt_strip([0.8, -0.15, 1.24, 0.6, -2.0, 0.03]) == \
+        '+0.8 -0.1 +1.2 +0.6 -2.0 +0.0'
 
 
-def test_the_scale_is_fixed_so_two_rows_can_be_compared():
-    """A per-row scale would make every strip look the same shape — the column would say
-    nothing about which formula is steadier, only about its own best and worst slice."""
+def test_every_field_is_the_same_width_so_the_column_lines_up():
+    """Numbers that do not line up down a column cannot be scanned, which is exactly how
+    the first attempt (eight block glyphs) failed — it read as one dark smear."""
     App = _App()
-    small = App._fmt_strip([0.1] * 12)
-    large = App._fmt_strip([1.9] * 12)
-    assert small != large
-    assert set(large) == {'█'} or max(large) > max(small)
+    rows = [App._fmt_strip([0.8, -0.15, 1.24, 0.6, -2.0, 0.03]),
+            App._fmt_strip([None, 12.0, -99.0, 0.0, -0.04, 3.5])]
+    assert len({len(r) for r in rows}) == 1
+    for r in rows:
+        assert len(r) == 6 * 5 - 1                       # six four-char fields, five gaps
+        assert all(len(r[k * 5:k * 5 + 4]) == 4 for k in range(6))
+
+
+def test_an_unmeasurable_stretch_is_a_dot_not_a_zero():
+    App = _App()
+    cell = App._fmt_strip([None, 0.0, None, 0.0, 0.0, 0.0])
+    assert cell[0:4].strip() == '·'
+    assert cell[5:9] == '+0.0'                           # a real zero still reads as a number
+
+
+def test_an_absurd_slice_clips_rather_than_widen_the_whole_column():
+    App = _App()
+    assert App._fmt_strip([40.0, -40.0, 0.0, 0.0, 0.0, 0.0]).startswith('+9.9 -9.9')
 
 
 def test_a_row_with_no_strip_says_so():
@@ -183,10 +200,10 @@ def test_a_row_with_no_strip_says_so():
 
 def test_sorting_uses_the_typical_stretch_not_the_best_one():
     App = _App()
-    spiky = {'strip': [-0.4] * 11 + [6.0]}
-    steady = {'strip': [0.5] * 12}
+    spiky = {'strip': [-0.4] * 5 + [6.0]}
+    steady = {'strip': [0.5] * 6}
     assert App._strip_typical(steady) > App._strip_typical(spiky)
-    assert App._strip_typical({'strip': [None] * 12}) is None
+    assert App._strip_typical({'strip': [None] * 6}) is None
     assert App._strip_typical({}) is None
     assert App._strip_typical({'strip': [1.0, None, 3.0]}) == pytest.approx(2.0)
 
@@ -216,11 +233,11 @@ def test_the_cell_renders_from_the_metrics_cache(gui_app):
         'long': 10, 'short': 5, 'long_yr': 3.0, 'short_yr': 1.0, 'win': 0.5,
         'wup': None, 'wdown': None, 'act': 4.0, 'dd': -0.2, 'cagr': 0.1, 'sortino': 1.0,
         'tup': None, 'tdown': None, 'tflat': None,
-        'strip': [0.0, 9.0, -9.0, None] * 3}
+        'strip': [0.0, 9.0, -9.0, None, 0.45, -1.02]}
     app._treesig = None
     app._fill_tree([champ])
     item = app.tree.get_children()[0]
-    assert app.tree.set(item, 'strip') == '▅█▁·' * 3
+    assert app.tree.set(item, 'strip') == '+0.0 +9.0 -9.0  ·   +0.5 -1.0'
     assert not app._test_tk_errors
 
 
@@ -248,8 +265,8 @@ def test_a_saved_column_list_gains_the_new_column_once(gui_app, monkeypatch):
 
 def test_the_column_is_wide_enough_for_twelve_blocks(gui_app):
     """Treeview columns are raw pixels while their text follows the DPI — the T-columns
-    were clipped to 'T ↑ ·' once already. Twelve blocks must fit at this scale."""
+    were clipped to 'T ↑ ·' once already. Six fields must fit at this scale."""
     app, _rec, _state = gui_app
-    need = app._tree_font.measure('▅' * MW.STRIP_N)
+    need = app._tree_font.measure(' '.join(['-0.0'] * MW.STRIP_N))
     assert app.tree.column('strip', 'width') >= need + 8
     assert app.tree.column('strip', 'minwidth') >= need + 8

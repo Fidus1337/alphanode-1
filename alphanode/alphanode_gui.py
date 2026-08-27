@@ -1759,15 +1759,14 @@ class App:
                    'such rows show a percentage, slightly below the raw win% column.',
             'test': 'held-out TEST Sharpe (out-of-sample) — never optimized;\n'
                     'picking rows by it is peeking',
-            'strip': 'STEADINESS — the whole loaded history cut into 12 equal stretches of\n'
-                     'calendar time, one block per stretch, showing that stretch\'s Sharpe.\n'
-                     'Mid height is 0, full height is +2 or better, empty is −2 or worse,\n'
-                     '\u00b7 is a stretch with too little to measure. The scale is FIXED, so\n'
-                     'strips can be read against each other down the column.\n'
+            'strip': 'STEADINESS — the whole loaded history cut into 6 equal stretches of\n'
+                     'calendar time, oldest first, each showing that stretch\'s Sharpe.\n'
+                     '\u00b7 marks a stretch with too little to measure.\n'
                      'A single TEST Sharpe cannot tell a formula that worked all along from\n'
-                     'one carried by a single quarter — this can. Level at +0.8 beats spiky\n'
-                     'at +2.5. Sorting uses the MEDIAN stretch, which one lucky quarter\n'
-                     'cannot lift. Costs nothing: the return series was simulated already.',
+                     'one carried by a single stretch — this can. +0.8 +0.7 +0.9 +0.6 beats\n'
+                     '-0.2 -0.1 +4.0 -0.3 however good the headline looks.\n'
+                     'Sorting uses the MEDIAN stretch, which one lucky run cannot lift.\n'
+                     'Costs nothing: the return series was simulated already.',
             'dd': 'worst peak-to-trough drawdown on TEST',
             'cagr': 'annualized growth on TEST',
             'srt': 'Sortino on TEST — like Sharpe, but only downside vol counts',
@@ -1818,10 +1817,10 @@ class App:
         # formulas render FULL length: the column is sized to the widest row and the horizontal
         # bar scrolls to the tail (_fit_formula_col); measuring needs the tree's own font
         self._tree_font = tkfont.Font(family=self.MONO, size=self._px(12))
-        # the strip is exactly twelve glyphs wide, so measure them instead of guessing a
-        # pixel width: a Treeview column is raw pixels while its text follows the DPI, and
-        # a strip clipped to eleven blocks is a wrong strip, not a narrow one
-        _sw = self._tree_font.measure('▅' * 12) + int(16 * self.SCALE)
+        # six four-character fields plus their separators — measure the real string rather
+        # than guess a pixel width: a Treeview column is raw pixels while its text follows
+        # the DPI, and a strip with its last slice cut off is a wrong strip, not a narrow one
+        _sw = self._tree_font.measure(' '.join(['-0.0'] * self._STRIP_N)) + int(18 * self.SCALE)
         self.tree.column('strip', width=_sw, minwidth=_sw, anchor='center', stretch=False)
         self._lb_need_px = 0
         hsb = ctk.CTkScrollbar(wrap, orientation='horizontal', command=self.tree.xview,
@@ -3711,25 +3710,27 @@ class App:
     def _fmt_winpct(v):
         return f'{v * 100:.0f}%' if isinstance(v, (int, float)) else '—'
 
-    _BLOCKS = '▁▂▃▄▅▆▇█'                                 # eight heights, one per slice
-    _STRIP_LO, _STRIP_HI = -2.0, 2.0                     # the scale, FIXED so rows compare
+    _STRIP_N = 6                                         # slices, matching metrics_worker
+    _STRIP_CLIP = 9.9                                    # keeps every field four chars wide
 
     @classmethod
     def _fmt_strip(cls, vals):
-        """Twelve slices of history as twelve blocks. The scale is fixed rather than
-        per-row: a strip you cannot compare against the row above it is decoration. Mid
-        height is Sharpe 0, full is +2 or better, empty is −2 or worse, '·' is a slice
-        with too little to measure."""
+        """Six slices of history as six numbers, oldest first.
+
+        Blocks were tried first and failed in the only way that matters: at real DPI the
+        twelve glyphs ran together into one dark smear that carried no information. Every
+        field is a fixed four characters so the numbers line up down the column and a row
+        can be scanned against the one above it; a slice with too little to measure is a
+        dot, and the rare |Sharpe| past 9.9 clips rather than widen the whole column."""
         if not isinstance(vals, (list, tuple)) or not vals:
             return '—'
-        lo, hi, out = cls._STRIP_LO, cls._STRIP_HI, []
+        out = []
         for v in vals:
             if not isinstance(v, (int, float)) or v != v:
-                out.append('·')
-                continue
-            t = (min(max(float(v), lo), hi) - lo) / (hi - lo)
-            out.append(cls._BLOCKS[min(len(cls._BLOCKS) - 1, int(t * len(cls._BLOCKS)))])
-        return ''.join(out)
+                out.append(f'{"·":^4}')
+            else:
+                out.append(f'{max(-cls._STRIP_CLIP, min(cls._STRIP_CLIP, float(v))):+.1f}')
+        return ' '.join(out)
 
     @staticmethod
     def _strip_typical(m):
