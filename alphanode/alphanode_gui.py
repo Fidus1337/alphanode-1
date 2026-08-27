@@ -299,7 +299,6 @@ class App:
         self._metrics_proc = None                         # the metrics child process
         self._metrics_seq = 0                             # to discard stale background computations
         self._row_items = {}                              # formula -> table row id (to update cells)
-        self._fit_metric = 'sharpe'                       # objective the node last ran under
         self._pf_proc = None                              # portfolio-build subprocess
         self._fwd_proc = None                             # forward-track step subprocess
         self._fwd_entries = []                            # rows currently shown in the FORWARD table
@@ -3285,12 +3284,6 @@ class App:
                 and 0.0 <= fit <= 1.0                    # a winrate base is a share
             self.s_fit.configure(text=('—' if fit is None
                                        else f'{fit * 100:.0f}%' if wr else f'{fit:+.2f}'))
-            # The noise floor is NOT drawn: measured against a real library the Gaussian
-            # estimate overstated it 2.4x (9,900 trials, sd 1.17 -> predicted max +4.5,
-            # actual max +1.86). min(TRAIN, VAL) has a fat left tail and a thin right one,
-            # so a spread-based extrapolation is the wrong shape. The spread is still
-            # collected; the bar comes back when it is measured against a null, not assumed.
-            self._fit_metric = st.get('fit_metric') or 'sharpe'
         # the leaderboard is a view of the LIBRARY FILE, not of the node: it must fill
         # even when no status.json exists yet (fresh start, restored session)
         self._refresh_leaderboard(st.get('best', []))

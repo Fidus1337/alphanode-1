@@ -34,7 +34,6 @@ import pandas as pd                                     # noqa: E402
 
 from config import load_config                         # noqa: E402
 from evolution import evolve                           # noqa: E402
-from deflate import TrialStats                         # noqa: E402
 
 
 def env(k, d):
@@ -262,10 +261,6 @@ status = {'app': 'AlphaNode', 'state': 'starting', 'started': iso(), 'updated': 
           'version': _BUILD.get('version'), 'build_id': _BUILD.get('build_id'),
           'current': '', 'gen': '', 'best': []}
 
-# the spread of every score the search has ever looked at — three numbers, from which
-# the noise floor (what the best of N tries reaches on luck alone) is read back
-trials = TrialStats()
-
 
 def save_status():
     status['updated'] = iso()
@@ -340,11 +335,7 @@ def load_existing():
                            max((c.get('round', 0) for c in leaderboard), default=0))
     try:                                               # keep the lifetime trials counter across restarts
         with open(STATUS_FILE, encoding='utf-8') as f:
-            _prev = json.load(f)
-        status['trials_total'] = int(_prev.get('trials_total', 0) or 0)
-        # …and the trial spread with it: the noise floor is a lifetime figure, so a restart
-        # must not reset the bar a champion has to clear back down to nothing
-        trials.load(_prev)
+            status['trials_total'] = int(json.load(f).get('trials_total', 0) or 0)
     except (OSError, ValueError, json.JSONDecodeError):
         pass
     status['found'] = len(seen)
@@ -807,17 +798,11 @@ def main():
                 f.write(json.dumps(entry, ensure_ascii=False) + '\n')
         except OSError:
             pass
-        # the spread of every candidate this round scored, not just the champions: three
-        # floats that say how widely the search cast. Nothing displays them yet — see
-        # deflate.py for why a bar read off this spread came out 2.4x too high — but they
-        # are the input the measured version needs, and they cost nothing to keep.
-        trials.add(r['base_fit'] for r in cache.values() if r is not None)
         status.update(rounds=rnd, trials_total=status['trials_total'] + len(cache),
                       # status.json reaches disk AND the :8787 status HTTP — vault mode must
                       # seal here too, or the library lock would leak through the side door
                       found=len(seen), best=[_disk_doc(c) for c in leaderboard[:KEEP]],
                       best_base=bb_val, best_test=bt_val, fit_metric=FIT_METRIC,
-                      **trials.to_dict(),
                       history=history[-300:],
                       current=f'round {rnd} done [{mode}]: +{new} new · fitness {bb_s} · '
                               f'TEST(OOS) {bt_s} · {time.time()-t0:.0f}s')
