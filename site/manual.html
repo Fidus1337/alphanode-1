@@ -130,6 +130,54 @@ nav{border-bottom:1px solid var(--line)}
   .nav-in{gap:14px}
   .nav-in .btn{padding:9px 12px;font-size:13px}
 }
+/* ---- print / PDF ---------------------------------------------------------------
+   The same document, paginated. Chromium's print engine drops backgrounds by default,
+   so every tint here is re-declared with print-color-adjust: the cards and the
+   watch-out rules carry meaning, not decoration. */
+@page{size:A4;margin:17mm 15mm 20mm}
+@media print{
+  nav,footer,.btn{display:none}
+  body{background:#fff;font-size:10.4pt;line-height:1.5}
+  .wrap{max-width:none;padding:0}
+  header{padding-block:0 10mm;border-bottom:1px solid var(--line);break-after:page}
+  h1{font-size:26pt;line-height:1.1}
+  .lead{font-size:11.5pt;max-width:none;margin-top:6mm}
+  .eyebrow{font-size:8pt}
+
+  /* the contents rail becomes a contents PAGE */
+  .cols{display:block;padding-block:0}
+  .toc{position:static;break-after:page}
+  .toc .t{font-size:8.5pt;margin-bottom:5mm}
+  .toc ol{display:block}
+  .toc li{margin-bottom:1.5mm}
+  .toc a{font-size:11pt;color:var(--ink);padding:2mm 0 2mm 4mm;border-left:2px solid var(--line)}
+
+  section{break-before:page}
+  section:first-of-type{break-before:auto}
+  section + section{margin-top:0;padding-top:0;border-top:0}
+  h2{font-size:18pt;margin-bottom:2mm;break-after:avoid}
+  h2 .n{font-size:8.5pt;color:#b5720a;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .sec-intro{font-size:10.8pt;max-width:none;margin-bottom:6mm}
+
+  /* A tall entry may cross a page boundary — forbidding it entirely left a quarter of
+     nearly every page blank. What must NOT break: an entry's title away from its first
+     lines, a watch-out box, and any single line stranded alone at a page edge. */
+  .item{break-inside:auto;margin-bottom:4mm;padding:4mm 5mm;
+    border:1px solid var(--line);border-radius:2mm;background:#fff;orphans:3;widows:3}
+  .item h3{font-size:11.6pt;margin-bottom:2mm;break-after:avoid}
+  .item p{orphans:3;widows:3}
+  .lab{break-after:avoid}
+  .meta,.longval,.pill{break-inside:avoid}
+  .item p{font-size:10.2pt;margin-bottom:2mm}
+  .lab{font-size:7.6pt;margin:3.5mm 0 1mm}
+  .meta{gap:2mm;margin-bottom:3mm}
+  .pill,.longval,code{background:#f2f0ec;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  .pill{font-size:8.4pt;padding:1mm 2mm}
+  .longval{font-size:9pt;padding:2mm 3mm;margin-bottom:3mm}
+  .gotcha{background:#f2f0ec;border-left:2.5px solid #f99c00;font-size:9.6pt;padding:2.5mm 3.5mm;
+    break-inside:avoid;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  a{color:var(--ink);text-decoration:none}
+}
 </style>
 </head>
 <body>
@@ -155,6 +203,7 @@ nav{border-bottom:1px solid var(--line)}
       leaderboard column measures &mdash; with the shipped default, the range the app allows,
       and the traps worth knowing before you turn something up. Read it end to end once, or
       jump to the knob you are looking at right now.</p>
+    <p style="margin:26px 0 0"><a class="btn" href="AlphaNode-Manual.pdf">Download as PDF</a></p>
   </div>
 </header>
 
