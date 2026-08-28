@@ -331,17 +331,22 @@ def test_chips_backspace_autorepeat_guard(gui_app):
     assert app.e_uni.get() == 'ETHUSDT'
 
 
-def test_chips_rollover_commits_only_complete_tokens(gui_app):
-    """The comma's KeyRelease may arrive AFTER the next letter's KeyPress (rollover):
-    committing the whole buffer at release time shredded 'btc,eth' into BTC + E + TH."""
+def test_a_typed_comma_is_just_a_character(gui_app):
+    """The comma used to commit everything before it on KeyRelease. Two things went wrong
+    with that: fast typists press the next letter before the comma's release (rollover), and
+    — worse — the box emptied itself mid-word, which reads as the field eating your input.
+    Now separators are resolved once, by Enter."""
     app, _rec, _state = gui_app
     app.v_unilist.set('BTCUSDT')
     app.e_uni.delete(0, 'end')
-    app.e_uni.insert(0, 'eth,s')                          # the buffer at the comma's release
-    app._uni_key()
-    assert app.v_unilist.get() == 'BTCUSDT,ETH'
-    assert app.e_uni.get() == 's'                         # the tail stays typed, not a chip
+    app.e_uni.insert(0, 'eth,s')                          # mid-word: nothing has committed
+    assert app.v_unilist.get() == 'BTCUSDT'
+    assert app.e_uni.get() == 'eth,s'                     # what you typed is what you see
     app.e_uni.delete(0, 'end')
+    app.e_uni.insert(0, 'xmrusdt, xlmusdt')
+    app._uni_commit()                                     # Enter
+    assert app.v_unilist.get() == 'BTCUSDT,XMRUSDT,XLMUSDT'
+    assert app.e_uni.get() == ''
 
 
 def test_chips_collect_commits_pending_entry_text(gui_app):

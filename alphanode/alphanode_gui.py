@@ -1236,15 +1236,14 @@ class App:
         self.e_uni.pack(fill='x', pady=(4, 4))
         self.e_uni.bind('<Return>', self._uni_commit)
         self.e_uni.bind('<FocusOut>', self._uni_commit)
-        self.e_uni.bind('<KeyRelease>', self._uni_key)
         self.e_uni.bind('<KeyPress-BackSpace>', self._uni_backspace)
         self.e_uni.bind('<<Paste>>', self._uni_paste)          # Ctrl+V / Shift+Insert
         self.e_uni.bind('<ButtonPress-2>', self._uni_paste)    # middle-click PRIMARY
         self._tip(self.e_uni,
                   'The search, signals and metrics run on exactly this basket.\n'
-                  'Paste a whole list and every pair becomes a chip at once —\n'
-                  'commas, spaces or line breaks all split it. Typing: Enter or\n'
-                  'a comma turns what you wrote into a chip.\n'
+                  'Write as many pairs as you like — commas, spaces or line breaks\n'
+                  'separate them — then ENTER turns the whole box into chips.\n'
+                  'A paste lands the same way, all at once.\n'
                   '✕ removes a pair; clicking a chip pulls it back down for editing;\n'
                   'Backspace in the empty box pulls the last chip down.\n'
                   'Remove everything and the default five come back at Start/Save.')
@@ -1320,8 +1319,14 @@ class App:
         return ''.join(',' if ch.isspace() else ch for ch in (s or ''))
 
     def _uni_commit(self, _e=None):
-        """The WHOLE entry -> chips. Bound to Enter and FocusOut; _collect also calls it,
-        so a pair still sitting in the box is never lost to Start/Save/theme switch."""
+        """The WHOLE entry -> chips, splitting on commas and whitespace. THE commit: bound to
+        Enter and FocusOut, called by _uni_paste and by _collect, so a pair still sitting in
+        the box is never lost to Start/Save/theme switch.
+
+        A typed comma deliberately does nothing. It used to commit everything before it, and
+        the box emptying itself mid-word is what a person reads as the field losing their
+        input — you watch the box you are typing in, not the chip row above it. Writing
+        'XMRUSDT, XLMUSDT' and pressing Enter once is now exactly what it looks like."""
         try:
             raw = self._uni_raw(self.e_uni.get())
         except Exception:                            # noqa: BLE001 — teardown mid-FocusOut
@@ -1333,22 +1338,6 @@ class App:
         except Exception:                            # noqa: BLE001
             pass
         return 'break'
-
-    def _uni_key(self, _e=None):
-        """A typed separator commits only the COMPLETE tokens — everything before the last
-        comma; the tail stays in the box. Fast typists press the next letter before the
-        comma's KeyRelease (rollover): committing the whole buffer at release time shredded
-        'btc,eth' into BTC + E + TH."""
-        raw = self._uni_raw(self.e_uni.get())
-        if ',' not in raw:
-            return
-        head, _, rest = raw.rpartition(',')
-        if head.strip(','):
-            self.v_unilist.set(','.join(_parse_universe(self.v_unilist.get() + ',' + head)))
-        self.e_uni.delete(0, 'end')
-        if rest:
-            self.e_uni.insert(0, rest)
-            self.e_uni.icursor('end')
 
     def _uni_backspace(self, e=None):
         """KeyPress fires BEFORE the class binding erases a character — an empty box here
@@ -1369,15 +1358,12 @@ class App:
         return 'break'
 
     def _uni_paste(self, _e=None):
-        """A paste is FINISHED text; typing is not. _uni_key deliberately keeps whatever
-        follows the last comma in the box, because a typist is still mid-word — but applied
-        to a paste that rule swallowed the list's tail: 'ETH,SOL,XRP' became two chips and a
-        dangling XRPUSDT, which reads as "it only took some of them". So a paste commits ALL
-        of it. Bound for Ctrl+V/Shift+Insert and for middle-click PRIMARY, which reaches the
-        inner tk.Entry through the Entry class binding and bypasses CTkEntry.insert()
-        entirely — hence the placeholder has to be dismissed here or the pasted text glues
-        itself onto the ghost string. Widget-tag bindings run BEFORE the class binding that
-        does the actual insert, so the commit waits for the idle after it."""
+        """A paste is finished text, so it commits itself — no Enter needed. Bound for
+        Ctrl+V/Shift+Insert and for middle-click PRIMARY, which reaches the inner tk.Entry
+        through the Entry class binding and bypasses CTkEntry.insert() entirely — hence the
+        placeholder has to be dismissed here or the pasted text glues itself onto the ghost
+        string. Widget-tag bindings run BEFORE the class binding that does the actual insert,
+        so the commit waits for the idle after it."""
         try:
             self.e_uni._deactivate_placeholder()
         except Exception:                            # noqa: BLE001

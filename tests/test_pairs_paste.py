@@ -1,9 +1,10 @@
 """Pasting a LIST of pairs into the universe box.
 
 The box takes a whole list — that has always been true of Enter and of typed commas, but a
-PASTE lost its tail: _uni_key keeps whatever follows the last comma so a typist can finish
-the word they are in the middle of, and applied to a paste that rule turned 'A,B,C' into two
-chips plus a dangling C. Three pairs in, two pairs out reads as a field that only takes one.
+PASTE lost its tail: a typed comma used to commit everything before it and keep the rest in
+the box, and applied to a paste that rule turned 'A,B,C' into two chips plus a dangling C.
+Three pairs in, two pairs out reads as a field that only takes one. The typed-comma trigger
+is gone entirely now (see test_universe_autofetch); a paste still commits itself.
 """
 import pytest
 
@@ -37,7 +38,7 @@ def pane(gui_app):
 
 def _paste(app, text):
     """As close to a real Ctrl+V as Tk allows: clipboard, focus, the key, then the KeyRelease
-    the class binding is followed by in life (that release is what drives _uni_key)."""
+    the class binding is followed by in life."""
     app.e_uni.delete(0, 'end')
     app.root.clipboard_clear()
     app.root.clipboard_append(text)
@@ -67,16 +68,27 @@ def test_paste_does_not_duplicate_what_is_already_there(pane):
     assert app.v_unilist.get() == 'BTCUSDT,ETHUSDT,SOLUSDT'
 
 
-def test_typing_still_keeps_the_unfinished_word(pane):
-    """The paste rule must not leak into typing: half of a ticker is not a ticker."""
+def test_typing_a_list_and_pressing_enter_once(pane):
+    """The reported case, keystroke for keystroke: nothing may happen until Enter, and then
+    everything must. Real key events, because the whole complaint was about what the box
+    does WHILE you type."""
     app = pane
     app.v_unilist.set('BTCUSDT')
     app.e_uni.delete(0, 'end')
-    for ch in 'ADAUSDT,DOT':
-        app.e_uni.insert('end', ch)
-        app._uni_key()
-    assert app.v_unilist.get() == 'BTCUSDT,ADAUSDT'
-    assert app.e_uni.get() == 'DOT'                  # still being typed, not a chip yet
+    app.e_uni.focus_force()
+    app.root.update()
+    named = {',': 'comma', ' ': 'space'}
+    for ch in 'XMRUSDT, XLMUSDT':
+        key = named.get(ch, ch)
+        app.e_uni._entry.event_generate(f'<KeyPress-{key}>')
+        app.e_uni._entry.event_generate(f'<KeyRelease-{key}>')
+        app.root.update()
+    assert app.e_uni.get() == 'XMRUSDT, XLMUSDT'      # the box keeps exactly what was typed
+    assert app.v_unilist.get() == 'BTCUSDT'           # and nothing has been committed yet
+    app.e_uni._entry.event_generate('<KeyPress-Return>')
+    app.root.update()
+    assert app.v_unilist.get() == 'BTCUSDT,XMRUSDT,XLMUSDT'
+    assert app.e_uni.get() == ''
 
 
 def test_the_placeholder_says_a_list_is_welcome(pane):
