@@ -9,6 +9,10 @@
     two workspaces — but files sessions do not own (device_id, data) are untouched;
   * ★ favorites are session-owned: a star points at a formula in a particular library, so
     it must not be inherited by a workspace mined on another basket, cut or timeframe;
+  * the WHOLE board travels: status.json carries the four counters, the live log and the
+    round ticker, and a restore must not leave a library and a portfolio sitting above four
+    zeros — but the restored status must never claim a node is running;
+  * signals.json is local: it holds PIDs of services on THIS machine and must never travel;
   * a failed restore rolls the workspace back byte-for-byte; a failed snapshot leaves
     no file at all (no half-written archives under session names);
   * rotation reads the MANIFEST: named sessions are forever even if the user names one
@@ -43,6 +47,11 @@ def ws(tmp_path, monkeypatch):
         {'id': 'a', 'archived': False, 'state': {'equity': 9950.0}},
         {'id': 'b', 'archived': True, 'state': {'equity': 111.0}}]}))
     (state / 'portfolio.json').write_text('{"top": 6}')
+    (state / 'status.json').write_text(json.dumps({
+        'state': 'running', 'rounds': 7, 'trials_total': 31337, 'found': 12, 'tf': '1h',
+        'current': 'round 8: exploring new…', 'events': [{'ts': '10:00', 'k': 'round', 't': '▶'}],
+        'history': [{'round': 7, 'best_base': 2.1}]}))
+    (state / 'signals.json').write_text('[{"port": 8799, "pid": 4242}]')   # PIDs: stay local
     (state / 'favorites.json').write_text(json.dumps({'favorites': [
         {'formula': 'tanh(low)', 'added': '2026-08-01'},
         {'formula': 'ema:12(close)', 'added': '2026-08-02'}]}))
@@ -75,6 +84,9 @@ def test_snapshot_manifest_and_secret_stripping(ws):
     assert man['forward'] == {'entries': 1, 'equity': 9950.0}   # archived entry not counted
     assert 'state/favorites.json' in names               # stars travel with their session
     assert man['favorites'] == 2
+    assert 'state/status.json' in names                  # …and so does the top of the board
+    assert man['run'] == {'rounds': 7, 'trials_total': 31337, 'found': 12, 'tf': '1h'}
+    assert 'state/signals.json' not in names             # PIDs of local services: never
     assert man['name'] == 'my exp' and man['auto'] is False
     assert man['fp']                                     # content fingerprint present
     assert 'vault_license' not in cfg                    # THE invariant
@@ -88,7 +100,7 @@ def test_restore_round_trip_swaps_the_whole_workspace(ws):
     open(os.path.join(state, 'library_1h.jsonl'), 'a').write('{"f":4}\n')
     open(os.path.join(state, 'library.jsonl'), 'a').write('{"d":3}\n')
     open(os.path.join(state, 'library_4h.jsonl'), 'w').write('{"x":1}\n')
-    open(os.path.join(state, 'status.json'), 'w').write('{"round": 99}')   # transient
+    open(os.path.join(state, 'status.json'), 'w').write('{"rounds": 99}')  # a later run
     json.dump({'tf': '4h', 'vault_license': 'SECRET-KEY-123'}, open(settings, 'w'))
 
     man = S.restore(p, state_dir=state, settings_path=settings)
@@ -97,7 +109,7 @@ def test_restore_round_trip_swaps_the_whole_workspace(ws):
     assert len(lines) == 3                               # back to the snapshot
     assert open(os.path.join(state, 'library.jsonl')).read().count('\n') == 2
     assert not os.path.exists(os.path.join(state, 'library_4h.jsonl'))  # no workspace mixing
-    assert not os.path.exists(os.path.join(state, 'status.json'))       # stale status gone
+    assert json.load(open(os.path.join(state, 'status.json')))['rounds'] == 7   # the archive's
     cfg = json.load(open(settings))
     assert cfg['tf'] == '1h'                             # session settings won...
     assert cfg['vault_license'] == 'SECRET-KEY-123'      # ...but the machine keeps its key
@@ -405,3 +417,93 @@ def test_the_leaderboard_repaints_stars_after_a_session_load(gui_app):
     live = app._fav_ids if app._fav_ids is not None else favdb.ids(str(state))
     assert 'deadbe' not in live                          # the stale star did not survive
     assert live == favdb.ids(str(state)) == {favdb.alpha_id('tanh(low)')}
+
+
+# ---- the whole board travels: counters, live log, round ticker ------------------------
+
+def test_the_board_comes_back_with_the_session(ws):
+    """A loaded session used to show its library, portfolio and forward track above four
+    zeros and an empty log: status.json — the only home of ROUNDS / FORMULAS TRIED /
+    ALPHAS FOUND / BEST FITNESS and the event feed — was deliberately never archived."""
+    state, settings = ws
+    p = S.snapshot(name='deep-run', state_dir=state, settings_path=settings)
+    json.dump({'state': 'stopped', 'rounds': 0, 'trials_total': 0, 'events': []},
+              open(os.path.join(state, 'status.json'), 'w'))          # a fresh, empty run
+    S.restore(p, state_dir=state, settings_path=settings)
+    st = json.load(open(os.path.join(state, 'status.json')))
+    assert st['rounds'] == 7 and st['trials_total'] == 31337 and st['found'] == 12
+    assert st['events'] and st['history']                             # log and fitness history
+
+
+def test_a_restored_status_never_claims_the_node_is_running(ws):
+    """The reason status.json was transient in the first place. It is saved mid-round, so the
+    archive says 'running' — restoring that verbatim would have the window reporting a search
+    that is not happening. Only that field is rewritten; the history it carries is the point."""
+    state, settings = ws
+    p = S.snapshot(name='mid-round', state_dir=state, settings_path=settings)
+    with tarfile.open(p) as tar:
+        archived = json.load(tar.extractfile('state/status.json'))
+    assert archived['state'] == 'running'                             # saved as it really was
+    S.restore(p, state_dir=state, settings_path=settings)
+    st = json.load(open(os.path.join(state, 'status.json')))
+    assert st['state'] == 'stopped'
+    assert st['rounds'] == 7 and st['current'] == 'round 8: exploring new…'   # kept verbatim
+
+
+def test_a_stopped_status_is_restored_untouched(ws):
+    state, settings = ws
+    doc = json.load(open(os.path.join(state, 'status.json')))
+    doc['state'] = 'stopped'
+    json.dump(doc, open(os.path.join(state, 'status.json'), 'w'))
+    p = S.snapshot(name='done', state_dir=state, settings_path=settings)
+    S.restore(p, state_dir=state, settings_path=settings)
+    assert json.load(open(os.path.join(state, 'status.json')))['state'] == 'stopped'
+
+
+def test_signals_json_stays_on_this_machine(ws):
+    """A PID from another machine — or another boot of this one — is either meaningless or
+    somebody else's process. The registry must survive a restore untouched, not travel."""
+    state, settings = ws
+    p = S.snapshot(name='s', state_dir=state, settings_path=settings)
+    open(os.path.join(state, 'signals.json'), 'w').write('[{"port": 8800, "pid": 99}]')
+    S.restore(p, state_dir=state, settings_path=settings)
+    assert json.load(open(os.path.join(state, 'signals.json')))[0]['pid'] == 99
+
+
+def test_a_corrupt_status_does_not_break_a_restore(ws):
+    state, settings = ws
+    open(os.path.join(state, 'status.json'), 'w').write('{ not json')
+    p = S.snapshot(name='bad', state_dir=state, settings_path=settings)
+    man = S.restore(p, state_dir=state, settings_path=settings)
+    assert man['name'] == 'bad'
+    assert open(os.path.join(state, 'status.json')).read() == '{ not json'   # left as found
+
+
+@pytest.mark.gui
+def test_the_gui_tiles_and_log_refill_after_a_load(gui_app):
+    """End to end, in the widgets: the four counters and the event feed must read the
+    restored run, and the state pill must not say 'running'."""
+    app, _rec, state = gui_app
+    import alphanode_gui as G
+    (state / 'library_1h.jsonl').write_text('{"formula":"tanh(low)","base":1.0}\n')
+    (state / 'status.json').write_text(json.dumps({
+        'state': 'running', 'rounds': 7, 'trials_total': 31337, 'found': 12,
+        'cpu_percent': 50, 'n_jobs': 6, 'cores': 12, 'universe': 'BTCUSDT',
+        'current': 'round 8: exploring new…', 'best': [],
+        'events': [{'ts': '10:00', 'k': 'round', 't': '▶ round 7: explore'}],
+        'history': [{'round': 7, 'best_base': 2.14}]}))
+    saved = S.snapshot(name='deep', state_dir=str(state), settings_path=G.SETTINGS)
+
+    (state / 'status.json').write_text('{"state": "stopped", "rounds": 0, "trials_total": 0}')
+    S.restore(saved, state_dir=str(state), settings_path=G.SETTINGS)
+    app._sessions_rebuild()
+    app._poll()
+    app.root.update()
+
+    assert app.s_rounds.cget('text') == '7'
+    assert app.s_trials.cget('text') == '31,337'
+    assert app.s_found.cget('text') == '12'
+    assert app.s_fit.cget('text') == '+2.14'             # from the restored history
+    assert 'round 7: explore' in app.logbox.get('1.0', 'end')
+    assert 'running' not in app.lbl_state.cget('text')   # …but nothing is actually running
+    assert 'last run' in app.lbl_cur.cget('text')        # and the ticker says as much

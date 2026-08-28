@@ -2595,8 +2595,9 @@ class App:
             if not messagebox.askyesno('Sessions',
                     'Load this session? The current workspace will be REPLACED — nothing is '
                     "saved automatically. Use 'Save current…' first if you want a way "
-                    'back.\n\nThat includes your ★ favorites: they belong to the session '
-                    'that mined them, so this one\'s stars replace the ones on screen.\n\n'
+                    'back.\n\nThat means the whole board — library, portfolio, forward track, '
+                    '★ favorites and the run counters at the top — is replaced by this '
+                    'session\'s.\n\n'
                     'The forward track resumes from the next closed bar — the '
                     'gap stays visible in its history (nothing is re-computed backwards).',
                     parent=win):
@@ -2619,6 +2620,8 @@ class App:
                                     f'Session loaded: {man.get("name") or man.get("created", "")}\n'
                                     f'{n_alphas} alphas · {n_fwd} forward entries · '
                                     f'{n_fav} ★ favorites.\n'
+                                    'The board is as it was: counters, live log, portfolio and '
+                                    'forward track all came back with it.\n'
                                     'The forward track continues from the next closed bar.',
                                     parent=self.root)
             else:
@@ -2653,6 +2656,11 @@ class App:
             L.append(f"forward  {fw.get('entries', 0)} entries"
                      + (f' · equity ${eq:,.2f}' if eq else ''))
             L.append(f"stars    {man.get('favorites', 0)} ★ favorites")
+            rn = man.get('run') or {}
+            L.append('run      ' + (f"{rn.get('rounds', 0)} rounds · "
+                                    f"{rn.get('trials_total', 0):,} formulas tried · "
+                                    f"{rn.get('found', 0)} kept"
+                                    if rn else 'no search had run yet'))
             L.append('')
             L.append('PORTFOLIO')
             if pf is None:

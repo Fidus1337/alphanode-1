@@ -50,7 +50,8 @@ _STATE_PATTERNS = (re.compile(r'^library(_[A-Za-z0-9]+)?\.jsonl$'),
                    re.compile(r'^history(_[A-Za-z0-9]+)?\.jsonl$'),
                    re.compile(r'^forward\.json$'),
                    re.compile(r'^portfolio\.json$'),
-                   re.compile(r'^favorites\.json$'))
+                   re.compile(r'^favorites\.json$'),
+                   re.compile(r'^status\.json$'))
 # favorites.json is session-owned. A star points at a formula in the library,
 # and it used to outlive the library it pointed into: load a different workspace and the
 # ★ list still held rows mined on another basket, another cut, sometimes another timeframe.
@@ -58,7 +59,18 @@ _STATE_PATTERNS = (re.compile(r'^library(_[A-Za-z0-9]+)?\.jsonl$'),
 # wholesale swap of owned files, so loading an archive written before this change (it has
 # no favorites.json in it) leaves the workspace with none; that is the same rule every
 # other owned file follows, and the load dialog says the workspace is replaced.
-_TRANSIENT = ('status.json',)                            # never archived; cleared on restore
+# status.json is session-owned too. It was 'transient' — never archived, wiped on restore —
+# because it describes a RUNNING node, and a restored 'running' would have the window claiming
+# a search that is not happening. But it is also the only home of what the top of the board
+# shows: ROUNDS, FORMULAS TRIED, ALPHAS FOUND, BEST FITNESS, the live log and the round ticker.
+# Dropping it meant a loaded session came back with its library, portfolio and forward track
+# intact above four zeros and an empty log. So it travels, and restore neutralises the one
+# field that could lie (see _settle_status); the GUI already dims a non-live status and
+# prefixes it 'last run —'.
+#
+# signals.json stays local on purpose and must not be added here: it is a registry of PIDs of
+# signal services running on THIS machine, and a pid from another machine or another boot is
+# either meaningless or somebody else's process.
 SECRET_KEYS = ('vault_license',)                         # never inside an archive
 
 MAX_MEMBERS = 64                                         # a snapshot writes ~a dozen
@@ -140,10 +152,17 @@ def build_manifest(name, note, auto, state_dir, settings_path):
         favs = sum(1 for f in doc.get('favorites', []) if isinstance(f, dict) and f.get('formula'))
     except Exception:                                    # noqa: BLE001 — absent/corrupt = none
         favs = 0
+    run = {}
+    try:                                                 # how far the search got, for the list
+        st = json.load(open(os.path.join(state_dir, 'status.json'), encoding='utf-8'))
+        run = {k: st.get(k) for k in ('rounds', 'trials_total', 'found')}
+        run['tf'] = st.get('tf')
+    except Exception:                                    # noqa: BLE001 — no run yet
+        pass
     return {'name': name or '', 'note': note or '', 'auto': bool(auto),
             'created': datetime.now(timezone.utc).isoformat(timespec='seconds'),
             'version': __version__, 'alphas': alphas, 'forward': fwd, 'favorites': favs,
-            'fp': workspace_fingerprint(state_dir, settings_path)}
+            'run': run, 'fp': workspace_fingerprint(state_dir, settings_path)}
 
 
 def _read_manifest(path):
@@ -279,6 +298,25 @@ def _safe_members(tar):
     return ok
 
 
+def _settle_status(state_dir):
+    """A restored status.json describes the node as it was when the session was SAVED — very
+    possibly mid-round. Nothing is running now, so the one field that would lie is rewritten:
+    'running'/'starting' becomes 'stopped'. Everything else — the counters, the event log, the
+    champion list, the round ticker — is history and is kept, which is the whole point of
+    carrying the file. Unreadable or absent: leave it alone, the GUI copes with either."""
+    p = os.path.join(state_dir, 'status.json')
+    try:
+        with open(p, encoding='utf-8') as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or doc.get('state') not in ('running', 'starting'):
+            return
+        doc['state'] = 'stopped'
+        with open(p, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh, ensure_ascii=False, indent=2, default=str)
+    except Exception:                                    # noqa: BLE001 — absent/corrupt/read-only
+        pass
+
+
 def restore(path, state_dir=None, settings_path=None, backup=False):
     """Swap the workspace for the archived one. The caller must have stopped the node
     (it appends to the library mid-round). Order of operations is the safety story:
@@ -298,14 +336,12 @@ def restore(path, state_dir=None, settings_path=None, backup=False):
             if backup:                                   # AFTER the target is safely out
                 snapshot(name='before-load', auto=True, state_dir=state_dir,
                          settings_path=settings_path, skip_unchanged=True)
-            # transactional swap: current session-owned files (plus transient status)
-            # are parked, not deleted — a mid-swap failure puts everything back
+            # transactional swap: the current session-owned files are parked, not deleted —
+            # a mid-swap failure puts every one of them back
             undo = tempfile.mkdtemp(prefix='.undo-', dir=sessions_dir(state_dir))
             parked = []                                  # (parked_path, original_path)
             try:
-                for f in _owned_state_files(state_dir) + [
-                        os.path.join(state_dir, t) for t in _TRANSIENT
-                        if os.path.isfile(os.path.join(state_dir, t))]:
+                for f in _owned_state_files(state_dir):
                     b = os.path.join(undo, os.path.basename(f))
                     os.replace(f, b)
                     parked.append((b, f))
@@ -327,6 +363,7 @@ def restore(path, state_dir=None, settings_path=None, backup=False):
                 shutil.rmtree(undo, ignore_errors=True)
                 raise
             shutil.rmtree(undo, ignore_errors=True)
+            _settle_status(state_dir)
             try:
                 incoming = json.load(open(os.path.join(tmp, 'settings.json'), encoding='utf-8'))
             except Exception:                            # noqa: BLE001
