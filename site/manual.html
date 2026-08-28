@@ -718,7 +718,7 @@ nav{border-bottom:1px solid var(--line)}
       </div>
       <div class="item" id="e6-16">
         <div class="hd"><h3><span class="num">6.16</span>ID</h3><span class="pill">default <b>shown by default</b></span></div>
-        <p>A stable 6-character fingerprint of the formula (the first six of its md5). The same formula always gets the same ID. This is the handle used everywhere else — the forward track, favourites, the search box, both CSV exports.</p>
+        <p>A stable 6-character fingerprint of the formula (the first six of its md5), sitting immediately after # at the left edge of the table. The same formula always gets the same ID. This is the handle used everywhere else — the forward track, favourites, the search box, both CSV exports.</p>
         <p class="warn"><b>Watch out.</b> The two exports do not print it the same way: &quot;Export table&quot; writes the 6 characters you see, &quot;Export full library&quot; writes 12, so a plain text match between the files fails unless you trim.</p>
       </div>
       <div class="item" id="e6-17">
@@ -774,9 +774,9 @@ nav{border-bottom:1px solid var(--line)}
         <p>Right-click a row for both. The plain copy (also Ctrl+C) puts the bare expression on the clipboard — use it when pasting into code. The +metrics version adds a line with the fitness value, a note if it was mined by win rate, and the TRAIN, VAL and TEST Sharpe ratios — use it when recording a candidate in notes, since that one line stays readable months later.</p>
       </div>
       <div class="item" id="e7-10">
-        <div class="hd"><h3><span class="num">7.10</span>Right-click a header → the Columns menu</h3><span class="pill">default <b>on: maxDD, CAGR, ID, T↑, T↓, T~, win%, win↑, win↓ · off: sortino, L/S, tr/yr</b></span></div>
+        <div class="hd"><h3><span class="num">7.10</span>Right-click a header → the Columns menu</h3><span class="pill">default <b>on: ID, maxDD, CAGR, T↑, T↓, T~, win%, win↑, win↓ · off: sortino, L/S, tr/yr</b></span></div>
         <p>A checklist of the twelve optional columns; your choice is saved and reused next launch. ★, #, fitness, TEST OOS and formula are always present. Turn L/S and tr/yr on the moment you start caring whether an alpha is genuinely two-sided or how much its fee assumption matters.</p>
-        <p class="warn"><b>Watch out.</b> Column ORDER is fixed and follows the menu, not the order you tick things in — so ID sits between CAGR and T↑ rather than at the far right, and switching sortino on inserts it mid-table. Hiding a column only hides it: sorting and both CSV exports carry every column regardless.</p>
+        <p class="warn"><b>Watch out.</b> Column ORDER is fixed and follows the menu, not the order you tick things in — so switching sortino on inserts it mid-table rather than appending it at the right. ID is the one exception: it is pinned immediately after #, because it names the row instead of scoring it. Hiding a column only hides it: sorting and both CSV exports carry every column regardless.</p>
       </div>
       <div class="item" id="e7-11">
         <div class="hd"><h3><span class="num">7.11</span>Sorting</h3><span class="pill">default <b>opens on fitness, descending — the sort is not remembered between launches</b></span></div>

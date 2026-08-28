@@ -3374,17 +3374,22 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt.upper() + arrow)
 
-    _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt',
+    _LB_OPT_ORDER = ('id', 'dd', 'cagr', 'srt',
                      'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown')
     _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'wup', 'wdown', 'tup', 'tdown', 'tflat')
 
     def _adv_cols(self):
         """Advanced display columns: the honest core (#/fitness/TEST/formula) plus the user's
-        optional picks, in a fixed order that keeps ID ahead of the lazily computed block —
-        a '…' placeholder next to the ID used to read as a truncated ID."""
+        optional picks. ID rides right behind the rank number — it is the row's NAME, the token
+        carried to the forward track and the CSVs, so it belongs beside '#' rather than adrift
+        in the middle of the analysis block. The rest keep the _LB_OPT_ORDER sequence, which
+        still holds ID ahead of the lazily computed columns — a '…' placeholder next to the ID
+        used to read as a truncated ID."""
         saved = self.cfg.get('lb_cols')
         on = set(saved) if isinstance(saved, list) else set(self._LB_OPT_DEFAULT)
-        return ('fav', 'rank', 'fit', 'test', *[c for c in self._LB_OPT_ORDER if c in on], 'formula')
+        head = ('id',) if 'id' in on else ()
+        rest = [c for c in self._LB_OPT_ORDER if c in on and c != 'id']
+        return ('fav', 'rank', *head, 'fit', 'test', *rest, 'formula')
 
     def _lb_toggle_col(self, c):
         """Header right-click menu: show/hide an optional column. Data, sorting and the CSV
