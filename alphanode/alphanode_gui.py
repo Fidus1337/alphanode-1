@@ -363,6 +363,21 @@ class App:
             self.cfg.pop(dead, None)
         if not _parse_universe(self.cfg.get('universe_list') or ''):
             self.cfg['universe_list'] = DEFAULTS['universe_list']
+        # The date boxes ship with the DAILY recommendation, so a settings file that names an
+        # intraday timeframe without ever having passed through the timeframe selector carries
+        # a span its bar size cannot hold — the 1d window is 59,880 bars of 1h, well past the
+        # limit. Re-fill it from the saved timeframe's own recommendation, but ONLY when the
+        # stored dates are verbatim some timeframe's defaults: that means nobody chose them,
+        # so there is no user intent to overwrite. A hand-typed window is left alone and the
+        # note under the fields argues with it instead.
+        try:
+            from timeframe import known as _tf_known, resolve as _rtf
+            _t = _rtf(_tf_clean(self.cfg.get('timeframe', '1d')))
+            _seg = {k: str(self.cfg.get(k, '')) for k in _t.segments}
+            if _seg != _t.segments and any(_seg == _rtf(n).segments for n in _tf_known()):
+                self.cfg.update(_t.segments)
+        except (ImportError, ValueError):                # no engine on the path: keep the file
+            pass
 
     @staticmethod
     def _gi(var, d):
@@ -1141,13 +1156,29 @@ class App:
         # --- segments ---
         g = self._section(inner, 'DATE SEGMENTS  (TRAIN < VAL < TEST)')
         self.v_train = self._txt(g, 'TRAIN start', self.cfg['train_start'], 0,
-                                 tip='Start of the training period (evolution runs on it).')
+                                 tip='Start of the training period (evolution runs on it).\n'
+                                     'Also the start of the whole window, so this is the field\n'
+                                     'that decides whether the span fits the bar size\'s limit —\n'
+                                     'see the line under the timeframe selector.')
         self.v_val = self._txt(g, 'VAL start', self.cfg['val_start'], 1,
                                tip='Start of validation — a robustness check.')
         self.v_test = self._txt(g, 'TEST start', self.cfg['test_start'], 2,
                                 tip='Start of the held-out test — an honest OOS, not part of selection.')
         self.v_end = self._txt(g, 'TEST end', self.cfg['test_end'], 3,
-                               tip='End of the entire data period.')
+                               tip='End of the entire data period. Strictly after TEST start —\n'
+                                   'the four dates must read TRAIN < VAL < TEST < end.')
+        # The four boxes are free text, and until now nothing read them until the node was
+        # already running: a reversed pair silently produced an empty slice (numbers computed
+        # on no data), a typo'd date killed the node at load_config with no window to show it
+        # in, and a span the bar size cannot carry just ran for hours. The note answers all
+        # three while you are still typing; Start re-checks it as the hard gate.
+        self.lbl_seg = self._lbl(g, text='', text_color=NEG, font=(self.UI, 11),
+                                 wraplength=self.UNI_WRAP, justify='left', anchor='w')
+        self.lbl_seg.grid(row=4, column=0, columnspan=2, sticky='w', pady=(5, 0))
+        self.lbl_seg.grid_remove()                       # takes no space while the dates are fine
+        for _v in (self.v_train, self.v_val, self.v_test, self.v_end):
+            _v.trace_add('write', lambda *_a: self._seg_check())
+        self._seg_check()
 
         # --- buttons (Start/Stop live in the header — always visible) ---
         btns = self._box(inner)
@@ -1397,6 +1428,7 @@ class App:
         v = tk.StringVar(value=str(val))
         e = self._entry(parent, v, width=104)
         self._row(parent, label, row, e, tip)
+        v.widget = e                                     # so _seg_check can redden the bad box
         return v
 
     def _chk(self, parent, label, val, row, tip=None):
@@ -2385,13 +2417,51 @@ class App:
             t = _rtf(self.v_tf.get())
         except Exception:                                # noqa: BLE001
             return
-        note = ('daily engine — full history' if t.name == '1d' else
-                f'{t.name} bars · recommended history from {t.history} · '
+        span = f'window ≤ {t.max_bars:,} bars (~{t.max_span_days / 365.0:.1f} yr)'
+        note = ('daily engine — full history · ' + span if t.name == '1d' else
+                f'{t.name} bars · history from {t.history} · {span} · '
                 f'download {t.name} data first, then Start')
         try:
             self.lbl_tf_note.configure(text=note)
         except (AttributeError, tk.TclError):
             pass
+
+    # ---------- date segments: the four boxes are checked, not trusted ----------
+    def _seg_problems(self):
+        """(field, message) pairs for the four date boxes against the bar size CURRENTLY
+        selected in the widget — not the saved one, because the user may be mid-edit and the
+        ceiling that matters is the one they are about to mine on. [] when they are fine."""
+        try:
+            from timeframe import check_segments
+            return check_segments(self.v_tf.get(), self.v_train.get(), self.v_val.get(),
+                                  self.v_test.get(), self.v_end.get())
+        except (ImportError, ValueError, AttributeError, tk.TclError):
+            return []                                    # no timeframe module / torn-down widgets
+
+    def _seg_check(self):
+        """Repaint the note under the date fields and redden whichever box is at fault.
+        Returns the problems so Start can reuse the same verdict as the hard gate."""
+        probs = self._seg_problems()
+        bad = {f for f, _m in probs}
+        for lbl, v in (('TRAIN start', self.v_train), ('VAL start', self.v_val),
+                       ('TEST start', self.v_test), ('TEST end', self.v_end)):
+            w = getattr(v, 'widget', None)
+            if w is not None:
+                try:
+                    w.configure(border_color=(NEG if lbl in bad else BORDER))
+                except tk.TclError:                      # widget died under a theme rebuild
+                    pass
+        lbl_seg = getattr(self, 'lbl_seg', None)
+        if lbl_seg is not None:
+            try:
+                if probs:
+                    lbl_seg.configure(text='\n'.join(m for _f, m in probs))
+                    lbl_seg.grid()
+                else:
+                    lbl_seg.grid_remove()
+            except tk.TclError:
+                pass
+        return probs
 
     def _tf(self):
         """The configured bar size ('1d','4h','1h','15m'); the whole pipeline follows it."""
@@ -2702,6 +2772,13 @@ class App:
         if self._starting:                               # a Start hub-check is already in flight
             return
         self._save()
+        probs = self._seg_check()                        # bad dates never announce themselves:
+        if probs:                                        # a typo kills the node inside
+            messagebox.showerror(                        # load_config with no window to say so,
+                'Date segments',                         # and a reversed pair mines an EMPTY
+                '\n\n'.join(m for _f, m in probs),       # slice while reporting real-looking
+                parent=self.root)                        # Sharpes for it
+            return
         os.makedirs(STATE_DIR, exist_ok=True)
         need, why = self._data_gap()
         if need:                                         # missing/stale/short snapshot: fetch the
