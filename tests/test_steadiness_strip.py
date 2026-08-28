@@ -1,4 +1,4 @@
-"""The steadiness strip: twelve slices of history instead of one number.
+"""The steadiness strip: six slices of history instead of one number.
 
 A single TEST Sharpe cannot separate a formula that worked all along from one carried by
 a single quarter. These tests build both, confirm the headline prefers the wrong one, and
@@ -136,23 +136,64 @@ def test_six_stretches_are_less_noisy_than_twelve():
     assert neg6 > 0                                          # …and six is still not clean
 
 
+def test_no_slice_straddles_the_test_wall():
+    """The defect this fixes. A slice crossing the TRAIN/TEST boundary blends fitted bars
+    with held-out ones and prints their average: on a real library one such slice read
+    -0.18 while its two halves were +1.79 and -0.83 — a number describing neither."""
+    idx = _index(1200)
+    wall = idx[850]
+    b = MW.calendar_buckets(idx, 6, wall=wall)
+    before = set(b[idx < wall].tolist())
+    after = set(b[idx >= wall].tolist())
+    assert not (before & after)                          # no slice lives on both sides
+    assert max(before) + 1 == min(after)                 # and they meet exactly at the wall
+
+
+def test_the_held_out_slices_cover_exactly_the_test_period():
+    """What makes the column reconcile with TEST OOS: the slices right of the wall span
+    the same bars that column is measured over, no more and no less."""
+    idx = _index(1200)
+    wall = idx[850]
+    b = MW.calendar_buckets(idx, 6, wall=wall)
+    k = MW.wall_slice(idx, 6, wall)
+    assert (b >= k).sum() == int((idx >= wall).sum())
+    assert bool(((idx >= wall) == (b >= k)).all())
+
+
+def test_slices_are_shared_between_the_two_sides_by_share_of_history():
+    idx = _index(1200)
+    assert MW.wall_slice(idx, 6, idx[850]) == 4          # 71% fitted -> 4 of 6
+    assert MW.wall_slice(idx, 6, idx[600]) == 3          # half and half -> 3 of 6
+    assert MW.wall_slice(idx, 6, idx[1150]) == 5         # a sliver held out still gets one
+    assert MW.wall_slice(idx, 6, idx[10]) == 1           # …and so does a sliver fitted
+
+
+def test_a_wall_outside_the_span_is_ignored():
+    idx = _index(1200)
+    plain = MW.calendar_buckets(idx, 6).tolist()
+    for wall in (None, idx[0] - pd.Timedelta(days=5), idx[-1] + pd.Timedelta(days=5)):
+        assert MW.calendar_buckets(idx, 6, wall=wall).tolist() == plain
+        assert MW.wall_slice(idx, 6, wall) == 6
+
+
 def test_strip_meta_marks_where_the_held_out_stretch_starts():
     n = 1200
     idx = _index(n)
     tmask = np.zeros(n, dtype=bool)
     tmask[900:] = True                                   # TEST is the last quarter of history
-    ctx = {'market': {'index': idx}, 'tmask': tmask}
-    meta = MW.strip_meta(ctx, 12)
-    assert meta['n'] == 12
-    assert meta['oos'] == 9                              # 900/1200 of 12 slices
+    ctx = {'market': {'index': idx}, 'tmask': tmask, 'test_start': idx[900]}
+    meta = MW.strip_meta(ctx, 6)
+    assert meta['n'] == 6
+    assert meta['oos'] == 5                              # 900/1200 of 6 slices, rounded
     assert meta['start'] == '2020-01-01'
     assert sum(meta['bars']) == n
+    assert sum(meta['bars'][meta['oos']:]) == int(tmask.sum())   # held-out slices == TEST
 
 
 def test_strip_meta_survives_a_test_window_with_no_bars():
     idx = _index(100)
-    ctx = {'market': {'index': idx}, 'tmask': np.zeros(100, dtype=bool)}
-    assert MW.strip_meta(ctx, 12)['oos'] == 12           # nothing held out — no marker to place
+    ctx = {'market': {'index': idx}, 'tmask': np.zeros(100, dtype=bool), 'test_start': None}
+    assert MW.strip_meta(ctx, 6)['oos'] == 6             # nothing held out — no wall to draw
 
 
 # ---------------- how it reads ----------------
@@ -184,6 +225,17 @@ def test_an_unmeasurable_stretch_is_a_dot_not_a_zero():
     cell = App._fmt_strip([None, 0.0, None, 0.0, 0.0, 0.0])
     assert cell[0:4].strip() == '·'
     assert cell[5:9] == '+0.0'                           # a real zero still reads as a number
+
+
+def test_the_wall_is_drawn_where_the_held_out_period_starts():
+    """Without it the row gets compared against a TEST OOS that only describes its tail,
+    and the two columns look like they disagree when they do not."""
+    App = _App()
+    vals = [1.3, 0.8, 1.4, 1.3, -0.8, 0.3]
+    assert App._fmt_strip(vals, 4) == '+1.3 +0.8 +1.4 +1.3 │ -0.8 +0.3'
+    assert App._fmt_strip(vals, None) == '+1.3 +0.8 +1.4 +1.3 -0.8 +0.3'
+    assert App._fmt_strip(vals, 6) == '+1.3 +0.8 +1.4 +1.3 -0.8 +0.3'   # nothing held out
+    assert App._fmt_strip(vals, 0) == '+1.3 +0.8 +1.4 +1.3 -0.8 +0.3'   # nothing fitted
 
 
 def test_an_absurd_slice_clips_rather_than_widen_the_whole_column():
@@ -267,6 +319,6 @@ def test_the_column_is_wide_enough_for_twelve_blocks(gui_app):
     """Treeview columns are raw pixels while their text follows the DPI — the T-columns
     were clipped to 'T ↑ ·' once already. Six fields must fit at this scale."""
     app, _rec, _state = gui_app
-    need = app._tree_font.measure(' '.join(['-0.0'] * MW.STRIP_N))
+    need = app._tree_font.measure(' '.join(['-0.0'] * MW.STRIP_N) + ' ' + app._STRIP_WALL)
     assert app.tree.column('strip', 'width') >= need + 8
     assert app.tree.column('strip', 'minwidth') >= need + 8

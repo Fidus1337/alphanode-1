@@ -1820,7 +1820,8 @@ class App:
         # six four-character fields plus their separators — measure the real string rather
         # than guess a pixel width: a Treeview column is raw pixels while its text follows
         # the DPI, and a strip with its last slice cut off is a wrong strip, not a narrow one
-        _sw = self._tree_font.measure(' '.join(['-0.0'] * self._STRIP_N)) + int(18 * self.SCALE)
+        _sw = self._tree_font.measure(' '.join(['-0.0'] * self._STRIP_N)
+                                      + ' ' + self._STRIP_WALL) + int(18 * self.SCALE)
         self.tree.column('strip', width=_sw, minwidth=_sw, anchor='center', stretch=False)
         self._lb_need_px = 0
         hsb = ctk.CTkScrollbar(wrap, orientation='horizontal', command=self.tree.xview,
@@ -3605,7 +3606,7 @@ class App:
                 m = self._metrics_cache.get(formula)
             need = max(need, self._tree_font.measure(f))   # row; the two spaces are the gutter to
             #                                                the neighbour cell's right-flush value
-            ls, act, win, wup, wdn, srt, tup, tdn, tfl, stp = self._fmt_metrics(m)
+            ls, act, win, wup, wdn, srt, tup, tdn, tfl, stp = self._fmt_metrics(m, self._strip_oos())
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
             fitcell = ('—' if base is None                        # win-rate-mined rows carry a
@@ -3712,25 +3713,38 @@ class App:
 
     _STRIP_N = 6                                         # slices, matching metrics_worker
     _STRIP_CLIP = 9.9                                    # keeps every field four chars wide
+    _STRIP_WALL = '│'                                    # fitted years | held-out period
 
     @classmethod
-    def _fmt_strip(cls, vals):
-        """Six slices of history as six numbers, oldest first.
+    def _fmt_strip(cls, vals, oos=None):
+        """Six slices of history as six numbers, oldest first, with a wall at TEST.
 
         Blocks were tried first and failed in the only way that matters: at real DPI the
         twelve glyphs ran together into one dark smear that carried no information. Every
         field is a fixed four characters so the numbers line up down the column and a row
         can be scanned against the one above it; a slice with too little to measure is a
-        dot, and the rare |Sharpe| past 9.9 clips rather than widen the whole column."""
+        dot, and the rare |Sharpe| past 9.9 clips rather than widen the whole column.
+
+        Left of the wall are the years the search was fitted on, which flatter every row
+        by construction. Right of it is exactly the period TEST OOS is measured over —
+        without the wall drawn, readers compared the whole row against a number that only
+        describes its tail, and the two columns looked like they disagreed."""
         if not isinstance(vals, (list, tuple)) or not vals:
             return '—'
         out = []
-        for v in vals:
+        for i, v in enumerate(vals):
+            if isinstance(oos, int) and 0 < oos == i:
+                out.append(cls._STRIP_WALL)
             if not isinstance(v, (int, float)) or v != v:
                 out.append(f'{"·":^4}')
             else:
                 out.append(f'{max(-cls._STRIP_CLIP, min(cls._STRIP_CLIP, float(v))):+.1f}')
         return ' '.join(out)
+
+    def _strip_oos(self):
+        """Which slice starts the held-out side, once a batch has told us."""
+        meta = getattr(self, '_strip_meta', None)
+        return meta.get('oos') if isinstance(meta, dict) else None
 
     @staticmethod
     def _strip_typical(m):
@@ -3744,7 +3758,7 @@ class App:
         return got[mid] if len(got) % 2 else (got[mid - 1] + got[mid]) / 2.0
 
     @staticmethod
-    def _fmt_metrics(m):
+    def _fmt_metrics(m, oos=None):
         """('L/S', 'tr/yr·a', 'win%', 'win↑', 'win↓', 'sortino', 'T↑', 'T↓', 'T~',
         'steadiness') strings from the cache: None=still computing, 'err'=failed."""
         if m is None:
@@ -3761,7 +3775,7 @@ class App:
                 App._fmt_winpct(m.get('wup')), App._fmt_winpct(m.get('wdown')),
                 App._fmt_ratio(m.get('sortino')), App._fmt_ratio(m.get('tup')),
                 App._fmt_ratio(m.get('tdown')), App._fmt_ratio(m.get('tflat')),
-                App._fmt_strip(m.get('strip')))
+                App._fmt_strip(m.get('strip'), oos))
 
     def _start_metrics(self, champs):
         """Background computation of long/short/win (on TEST) for the shown alphas; cached by formula."""
@@ -3876,7 +3890,7 @@ class App:
             if formula.startswith('id:'):                # locked row: no plaintext to simulate —
                 continue                                 # leave its '—' cells, don't repaint to '·'
             m = self._metrics_cache.get(formula)
-            ls, act, win, wup, wdn, srt, tup, tdn, tfl, stp = self._fmt_metrics(m)
+            ls, act, win, wup, wdn, srt, tup, tdn, tfl, stp = self._fmt_metrics(m, self._strip_oos())
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)

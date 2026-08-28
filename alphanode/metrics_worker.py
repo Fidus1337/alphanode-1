@@ -78,7 +78,8 @@ def build_ctx(opt):
     return {'panel': panel, 'market': market, 'V': market['V'], 'elig': elig, 'tmask': tmask,
             'n_assets': max(1, n_assets), 'years': years, 'vol': vol, 'exec': ex,
             'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06)), 'trend': trd,
-            'buckets': calendar_buckets(market['index'])}   # one slicing for the whole batch
+            'test_start': te,                              # the wall the strip must not cross
+            'buckets': calendar_buckets(market['index'], wall=te)}  # one slicing per batch
 
 
 def regime_sharpe(x, ann):
@@ -104,16 +105,46 @@ def trend_split(rt, trd, ann):
 STRIP_N = 6
 
 
-def calendar_buckets(index, n=STRIP_N):
-    """Which of `n` equal spans of CALENDAR time each bar falls in.
+def calendar_buckets(index, n=STRIP_N, wall=None):
+    """Which of `n` consecutive slices of CALENDAR time each bar falls in.
 
-    Equal TIME, not equal bars: a stretch the exchange served thinly must not quietly
-    become a shorter slice than the one beside it, or the strip would compare a fat
-    quarter against a thin one and call the difference performance."""
+    Equal TIME, not equal bars: a stretch the exchange served thinly must stay a thin
+    slice, or the strip would compare a fat quarter against a thin one and read the
+    difference as performance.
+
+    `wall` (the TEST start) is a cut the slices must not cross. Without it a slice that
+    straddles the boundary blends fitted bars with held-out ones and prints their average
+    — measured on a real library, one such slice showed -0.18 while its two halves were
+    +1.79 and -0.83. A number describing neither half is worse than no number. With the
+    wall honoured, the slices left of it are the fitted years, the ones right of it cover
+    exactly the held-out period, and the row reconciles with the TEST OOS column.
+    """
     v = pd.DatetimeIndex(index).asi8.astype('float64')
     t0, t1 = v[0], v[-1]
     span = max(t1 - t0, 1.0)
-    return np.minimum(((v - t0) * n / span).astype(int), n - 1)
+    if wall is None:
+        return np.minimum(((v - t0) * n / span).astype(int), n - 1)
+    w = float(pd.Timestamp(wall).value)
+    if not (t0 < w < t1):                                # nothing held out (or nothing fitted)
+        return np.minimum(((v - t0) * n / span).astype(int), n - 1)
+    k = int(round(n * (w - t0) / span))                  # slices on the fitted side
+    k = max(1, min(n - 1, k))
+    left = np.minimum(((v - t0) * k / max(w - t0, 1.0)).astype(int), k - 1)
+    right = k + np.minimum(((v - w) * (n - k) / max(t1 - w, 1.0)).astype(int), n - k - 1)
+    return np.where(v < w, left, right)
+
+
+def wall_slice(index, n=STRIP_N, wall=None):
+    """How many of the `n` slices fall on the fitted side of `wall` — the index the strip
+    draws its separator before."""
+    v = pd.DatetimeIndex(index).asi8.astype('float64')
+    t0, t1 = v[0], v[-1]
+    if wall is None:
+        return n
+    w = float(pd.Timestamp(wall).value)
+    if not (t0 < w < t1):
+        return n
+    return max(1, min(n - 1, int(round(n * (w - t0) / max(t1 - t0, 1.0)))))
 
 
 def stability_strip(rt, buckets, ann, n=STRIP_N):
@@ -128,12 +159,12 @@ def stability_strip(rt, buckets, ann, n=STRIP_N):
 
 def strip_meta(ctx, n=STRIP_N):
     """Where the strip's slices fall — one answer for the whole batch, since the calendar
-    is the same for every formula. `oos` is the first slice that starts inside TEST, so a
-    reader can tell the fitted stretch from the held-out one."""
+    is the same for every formula. `oos` is the first slice on the held-out side of the
+    TEST wall; slices from there on cover exactly the period TEST OOS is measured over."""
     idx = pd.DatetimeIndex(ctx['market']['index'])
-    b = calendar_buckets(idx, n)
-    first_test = int(np.argmax(ctx['tmask'])) if bool(ctx['tmask'].any()) else len(b)
-    return {'n': n, 'oos': int(b[first_test]) if first_test < len(b) else n,
+    wall = ctx.get('test_start')
+    b = calendar_buckets(idx, n, wall=wall)
+    return {'n': n, 'oos': wall_slice(idx, n, wall),
             'start': str(idx[0].date()), 'end': str(idx[-1].date()),
             'bars': [int((b == k).sum()) for k in range(n)]}
 
