@@ -1231,17 +1231,20 @@ class App:
     def _uni_build(self, parent):
         self.uni_chips = self._box(parent)
         self.uni_chips.pack(fill='x', pady=(3, 0))
-        self.e_uni = self._entry(parent, None, placeholder='add pair — Enter or comma')
+        self.e_uni = self._entry(parent, None,
+                                 placeholder='add pairs — paste a list, or type + Enter')
         self.e_uni.pack(fill='x', pady=(4, 4))
         self.e_uni.bind('<Return>', self._uni_commit)
         self.e_uni.bind('<FocusOut>', self._uni_commit)
         self.e_uni.bind('<KeyRelease>', self._uni_key)
         self.e_uni.bind('<KeyPress-BackSpace>', self._uni_backspace)
-        self.e_uni.bind('<ButtonPress-2>', self._uni_mpaste)
+        self.e_uni.bind('<<Paste>>', self._uni_paste)          # Ctrl+V / Shift+Insert
+        self.e_uni.bind('<ButtonPress-2>', self._uni_paste)    # middle-click PRIMARY
         self._tip(self.e_uni,
                   'The search, signals and metrics run on exactly this basket.\n'
-                  'Enter or comma turns what you typed into a chip; paste a whole\n'
-                  'list — commas, spaces or line breaks all split it.\n'
+                  'Paste a whole list and every pair becomes a chip at once —\n'
+                  'commas, spaces or line breaks all split it. Typing: Enter or\n'
+                  'a comma turns what you wrote into a chip.\n'
                   '✕ removes a pair; clicking a chip pulls it back down for editing;\n'
                   'Backspace in the empty box pulls the last chip down.\n'
                   'Remove everything and the default five come back at Start/Save.')
@@ -1365,15 +1368,21 @@ class App:
             self._uni_edit(syms[-1])
         return 'break'
 
-    def _uni_mpaste(self, _e=None):
-        """Middle-click PRIMARY paste goes straight to the inner tk.Entry via the Entry
-        class binding, bypassing CTkEntry.insert() — with the placeholder active the pasted
-        text would glue itself onto the ghost text. Deactivate it before the class binding
-        pastes (widget-tag bindings fire first)."""
+    def _uni_paste(self, _e=None):
+        """A paste is FINISHED text; typing is not. _uni_key deliberately keeps whatever
+        follows the last comma in the box, because a typist is still mid-word — but applied
+        to a paste that rule swallowed the list's tail: 'ETH,SOL,XRP' became two chips and a
+        dangling XRPUSDT, which reads as "it only took some of them". So a paste commits ALL
+        of it. Bound for Ctrl+V/Shift+Insert and for middle-click PRIMARY, which reaches the
+        inner tk.Entry through the Entry class binding and bypasses CTkEntry.insert()
+        entirely — hence the placeholder has to be dismissed here or the pasted text glues
+        itself onto the ghost string. Widget-tag bindings run BEFORE the class binding that
+        does the actual insert, so the commit waits for the idle after it."""
         try:
             self.e_uni._deactivate_placeholder()
         except Exception:                            # noqa: BLE001
             pass
+        self.root.after_idle(self._uni_commit)
 
     def _uni_remove(self, sym):
         self.v_unilist.set(','.join(
