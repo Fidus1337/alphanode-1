@@ -1,8 +1,12 @@
-"""Starred alphas — the user's own picks, kept deliberately OUTSIDE the library and
-session lifecycle: 'Clear all history' wipes the library, a session load swaps the whole
-workspace, but favorites.json is owned by neither — a star survives both. Each favorite
-is the full champion doc frozen at star time (formula + metrics), so it stays readable
-even after the library that produced it is long gone."""
+"""Starred alphas — the user's own picks, kept outside the LIBRARY but inside the SESSION.
+
+'Clear all history' wipes the library and leaves the stars standing: each favorite is the
+full champion doc frozen at star time (formula + metrics), so it stays readable after the
+library row that produced it is gone. A session load is the other case and goes the other
+way — favorites.json is session-owned (sessions._STATE_PATTERNS), so a workspace arrives
+with its own stars instead of inheriting the last one's. Stars used to outlive the library
+they pointed into: load a different session and the ★ list still held rows mined on another
+basket, another cut, sometimes another timeframe, with nothing on screen saying so."""
 import hashlib
 import json
 import os

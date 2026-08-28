@@ -2557,7 +2557,9 @@ class App:
             if not messagebox.askyesno('Sessions',
                     'Load this session? The current workspace will be REPLACED — nothing is '
                     "saved automatically. Use 'Save current…' first if you want a way "
-                    'back.\n\nThe forward track resumes from the next closed bar — the '
+                    'back.\n\nThat includes your ★ favorites: they belong to the session '
+                    'that mined them, so this one\'s stars replace the ones on screen.\n\n'
+                    'The forward track resumes from the next closed bar — the '
                     'gap stays visible in its history (nothing is re-computed backwards).',
                     parent=win):
                 return
@@ -2573,10 +2575,12 @@ class App:
             self._sessions_rebuild()
             n_alphas = sum((man.get('alphas') or {}).values())
             n_fwd = (man.get('forward') or {}).get('entries') or 0
+            n_fav = man.get('favorites') or 0             # absent in pre-favorites archives
             if n_alphas or n_fwd:
                 messagebox.showinfo('Sessions',
                                     f'Session loaded: {man.get("name") or man.get("created", "")}\n'
-                                    f'{n_alphas} alphas · {n_fwd} forward entries.\n'
+                                    f'{n_alphas} alphas · {n_fwd} forward entries · '
+                                    f'{n_fav} ★ favorites.\n'
                                     'The forward track continues from the next closed bar.',
                                     parent=self.root)
             else:
@@ -2610,6 +2614,7 @@ class App:
             eq = fw.get('equity')
             L.append(f"forward  {fw.get('entries', 0)} entries"
                      + (f' · equity ${eq:,.2f}' if eq else ''))
+            L.append(f"stars    {man.get('favorites', 0)} ★ favorites")
             L.append('')
             L.append('PORTFOLIO')
             if pf is None:
@@ -2700,7 +2705,9 @@ class App:
         self._pf_last_w = 0
         self._treesig = None
         self._sig_shown = None
-        self._build()
+        self._fav_ids = None                             # the restored session brought its OWN
+        self._build()                                    # stars — re-read, don't paint the last
+        #                                                  workspace's ★ onto this one's rows
         self._set_running(bool(self.proc and self.proc.poll() is None))
         self._render_signal_rows()
         self._start_lb_compute(force=True)               # show the restored library NOW,

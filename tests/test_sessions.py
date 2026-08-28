@@ -7,6 +7,8 @@
     silently absent from every checkpoint;
   * restore is a full swap: files the archive does not carry must not survive and mix
     two workspaces — but files sessions do not own (device_id, data) are untouched;
+  * ★ favorites are session-owned: a star points at a formula in a particular library, so
+    it must not be inherited by a workspace mined on another basket, cut or timeframe;
   * a failed restore rolls the workspace back byte-for-byte; a failed snapshot leaves
     no file at all (no half-written archives under session names);
   * rotation reads the MANIFEST: named sessions are forever even if the user names one
@@ -41,6 +43,9 @@ def ws(tmp_path, monkeypatch):
         {'id': 'a', 'archived': False, 'state': {'equity': 9950.0}},
         {'id': 'b', 'archived': True, 'state': {'equity': 111.0}}]}))
     (state / 'portfolio.json').write_text('{"top": 6}')
+    (state / 'favorites.json').write_text(json.dumps({'favorites': [
+        {'formula': 'tanh(low)', 'added': '2026-08-01'},
+        {'formula': 'ema:12(close)', 'added': '2026-08-02'}]}))
     (state / 'device_id').write_text('MACHINE')          # identity: never in a session
     (state / 'library.jsonl.bak').write_text('old\n')    # stray backup: not ours
     settings.write_text(json.dumps({'tf': '1h', 'vault_license': 'SECRET-KEY-123',
@@ -68,6 +73,8 @@ def test_snapshot_manifest_and_secret_stripping(ws):
     assert 'state/history.jsonl' in names
     assert man['alphas'] == {'1h': 3, '1d': 2}
     assert man['forward'] == {'entries': 1, 'equity': 9950.0}   # archived entry not counted
+    assert 'state/favorites.json' in names               # stars travel with their session
+    assert man['favorites'] == 2
     assert man['name'] == 'my exp' and man['auto'] is False
     assert man['fp']                                     # content fingerprint present
     assert 'vault_license' not in cfg                    # THE invariant
@@ -321,3 +328,80 @@ def test_peek_reads_archive_without_touching_the_workspace(ws):
     junk = os.path.join(S.sessions_dir(state), 'junk.tar.gz')
     open(junk, 'wb').write(b'not a tar')
     assert S.peek(junk) == {'manifest': None, 'settings': None, 'portfolio': None}
+
+
+# ---- ★ favorites belong to the session that mined them -------------------------------
+
+def test_stars_travel_with_the_session_and_do_not_leak_between_them(ws):
+    """The reported problem: a star outlived the library it pointed into. Save session A
+    with two stars, star something else, load A back — you get A's stars, not today's."""
+    state, settings = ws
+    a = S.snapshot(name='A', state_dir=state, settings_path=settings)
+    json.dump({'favorites': [{'formula': 'rank(volume)'}]},
+              open(os.path.join(state, 'favorites.json'), 'w'))
+    b = S.snapshot(name='B', state_dir=state, settings_path=settings)
+
+    S.restore(a, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'favorites.json')))['favorites']
+    assert [f['formula'] for f in got] == ['tanh(low)', 'ema:12(close)']
+
+    S.restore(b, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'favorites.json')))['favorites']
+    assert [f['formula'] for f in got] == ['rank(volume)']    # B's star, not A's two
+
+
+def test_a_session_saved_without_stars_restores_without_stars(ws):
+    """A full swap, not a merge — the same rule every other owned file follows. Loading a
+    starless workspace must not leave the previous one's ★ behind."""
+    state, settings = ws
+    os.remove(os.path.join(state, 'favorites.json'))
+    p = S.snapshot(name='no-stars', state_dir=state, settings_path=settings)
+    json.dump({'favorites': [{'formula': 'rank(volume)'}]},
+              open(os.path.join(state, 'favorites.json'), 'w'))
+    man = S.restore(p, state_dir=state, settings_path=settings)
+    assert man['favorites'] == 0
+    assert not os.path.exists(os.path.join(state, 'favorites.json'))
+
+
+def test_starring_makes_the_workspace_look_changed(ws):
+    """The fingerprint drives 'skip this auto checkpoint, nothing moved'. A star IS a
+    change now, so a checkpoint taken after one must not be skipped as a duplicate."""
+    state, settings = ws
+    before = S.workspace_fingerprint(state, settings)
+    doc = json.load(open(os.path.join(state, 'favorites.json')))
+    doc['favorites'].append({'formula': 'rank(volume)'})
+    json.dump(doc, open(os.path.join(state, 'favorites.json'), 'w'))
+    assert S.workspace_fingerprint(state, settings) != before
+
+
+def test_a_corrupt_favorites_file_is_counted_as_none(ws):
+    """The manifest is written on every save — a hand-mangled star file must not stop one."""
+    state, settings = ws
+    open(os.path.join(state, 'favorites.json'), 'w').write('{ not json')
+    p = S.snapshot(name='c', state_dir=state, settings_path=settings)
+    with tarfile.open(p) as tar:
+        man = json.load(tar.extractfile('manifest.json'))
+    assert man['favorites'] == 0
+    assert 'state/favorites.json' in {m.name for m in tarfile.open(p).getmembers()}
+
+
+@pytest.mark.gui
+def test_the_leaderboard_repaints_stars_after_a_session_load(gui_app):
+    """_fav_ids is cached until something sets it to None. A restore swaps favorites.json
+    under the GUI, so without the invalidation the table keeps painting the PREVIOUS
+    workspace's ★ onto rows that belong to a different library."""
+    app, _rec, state = gui_app
+    import alphanode_gui as G
+    import favorites as favdb
+    lib = state / 'library_1h.jsonl'
+    lib.write_text('{"formula":"tanh(low)","base":1.0}\n')
+    favdb.toggle(str(state), {'formula': 'tanh(low)'}, '1h')
+    assert favdb.ids(str(state)) == {favdb.alpha_id('tanh(low)')}
+    starless = S.snapshot(name='starless', state_dir=str(state), settings_path=G.SETTINGS)
+
+    app._fav_ids = {'deadbe'}                            # a star from the workspace we are
+    S.restore(starless, state_dir=str(state), settings_path=G.SETTINGS)   # about to leave
+    app._sessions_rebuild()
+    live = app._fav_ids if app._fav_ids is not None else favdb.ids(str(state))
+    assert 'deadbe' not in live                          # the stale star did not survive
+    assert live == favdb.ids(str(state)) == {favdb.alpha_id('tanh(low)')}

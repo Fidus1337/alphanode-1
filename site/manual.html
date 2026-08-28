@@ -333,7 +333,7 @@ nav{border-bottom:1px solid var(--line)}
           <li><a href="#e7-10"><span class="num">7.10</span><span class="txt">Right-click a header → the Columns menu</span><span class="pg" data-num="7.10">28</span></a></li>
           <li><a href="#e7-11"><span class="num">7.11</span><span class="txt">Sorting</span><span class="pg" data-num="7.11">28</span></a></li>
           <li><a href="#e7-12"><span class="num">7.12</span><span class="txt">Export table (CSV)…</span><span class="pg" data-num="7.12">28</span></a></li>
-          <li><a href="#e7-13"><span class="num">7.13</span><span class="txt">Export full library (CSV)…</span><span class="pg" data-num="7.13">28</span></a></li>
+          <li><a href="#e7-13"><span class="num">7.13</span><span class="txt">Export full library (CSV)…</span><span class="pg" data-num="7.13">29</span></a></li>
           <li><a href="#e7-14"><span class="num">7.14</span><span class="txt">▶ Build portfolio</span><span class="pg" data-num="7.14">29</span></a></li>
           <li><a href="#e7-15"><span class="num">7.15</span><span class="txt">&quot;families only&quot; switch</span><span class="pg" data-num="7.15">29</span></a></li>
           <li><a href="#e7-16"><span class="num">7.16</span><span class="txt">Clear all history</span><span class="pg" data-num="7.16">29</span></a></li>
@@ -767,8 +767,8 @@ nav{border-bottom:1px solid var(--line)}
       </div>
       <div class="item" id="e7-8">
         <div class="hd"><h3><span class="num">7.08</span>★ Favorites</h3></div>
-        <p>The button in the leaderboard heading opens your starred list: date added, ID, the timeframe it came from, fitness, TEST OOS and the formula. Double-click for the equity chart. The point of Favorites is durability — the starred formulas live in their own file outside the library, so they survive &quot;Clear all history&quot; and survive loading a different session. Star anything you would be upset to lose.</p>
-        <p class="warn"><b>Watch out.</b> A favourite is a snapshot: the whole row is copied at the moment you star it and never refreshed. Change target vol, fees or dates and the leaderboard&#x27;s numbers move while the Favorites window&#x27;s do not.</p>
+        <p>The button in the leaderboard heading opens your starred list: date added, ID, the timeframe it came from, fitness, TEST OOS and the formula. Double-click for the equity chart. The starred formulas live in their own file outside the library, so they survive &quot;Clear all history&quot;: the whole row is copied at star time, which is what keeps it readable after the library row is gone. They belong to the SESSION, though — saving a session saves its stars, and loading one replaces the stars on screen with that session&#x27;s. A star points at a formula in a particular library; inheriting it into a workspace mined on another basket, another cut or another timeframe said nothing true. Star anything in this session you would be upset to lose, and save the session to keep it.</p>
+        <p class="warn"><b>Watch out.</b> Loading a session archive saved by an older build leaves you with no stars at all — those archives carry no favorites file, and a load replaces every session-owned file wholesale rather than merging. A favourite is also a snapshot: the whole row is copied at the moment you star it and never refreshed. Change target vol, fees or dates and the leaderboard&#x27;s numbers move while the Favorites window&#x27;s do not.</p>
       </div>
       <div class="item" id="e7-9">
         <div class="hd"><h3><span class="num">7.09</span>Copy formula / Copy formula + metrics</h3></div>

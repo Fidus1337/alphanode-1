@@ -49,7 +49,15 @@ from version import __version__
 _STATE_PATTERNS = (re.compile(r'^library(_[A-Za-z0-9]+)?\.jsonl$'),
                    re.compile(r'^history(_[A-Za-z0-9]+)?\.jsonl$'),
                    re.compile(r'^forward\.json$'),
-                   re.compile(r'^portfolio\.json$'))
+                   re.compile(r'^portfolio\.json$'),
+                   re.compile(r'^favorites\.json$'))
+# favorites.json is session-owned. A star points at a formula in the library,
+# and it used to outlive the library it pointed into: load a different workspace and the
+# ★ list still held rows mined on another basket, another cut, sometimes another timeframe.
+# Now a session carries its own stars — saving keeps them, loading swaps them. Restore is a
+# wholesale swap of owned files, so loading an archive written before this change (it has
+# no favorites.json in it) leaves the workspace with none; that is the same rule every
+# other owned file follows, and the load dialog says the workspace is replaced.
 _TRANSIENT = ('status.json',)                            # never archived; cleared on restore
 SECRET_KEYS = ('vault_license',)                         # never inside an archive
 
@@ -127,9 +135,14 @@ def build_manifest(name, note, auto, state_dir, settings_path):
         fwd['equity'] = round(sum(eqs), 2) if eqs else None
     except Exception:                                    # noqa: BLE001
         pass
+    try:
+        doc = json.load(open(os.path.join(state_dir, 'favorites.json'), encoding='utf-8'))
+        favs = sum(1 for f in doc.get('favorites', []) if isinstance(f, dict) and f.get('formula'))
+    except Exception:                                    # noqa: BLE001 — absent/corrupt = none
+        favs = 0
     return {'name': name or '', 'note': note or '', 'auto': bool(auto),
             'created': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-            'version': __version__, 'alphas': alphas, 'forward': fwd,
+            'version': __version__, 'alphas': alphas, 'forward': fwd, 'favorites': favs,
             'fp': workspace_fingerprint(state_dir, settings_path)}
 
 
