@@ -1959,7 +1959,11 @@ class App:
         self.pf_tree.tag_configure('pos', background=_mix(CARD, POS, 0.12))
         self.pf_tree.tag_configure('odd', background=STRIPE)
         self.pf_tree.tag_configure('even', background=CARD)
-        self.pf_tree.pack(fill='x')
+        self._pf_vsb = ctk.CTkScrollbar(self._pfwrap, orientation='vertical',
+                                        command=self.pf_tree.yview, fg_color=CARD,
+                                        button_color=BORDER, button_hover_color=FAINT, width=14)
+        self.pf_tree.configure(yscrollcommand=self._pf_vsb.set)
+        self.pf_tree.pack(side='left', fill='both', expand=True)
         self.pf_tree.bind('<Double-1>', self._pf_member_plot)
         self._selectable_cells(self.pf_tree)
         self._tip(self.pf_tree,
@@ -3488,6 +3492,8 @@ class App:
             self.tree.heading(c, text=txt.upper() + arrow)
 
     _PF_COLS = ('n', 'id', 'solo', 'fit', 'test', 'formula')
+    PF_ROWS_MAX = 12                                     # members shown before the list scrolls
+    PF_TOP_MIN, PF_TOP_MAX = 2, 20                       # what the 'top' spinner advertises
 
     _LB_OPT_ORDER = ('id', 'dd', 'cagr', 'srt',
                      'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown')
@@ -4355,7 +4361,18 @@ class App:
     def _build_portfolio(self):
         if self._pf_proc and self._pf_proc.poll() is None:
             return                                       # already building
-        n = self._gi(self.v_pfn, 6)
+        # ttk.Spinbox enforces from_/to on its ARROWS only — a typed 150 reads back as 150,
+        # and went to the builder unchallenged. Two things then went quietly wrong: 'combo'
+        # caps its search pool at 30, so asking for a combination of anything above that
+        # silently stopped searching and took the whole pool ('pool has only 30 distinct
+        # alphas'), and the build simply took as long as the library was deep. Clamp to the
+        # advertised range and say so in the status line rather than in a modal.
+        raw = self._gi(self.v_pfn, 6)
+        n = max(self.PF_TOP_MIN, min(self.PF_TOP_MAX, raw))
+        clamped = '' if n == raw else (f'  ·  top {raw} is outside {self.PF_TOP_MIN}–'
+                                       f'{self.PF_TOP_MAX} — building {n}')
+        if clamped:
+            self.v_pfn.set(n)                            # the box shows what is being built
         sel = {'fitness': 'base', 'combo': 'combo'}.get(self.v_pfsel.get(), 'test')
         eng = ('real engine, ~1–2 min' if self._tf() == '1d'
                else f'{self._tf()} fastsim, ~seconds')
@@ -4368,7 +4385,7 @@ class App:
         self.lbl_pf.configure(text=(
             f'searching the best combination of {n} on TRAIN+VAL ({eng})…' if sel == 'combo'
             else f'building portfolio from top-{n} by '
-                 f'{"TEST" if sel == "test" else "fitness min(train,val)"} ({eng})…'))
+                 f'{"TEST" if sel == "test" else "fitness min(train,val)"} ({eng})…') + clamped)
         env = dict(os.environ)
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
                    ALPHANODE_TF=self._tf(),
@@ -4491,7 +4508,15 @@ class App:
                 f'{ts:+.2f}' if isinstance(ts, (int, float)) else '—',
                 '  ' + f),
                 tags=(('pos',) if beaten else ('odd' if i % 2 else 'even',)))
-        tree.configure(height=max(1, len(members)))      # no scrollbar: N is 2..20 by design
+        # The table sizes itself to the membership so the usual top-6 needs no scrolling —
+        # but only up to PF_ROWS_MAX. 'top' does not enforce its own 2–20 range on a TYPED
+        # value, and an unbounded height turned a 150-member build into a card eight thousand
+        # pixels tall (measured: 8,462px against a 2,466px screen).
+        tree.configure(height=max(1, min(len(members), self.PF_ROWS_MAX)))
+        if len(members) > self.PF_ROWS_MAX:
+            self._pf_vsb.pack(side='right', fill='y', padx=(4, 0))
+        else:
+            self._pf_vsb.pack_forget()
 
     def _pf_member_plot(self, _e=None):
         """Double-click a member -> its own equity chart, the same one the leaderboard opens.

@@ -140,3 +140,91 @@ def test_double_click_on_a_member_that_is_gone_says_so(built, monkeypatch):
     app.pf_tree.selection_set(app.pf_tree.get_children()[0])
     app._pf_member_plot()
     assert said and 'PLOTTED' not in said and 'no longer in the library' in said[0]
+
+
+# ---- a large 'top' must not blow the card up or slip past the advertised range ----
+
+def _many(k):
+    lib = [{'formula': f'ts_mean:{i}(close)', 'base': 1.0, 'test': {'sharpe': 0.1}}
+           for i in range(k)]
+    return lib, _doc(n=k, formulas_full=[c['formula'] for c in lib],
+                     formulas=[c['formula'] for c in lib], indiv_sharpe=[0.1] * k)
+
+
+def test_the_table_stops_growing_and_scrolls_instead(built):
+    """ttk.Spinbox enforces from_/to on its arrows only, so 'top' can hold a typed 150 and the
+    build honours it. An unbounded table height turned that into a card 8,462px tall on a
+    2,466px screen."""
+    app, _rec = built
+    lib, doc = _many(150)
+    app._lib_cache['all'] = lib
+    app._render_portfolio(doc)
+    app.root.update()
+    assert len(app.pf_tree.get_children()) == 150         # every member is still LISTED
+    assert int(app.pf_tree.cget('height')) == app.PF_ROWS_MAX
+    assert app._pf_vsb.winfo_manager()                    # …behind a scrollbar
+
+
+def test_a_small_portfolio_needs_no_scrollbar(built):
+    app, _rec = built
+    app._render_portfolio(_doc())
+    app.root.update()
+    assert int(app.pf_tree.cget('height')) == 3
+    assert not app._pf_vsb.winfo_manager()                # nothing to scroll: no bar
+
+
+def test_the_scrollbar_goes_away_again(built):
+    app, _rec = built
+    lib, doc = _many(150)
+    app._lib_cache['all'] = lib
+    app._render_portfolio(doc)
+    app._render_portfolio(_doc())
+    app.root.update()
+    assert not app._pf_vsb.winfo_manager()
+
+
+@pytest.fixture()
+def spawn(built, monkeypatch):
+    """Catch the builder's argv and the status line AS IT SPAWNS — the child never starts, and
+    raising afterwards would overwrite the very line under test with the failure message."""
+    app, _rec = built
+    import alphanode_gui as G
+    caught = {}
+
+    def fake(cmd, **kw):
+        caught['argv'] = list(cmd)
+        caught['note'] = app.lbl_pf.cget('text')
+        raise RuntimeError('no child in tests')
+
+    app._pf_proc = None
+    monkeypatch.setattr(G.subprocess, 'Popen', fake)
+    return app, caught
+
+
+def test_a_typed_top_outside_the_range_never_reaches_the_builder(spawn):
+    """150 used to go through unchallenged. Worse than merely slow: 'combo' caps its search
+    pool at 30, so any top above that silently stopped searching combinations and took the
+    whole pool instead — the mode's entire point, gone, with only a log line to say so."""
+    app, caught = spawn
+    app.v_pfn.set(150)
+    app._build_portfolio()
+    assert '--top' in caught['argv']
+    assert caught['argv'][caught['argv'].index('--top') + 1] == str(app.PF_TOP_MAX)
+    assert app.v_pfn.get() == app.PF_TOP_MAX              # the box shows what is being built
+    assert 'outside 2–20' in caught['note']               # and the line says why
+
+
+def test_a_top_below_the_floor_is_lifted(spawn):
+    app, caught = spawn
+    app.v_pfn.set(1)                                      # one alpha is not a combination
+    app._build_portfolio()
+    assert caught['argv'][caught['argv'].index('--top') + 1] == str(app.PF_TOP_MIN)
+
+
+def test_a_value_inside_the_range_is_left_alone(spawn):
+    app, caught = spawn
+    app.v_pfn.set(8)
+    app._build_portfolio()
+    assert caught['argv'][caught['argv'].index('--top') + 1] == '8'
+    assert app.v_pfn.get() == 8
+    assert 'outside' not in caught['note']
