@@ -12,13 +12,9 @@ GUI only ever waits on a pipe (which releases it).
 stdin  -> {"formulas": [...], "instruments": [...]|null, "vol": .., "exec": ..,
            "train_start": "YYYY-MM-DD", "test_start": ..., "test_end": ...}
 stdout -> {"ok": true, "trend_bars": {"up":n,"down":n,"flat":n},
-           "strip_meta": {"n":6,"oos":k,"start":"YYYY-MM-DD","end":...,"bars":[...]},
            "metrics": {formula: {"long":n,"short":n,"win":f,"act":f,
-           "dd":f,"cagr":f|null,"sortino":f|null,"strip":[f|null x6],
+           "dd":f,"cagr":f|null,"sortino":f|null,
            "tup":f|null,"tdown":f|null,"tflat":f|null} | "err"}}
-           strip = Sharpe in each of 6 equal CALENDAR slices of the WHOLE loaded
-           history — the shape a single number cannot show (see stability_strip);
-           strip_meta says where those slices fall and which of them are held out
            tup/tdown/tflat = the alpha's TEST Sharpe on trending-up / trending-down /
            flat market bars (drift t-stat of the EW basket over ~30 calendar days of
            bars, labels lagged one bar; see evaluator.trend_regime and trend_split
@@ -77,9 +73,7 @@ def build_ctx(opt):
     trd = np.concatenate([[np.nan], trd[:-1]])
     return {'panel': panel, 'market': market, 'V': market['V'], 'elig': elig, 'tmask': tmask,
             'n_assets': max(1, n_assets), 'years': years, 'vol': vol, 'exec': ex,
-            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06)), 'trend': trd,
-            'test_start': te,                              # the wall the strip must not cross
-            'buckets': calendar_buckets(market['index'], wall=te)}  # one slicing per batch
+            'ann': ann, 'ewma': float(cfg.get('ewma_lambda', 0.06)), 'trend': trd}
 
 
 def regime_sharpe(x, ann):
@@ -98,75 +92,6 @@ def trend_split(rt, trd, ann):
     return {'tup': regime_sharpe(rt[trd == 1.0], ann),
             'tdown': regime_sharpe(rt[trd == -1.0], ann),
             'tflat': regime_sharpe(rt[trd == 0.0], ann)}
-
-
-# Six, not twelve: twice the bars behind each Sharpe, and six numbers can be READ where
-# twelve ran together into one dark smear that said nothing.
-STRIP_N = 6
-
-
-def calendar_buckets(index, n=STRIP_N, wall=None):
-    """Which of `n` consecutive slices of CALENDAR time each bar falls in.
-
-    Equal TIME, not equal bars: a stretch the exchange served thinly must stay a thin
-    slice, or the strip would compare a fat quarter against a thin one and read the
-    difference as performance.
-
-    `wall` (the TEST start) is a cut the slices must not cross. Without it a slice that
-    straddles the boundary blends fitted bars with held-out ones and prints their average
-    — measured on a real library, one such slice showed -0.18 while its two halves were
-    +1.79 and -0.83. A number describing neither half is worse than no number. With the
-    wall honoured, the slices left of it are the fitted years, the ones right of it cover
-    exactly the held-out period, and the row reconciles with the TEST OOS column.
-    """
-    v = pd.DatetimeIndex(index).asi8.astype('float64')
-    t0, t1 = v[0], v[-1]
-    span = max(t1 - t0, 1.0)
-    if wall is None:
-        return np.minimum(((v - t0) * n / span).astype(int), n - 1)
-    w = float(pd.Timestamp(wall).value)
-    if not (t0 < w < t1):                                # nothing held out (or nothing fitted)
-        return np.minimum(((v - t0) * n / span).astype(int), n - 1)
-    k = int(round(n * (w - t0) / span))                  # slices on the fitted side
-    k = max(1, min(n - 1, k))
-    left = np.minimum(((v - t0) * k / max(w - t0, 1.0)).astype(int), k - 1)
-    right = k + np.minimum(((v - w) * (n - k) / max(t1 - w, 1.0)).astype(int), n - k - 1)
-    return np.where(v < w, left, right)
-
-
-def wall_slice(index, n=STRIP_N, wall=None):
-    """How many of the `n` slices fall on the fitted side of `wall` — the index the strip
-    draws its separator before."""
-    v = pd.DatetimeIndex(index).asi8.astype('float64')
-    t0, t1 = v[0], v[-1]
-    if wall is None:
-        return n
-    w = float(pd.Timestamp(wall).value)
-    if not (t0 < w < t1):
-        return n
-    return max(1, min(n - 1, int(round(n * (w - t0) / max(t1 - t0, 1.0)))))
-
-
-def stability_strip(rt, buckets, ann, n=STRIP_N):
-    """Sharpe in each of `n` consecutive slices of the whole loaded history.
-
-    One number says how well a formula did; this says whether it did it all along. A
-    row that reads +0.8 +0.7 +0.9 +0.6 +0.8 +0.7 is worth more than one averaging +2.5
-    out of a single slice, and no amount of decimal places on one Sharpe shows that.
-    Costs nothing: the return series was simulated already, this only slices it."""
-    return [regime_sharpe(rt[buckets == k], ann) for k in range(n)]
-
-
-def strip_meta(ctx, n=STRIP_N):
-    """Where the strip's slices fall — one answer for the whole batch, since the calendar
-    is the same for every formula. `oos` is the first slice on the held-out side of the
-    TEST wall; slices from there on cover exactly the period TEST OOS is measured over."""
-    idx = pd.DatetimeIndex(ctx['market']['index'])
-    wall = ctx.get('test_start')
-    b = calendar_buckets(idx, n, wall=wall)
-    return {'n': n, 'oos': wall_slice(idx, n, wall),
-            'start': str(idx[0].date()), 'end': str(idx[-1].date()),
-            'bars': [int((b == k).sum()) for k in range(n)]}
 
 
 def trend_bar_counts(ctx):
@@ -214,12 +139,8 @@ def trade_stats(formula, ctx):
         prev = np.vstack([np.zeros((1, side.shape[1])), side[:-1]])      # previous calendar day
         long_tr = int(((side == 1) & (prev != 1))[tmask].sum())         # long entries in TEST
         short_tr = int(((side == -1) & (prev != -1))[tmask].sum())      # short entries in TEST
-        rt_all = fast_sim(raw, market, ctx['vol'], ctx['exec'],
-                          ann=ctx['ann'], ewma_lambda=ctx['ewma']).to_numpy()
-        # the strip reads the WHOLE loaded history, not just TEST: the question it answers
-        # is "was this level all along", and half the answer lives in the fitted years
-        strip = stability_strip(rt_all, ctx['buckets'], ctx['ann'])
-        rt = rt_all[tmask]
+        rt = fast_sim(raw, market, ctx['vol'], ctx['exec'],
+                      ann=ctx['ann'], ewma_lambda=ctx['ewma']).to_numpy()[tmask]
         active = np.abs(rt) > 1e-9                                       # days when something happened
         win = float((rt[active] > 0).mean()) if active.any() else 0.0
         act = (long_tr + short_tr) / ctx['n_assets'] / ctx['years']     # trades / asset / year
@@ -242,7 +163,6 @@ def trade_stats(formula, ctx):
                 'long_yr': _fin(long_tr / ctx['n_assets'] / ctx['years']),  # entries / asset / year,
                 'short_yr': _fin(short_tr / ctx['n_assets'] / ctx['years']),  # split by side
                 'wup': _fin(wup), 'wdown': _fin(wdown),
-                'strip': [_fin(v) for v in strip],
                 'dd': _fin(dd), 'cagr': _fin(cagr), 'sortino': _fin(sortino),
                 'tup': _fin(ts['tup']), 'tdown': _fin(ts['tdown']), 'tflat': _fin(ts['tflat'])}
     except Exception:                                                   # noqa: BLE001
@@ -266,8 +186,7 @@ def main():
                           'error': f'{type(e).__name__}: {e}'}))
         return
     out = {f: trade_stats(f, ctx) for f in formulas}
-    print(json.dumps({'ok': True, 'metrics': out, 'trend_bars': trend_bar_counts(ctx),
-                      'strip_meta': strip_meta(ctx)}))
+    print(json.dumps({'ok': True, 'metrics': out, 'trend_bars': trend_bar_counts(ctx)}))
 
 
 if __name__ == '__main__':
