@@ -1939,6 +1939,37 @@ class App:
         self.lbl_pf_m = self._lbl(p3, text='', text_color=TXT, font=(self.UI, 16, 'bold'),
                                      anchor='w')
         self.lbl_pf_m.pack(anchor='w')
+        # WHICH alphas got combined. The card's whole claim is that the mix beats every one of
+        # its members, and that was unfalsifiable while the members were not on screen: the
+        # summary named a count, the chart drew one line, and the formulas lived only inside
+        # portfolio.json. SOLO is each member's TEST Sharpe on its own — read the combined
+        # number above against this column and the diversification gain is either there or not.
+        self._pfwrap = self._box(p3)
+        self._pfwrap.pack(fill='x', pady=(10, 0))
+        self.pf_tree = ttk.Treeview(self._pfwrap, columns=self._PF_COLS, show='headings',
+                                    height=1, selectmode='browse')
+        for c, txt, w, anch in (('n', '#', 40, 'center'), ('id', 'ID', 72, 'center'),
+                                ('solo', 'SOLO TEST', 92, 'e'), ('fit', 'FITNESS', 86, 'e'),
+                                ('test', 'TEST OOS', 86, 'e'), ('formula', 'FORMULA', 260, 'w')):
+            self.pf_tree.heading(c, text=txt, anchor=anch)
+            self.pf_tree.column(c, width=int(w * self.SCALE), anchor=anch,
+                                stretch=(c == 'formula'), minwidth=int(w * self.SCALE))
+        # tags are per-widget in ttk: the leaderboard's are configured on ITS tree only.
+        # Same colour economy — the green tint marks the rows the combination actually beat.
+        self.pf_tree.tag_configure('pos', background=_mix(CARD, POS, 0.12))
+        self.pf_tree.tag_configure('odd', background=STRIPE)
+        self.pf_tree.tag_configure('even', background=CARD)
+        self.pf_tree.pack(fill='x')
+        self.pf_tree.bind('<Double-1>', self._pf_member_plot)
+        self._selectable_cells(self.pf_tree)
+        self._tip(self.pf_tree,
+                  'The alphas this portfolio is made of, in pick order — equal weight,\n'
+                  'no member is sized larger than another.\n'
+                  'SOLO TEST — that member\'s held-out Sharpe ON ITS OWN. The combined\n'
+                  'Sharpe above should beat every row here; if it does not, the mix is\n'
+                  'carrying dead weight.\n'
+                  'FITNESS and TEST OOS are the leaderboard\'s own numbers for the row.\n'
+                  'Double-click a member for its equity chart.')
         self.pf_img = tk.Label(p3, bg=CARD, borderwidth=0, cursor='hand2')
         self.pf_img.pack(fill='x', pady=(8, 0))
         self.pf_img.bind('<Double-1>', self._pf_interactive)  # live zoomable copy of the chart
@@ -2102,6 +2133,9 @@ class App:
         self._pf_last_w = 0
         self.lbl_pf.configure(text='no portfolio yet — set "top" and click "Build portfolio".')
         self.lbl_pf_m.configure(text='')
+        if getattr(self, 'pf_tree', None) is not None:
+            self.pf_tree.delete(*self.pf_tree.get_children())
+            self.pf_tree.configure(height=1)
         self.pf_img.config(image='')
         self._pf_img_ref = None
         for b in (self.btn_pf_csv, self.btn_pf_sig, self.btn_pf_track):
@@ -3453,6 +3487,8 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt.upper() + arrow)
 
+    _PF_COLS = ('n', 'id', 'solo', 'fit', 'test', 'formula')
+
     _LB_OPT_ORDER = ('id', 'dd', 'cagr', 'srt',
                      'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown')
     _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'wup', 'wdown', 'tup', 'tdown', 'tflat')
@@ -4419,8 +4455,61 @@ class App:
             text = (f'Sharpe {sh:+.2f}   ·   CAGR {m.get("cagr", 0) * 100:+.0f}%   ·   '
                     f'MaxDD {m.get("dd", 0) * 100:.0f}%      (vs buy&hold Sharpe {b.get("sharpe", 0):+.2f})')
         self.lbl_pf_m.configure(text=text, fg=(POS if (sh is not None and sh >= 0) else NEG))
+        self._fill_pf_members(doc, sh)
         threading.Thread(target=self._render_pf_equity, args=(doc, self._pf_width()),
                          daemon=True).start()
+
+    def _fill_pf_members(self, doc, combined_sharpe=None):
+        """One row per member: pick order, id, how it does ALONE on TEST, and the two numbers
+        the leaderboard shows for the same alpha. FITNESS/TEST OOS are joined from the library
+        by formula text — a member whose row has since been cleared shows dashes rather than
+        disappearing, because it is still in the built portfolio either way.
+
+        Rows whose SOLO Sharpe the combination beats are tinted: that is the diversification
+        gain, and it is the reason to combine at all."""
+        tree = getattr(self, 'pf_tree', None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        lib = {c['formula']: c for c in (self._lib_cache.get('all') or []) if c.get('formula')}
+        solo = doc.get('indiv_sharpe') or []
+        members = doc.get('formulas_full') or doc.get('formulas') or []
+        for i, f in enumerate(members):
+            c = lib.get(f) or {}
+            base = c.get('base')
+            t = c.get('test') if isinstance(c.get('test'), dict) else {}
+            ts = t.get('sharpe')
+            s0 = solo[i] if i < len(solo) else None
+            beaten = (isinstance(s0, (int, float)) and isinstance(combined_sharpe, (int, float))
+                      and combined_sharpe > s0)
+            tree.insert('', 'end', values=(
+                i + 1,
+                hashlib.md5(f.encode()).hexdigest()[:6],
+                f'{s0:+.2f}' if isinstance(s0, (int, float)) else '—',
+                ('—' if base is None else f'{base * 100:.0f}%'
+                 if c.get('fit_metric') == 'winrate' else f'{base:+.2f}'),
+                f'{ts:+.2f}' if isinstance(ts, (int, float)) else '—',
+                '  ' + f),
+                tags=(('pos',) if beaten else ('odd' if i % 2 else 'even',)))
+        tree.configure(height=max(1, len(members)))      # no scrollbar: N is 2..20 by design
+
+    def _pf_member_plot(self, _e=None):
+        """Double-click a member -> its own equity chart, the same one the leaderboard opens.
+        Only possible while the library still holds the row: the chart is re-simulated from
+        the champion doc, and a portfolio outlives the library it was built from."""
+        sel = self.pf_tree.selection()
+        if not sel:
+            return
+        i = self.pf_tree.index(sel[0])
+        members = (self._pf_doc or {}).get('formulas_full') or []
+        if i >= len(members):
+            return
+        c = next((x for x in (self._lib_cache.get('all') or [])
+                  if x.get('formula') == members[i]), None)
+        if c is None:
+            self._flash_lb('that member is no longer in the library — nothing to chart')
+            return
+        self._open_plot(c)
 
     def _pf_width(self):
         """Target equity-image width = current panel width (so it fills the space, expandable)."""
