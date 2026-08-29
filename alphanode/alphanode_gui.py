@@ -2038,6 +2038,12 @@ class App:
         self._tip(self.btn_fwd_sig, 'Step-by-step log of the selected strategy: the held book\n'
                                     '(signed % of equity per asset), the executed rebalances,\n'
                                     'P&L and fees of every live step — exportable as CSV.')
+        self.btn_fwd_serve = self._btn(fctl, 'Serve', self._fwd_serve, width=76)
+        self.btn_fwd_serve.pack(side='left', padx=(6, 0))
+        self._tip(self.btn_fwd_serve, 'Serve the selected strategy as a live signal API — exactly\n'
+                                      'as frozen in the track (same formulas, pairs, bar size,\n'
+                                      'vol and fee). Shows up in the SIGNAL API card and\n'
+                                      'survives an app restart.')
         self.btn_fwd_arch = self._btn(fctl, 'Delete', self._fwd_delete, width=90)
         self.btn_fwd_arch.pack(side='left', padx=(6, 0))
         self._tip(self.btn_fwd_arch, 'Remove the selected strategy and its paper history from the\n'
@@ -2551,8 +2557,13 @@ class App:
 
     def _data_file(self):
         """Per-timeframe data snapshot: the classic data.pickle for 1d, data_<tf>.pickle else."""
+        return self._data_file_for(self._tf())
+
+    def _data_file_for(self, tf):
+        """Snapshot path of an ARBITRARY bar size — a frozen forward entry may sit on a
+        different tf than the one configured now (the served copy must seed from ITS data)."""
         root, ext = os.path.splitext(apppaths.data_path())
-        return f'{root}{_tf_suffix(self._tf())}{ext}'
+        return f'{root}{_tf_suffix(_tf_clean(tf))}{ext}'
 
     def _lib_file(self):
         """Per-timeframe alpha library: alphas mined on different bar sizes never mix."""
@@ -2593,17 +2604,18 @@ class App:
         pad = tk.Frame(win, bg=BG)
         pad.pack(fill='both', expand=True, padx=14, pady=12)
         self._head(pad, 'SESSIONS — the whole workspace as one file').pack(anchor='w')
-        self._lbl(pad, text='Formulas, forward track, portfolio, ★ favourites, the run counters '
-                            'and settings. ID is the SESSION id — the one in the header when '
+        self._lbl(pad, text='Formulas, portfolio, ★ favourites, the run counters and settings '
+                            '(the FORWARD TRACK is global — it belongs to no session). ID is '
+                            'the SESSION id — the one in the header when '
                             'it was saved; two saves of one session share it and differ by '
                             'date. The licence key never travels inside a session. '
                             'Double-click a row for details.',
                   text_color=MUT, font=(self.UI, 12)).pack(anchor='w', pady=(2, 8))
-        cols = ('id', 'created', 'name', 'alphas', 'equity', 'size', 'kind')
+        cols = ('id', 'created', 'name', 'alphas', 'size', 'kind')
         tree = ttk.Treeview(pad, columns=cols, show='headings', height=9)
         for c, txt, w, anc in (('id', 'ID', 72, 'center'),
                                ('created', 'CREATED', 150, 'w'), ('name', 'NAME', 190, 'w'),
-                               ('alphas', 'ALPHAS', 90, 'center'), ('equity', 'FWD EQUITY', 110, 'e'),
+                               ('alphas', 'ALPHAS', 90, 'center'),
                                ('size', 'SIZE', 80, 'e'), ('kind', '', 70, 'center')):
             tree.heading(c, text=txt)
             tree.column(c, width=int(w * self.SCALE), anchor=anc, stretch=(c == 'name'))
@@ -2614,11 +2626,10 @@ class App:
             tree.delete(*tree.get_children())
             for m in S.list_sessions(STATE_DIR):
                 al = ' · '.join(f'{k}:{v}' for k, v in sorted(m.get('alphas', {}).items()))
-                eq = m.get('forward', {}).get('equity')
                 tree.insert('', 'end', iid=m['path'], values=(
                     m.get('id', '—'),
                     m.get('created', '')[:16].replace('T', ' '), m.get('name') or '—',
-                    al or '—', f'${eq:,.0f}' if eq else '—',
+                    al or '—',
                     f"{m['size'] // 1024} KB", 'auto' if m.get('auto') else 'named'))
         _fill()
 
@@ -2648,11 +2659,11 @@ class App:
             if not path:
                 messagebox.showinfo('Sessions', 'Select a session in the list first.', parent=win)
                 return
-            def _busy():                                 # every writer must be idle: a child
-                if self.proc and self.proc.poll() is None:   # finishing AFTER the swap would
-                    return 'the node is searching'       # silently overwrite restored files
-                if self._fwd_proc and self._fwd_proc.poll() is None:
-                    return 'a forward-track step is running'
+            def _busy():                                 # every writer of an OWNED file must be
+                if self.proc and self.proc.poll() is None:   # idle: a child finishing AFTER the
+                    return 'the node is searching'       # swap would overwrite restored files.
+                # (a forward-track step is NOT a reason to wait: the track is global and a
+                #  load never touches forward.json — the only file the stepper writes)
                 if self._pf_proc and self._pf_proc.poll() is None:
                     return 'the portfolio build is running'
                 return None
@@ -2665,11 +2676,8 @@ class App:
                     'Load this session? The current workspace will be REPLACED — nothing is '
                     "saved automatically. Use 'Save current…' first if you want a way "
                     'back.\n\nLibrary, portfolio, ★ favorites and the run counters are '
-                    'replaced by this session\'s. The FORWARD TRACK is not: it keeps running, '
-                    'and the archive\'s entries join it (each row shows the session it came '
-                    'from).\n\n'
-                    'The forward track resumes from the next closed bar — the '
-                    'gap stays visible in its history (nothing is re-computed backwards).',
+                    'replaced by this session\'s. The FORWARD TRACK is global — it is not '
+                    'part of a session and keeps running untouched.',
                     parent=win):
                 return
             busy = _busy()                               # the modal pumped after-timers while it
@@ -2689,23 +2697,19 @@ class App:
             win.destroy()
             self._sessions_rebuild()
             n_alphas = sum((man.get('alphas') or {}).values())
-            n_fwd = (man.get('forward') or {}).get('entries') or 0
             n_fav = man.get('favorites') or 0             # absent in pre-favorites archives
-            if n_alphas or n_fwd:
+            if n_alphas:
                 messagebox.showinfo('Sessions',
                                     f'Session loaded: {man.get("name") or man.get("created", "")}\n'
-                                    f'{n_alphas} alphas · {n_fwd} forward entries · '
-                                    f'{n_fav} ★ favorites.\n'
-                                    'Counters, live log, portfolio and ★ came back with it; '
-                                    'the archive\'s forward entries JOINED the running track '
-                                    '(merged, never replaced).\n'
-                                    'The forward track continues from the next closed bar.',
+                                    f'{n_alphas} alphas · {n_fav} ★ favorites.\n'
+                                    'Counters, live log, portfolio and ★ came back with it. '
+                                    'The forward track is global and was left untouched.',
                                     parent=self.root)
             else:
                 messagebox.showwarning('Sessions',
-                                       'Session loaded — but this archive carried no alphas and '
-                                       'no forward entries (it was saved from an empty '
-                                       'workspace).', parent=self.root)
+                                       'Session loaded — but this archive carried no alphas '
+                                       '(it was saved from an empty workspace).',
+                                       parent=self.root)
 
         _UI_KEYS = {'theme', 'settings_open', 'lb_mode', 'card_order', 'lb_rows', 'lb_h',
                     'lb_cols', 'fwd_rows', 'fwd_h', 'pf_h', 'eula_accepted'}
@@ -2733,10 +2737,6 @@ class App:
             al = man.get('alphas') or {}
             L.append('alphas   ' + (' · '.join(f'{k}: {v}' for k, v in sorted(al.items()))
                                     or 'none'))
-            fw = man.get('forward') or {}
-            eq = fw.get('equity')
-            L.append(f"forward  {fw.get('entries', 0)} entries"
-                     + (f' · equity ${eq:,.2f}' if eq else ''))
             L.append(f"stars    {man.get('favorites', 0)} ★ favorites")
             rn = man.get('run') or {}
             L.append('run      ' + (f"{rn.get('rounds', 0)} rounds · "
@@ -2834,6 +2834,8 @@ class App:
         self._treesig = None
         self._sig_shown = None
         self._fav_ids = None                             # the restored session brought its OWN
+        self._fwd_migrated = False                       # re-run the one-shot track cleanup: the
+        #                                                  restored settings may point elsewhere
         self._build()                                    # stars — re-read, don't paint the last
         #                                                  workspace's ★ onto this one's rows
         self._set_running(bool(self.proc and self.proc.poll() is None))
@@ -3219,16 +3221,23 @@ class App:
         except Exception:                                 # noqa: BLE001  missing/odd -> None
             return None
 
-    def _serve_signal(self, formulas, label):
+    def _serve_signal(self, formulas, label, *, tickers=None, tf=None, vol=None,
+                      exec_cost=None, start=None):
+        """Start a signal API for `formulas`. Without the keyword args the service follows the
+        panel — the active timeframe's basket, the configured vol/fee, config.ini's start —
+        which is what the leaderboard and the built portfolio want. A FROZEN strategy (a
+        forward-track entry) passes its own universe/tf/vol/fee/warm-up start instead, so the
+        served numbers are the bot's numbers, not whatever Settings says today."""
         # tf-aware since the intraday branch landed in signal_service (fastsim math,
         # same numbers the forward track trades) — no daily-only gate here anymore
         formulas = [f for f in (formulas or []) if f and f.strip()]
         if not formulas:
             return
-        tickers = self._universe_tickers()
+        tf = _tf_clean(tf) if tf else self._tf()
+        tickers = list(tickers) if tickers else self._universe_tickers()
         if not tickers:
             messagebox.showwarning('Signal API', 'The pairs universe is empty — download data '
-                                   f'for the {self._tf()} timeframe first.', parent=self.root)
+                                   f'for the {tf} timeframe first.', parent=self.root)
             return
         if any(s['label'] == label for s in self._sigs):   # already serving this one — just show it
             self._render_signal_rows()
@@ -3246,16 +3255,19 @@ class App:
             messagebox.showerror('Signal API', 'No free port available.', parent=self.root)
             return
         env = dict(os.environ)
-        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
-                   ALPHANODE_TF=self._tf(),
+        env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file_for(tf),
+                   ALPHANODE_TF=tf,
                    ALPHANODE_CONFIG_INI=apppaths.config_ini(),
                    # served numbers must match the leaderboard/forward: same vol & fee as here
-                   ALPHANODE_TARGET_VOL=str(self.cfg['target_vol']),
-                   ALPHANODE_EXEC_COST=str(self.cfg['exec_cost']),
+                   ALPHANODE_TARGET_VOL=str(self.cfg['target_vol'] if vol is None else vol),
+                   ALPHANODE_EXEC_COST=str(self.cfg['exec_cost'] if exec_cost is None
+                                           else exec_cost),
                    ALPHANODE_SIGNAL_FORMULAS=json.dumps(formulas), ALPHANODE_SIGNAL_NAME=label,
                    ALPHANODE_SIGNAL_TICKERS=','.join(tickers),
                    ALPHANODE_SIGNAL_PORT=str(port),
-                   ALPHANODE_SIGNAL_REFRESH=('300' if self._tf() in ('15m', '1h') else '900'))
+                   ALPHANODE_SIGNAL_REFRESH=('300' if tf in ('15m', '1h') else '900'))
+        if start:                                        # a frozen entry's warm-up start; the
+            env['ALPHANODE_SIGNAL_START'] = str(start)[:10]   # panel callers keep config.ini's
         log_path = os.path.join(STATE_DIR, f'signal_{port}.log')
         try:
             fh = open(log_path, 'w', buffering=1, encoding='utf-8')
@@ -5461,7 +5473,9 @@ class App:
             self._fwd_migrated = True                    # the bare leaderboard id, once
             try:
                 track = forward_track.load_track()
-                if forward_track.migrate_ids(track):
+                # + drop archived ghosts doubling a live id: a file poisoned by the old
+                #   Archive button kept the stepper landing on the ghost (BUG_FIXES 2026-08-25)
+                if forward_track.migrate_ids(track) + forward_track.drop_ghosts(track):
                     forward_track.save_track(track)
             except Exception:                            # noqa: BLE001 — cosmetics must not
                 pass                                     # block enrollment/stepping
@@ -5510,6 +5524,10 @@ class App:
         #                                                    ALPHANODE_STATE_DIR the module-level
         #                                                    default could stamp a DIFFERENT
         #                                                    directory's epoch than the header shows
+        # a portfolio's id is the deterministic name_sig: an archived ghost of the same
+        # portfolio (find_duplicate rightly ignores it) would double the id, and the stepper
+        # syncs by id — every step of the new entry landed on the ghost and was dropped
+        entry['id'] = ft.unique_id(track, entry['id'])
         track['entries'].append(entry)
         ft.save_track(track)
         self._fwd_refresh()
@@ -5631,6 +5649,19 @@ class App:
         track['entries'] = [x for x in track['entries'] if x['id'] != e['id']]
         ft.save_track(track)                              # a step racing this save cannot bring
         self._fwd_refresh()                               # it back: sync_entry_to_disk drops it
+
+    def _fwd_serve(self):
+        """Serve the SELECTED paper bot as a live signal API — the exact frozen strategy the
+        track steps (formulas, universe, bar size, vol, fee, warm-up start), not the panel's
+        current settings. Label = entry id: the row dedups against itself, and a restarted
+        GUI re-adopts the service under the same name (see _sig_restore)."""
+        e = self._fwd_selected()
+        if not e:
+            return
+        self._serve_signal(list(e.get('formulas') or []), e['id'],
+                           tickers=list(e.get('tickers') or []), tf=e.get('tf', '1d'),
+                           vol=e.get('vol'), exec_cost=e.get('exec'),
+                           start=e.get('engine_start'))
 
     @staticmethod
     def _fwd_book_str(d):
