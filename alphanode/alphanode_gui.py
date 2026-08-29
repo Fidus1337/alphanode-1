@@ -874,13 +874,27 @@ class App:
         # subtitle/node-id must lose that fight — never the Start button (it clipped to 'tart n')
         self._lbl(top, text='background search for trading strategies', text_color=MUT,
                      font=(self.UI, 13), bg=BG).pack(side='left', padx=(14, 0), pady=(6, 0))
-        nid_lbl = self._lbl(top, text=f'node {self._node_id()}', text_color=FAINT,
+        # node + session ids hide as ONE unit: _hide_when_tight manages a single widget
+        # that must be packed last, and two independently-hidden labels would re-show in
+        # whichever order their handlers fired
+        meta = self._box(top, bg=BG)
+        meta.pack(side='left', padx=(10, 0), pady=(7, 0))
+        nid_lbl = self._lbl(meta, text=f'node {self._node_id()}', text_color=FAINT,
                             font=(self.MONO, 12), bg=BG)
-        nid_lbl.pack(side='left', padx=(10, 0), pady=(7, 0))
+        nid_lbl.pack(side='left')
         self._tip(nid_lbl, 'This install\'s node ID. It mints the search seed, so every node\n'
                            'walks its own path through formula space — no two nodes mine\n'
                            'the same library.')
-        self._hide_when_tight(top, nid_lbl)
+        self.sid_lbl = self._lbl(meta, text=f'session {self._session_id()}', text_color=FAINT,
+                                 font=(self.MONO, 12), bg=BG)
+        self.sid_lbl.pack(side='left', padx=(10, 0))
+        self._tip(self.sid_lbl,
+                  'The CURRENT working session. A new id is minted by \'Clear all history\';\n'
+                  'loading a saved session adopts its id; reopening the app or pressing\n'
+                  'Start continues the same session. Forward-track entries record this id\n'
+                  'at enrollment — the track outlives sessions, and the stamp says where\n'
+                  'each strategy came from.')
+        self._hide_when_tight(top, meta)
         self._box(self._shell, bg=BORDER, height=1).pack(fill='x')       # hairline
         # settings | dashboard live in a PanedWindow for the hide/show plumbing; the split itself
         # is fixed — always the settings content's natural width (see _sash_restore)
@@ -2015,10 +2029,11 @@ class App:
         self.lbl_fwd.pack(anchor='w', fill='x', pady=(8, 2))
         self._fwdwrap = self._box(p4)
         self._fwdwrap.pack(fill='x', pady=(4, 0))
-        fcols = ('id', 'kind', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
+        fcols = ('id', 'kind', 'session', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
         self.fwd_tree = ttk.Treeview(p4, columns=fcols, show='headings',
                                      height=int(self.cfg.get('fwd_rows') or 4))
         for c, txt, w, anch in (('id', 'STRATEGY', 240, 'w'), ('kind', 'KIND', 96, 'w'),
+                                ('session', 'SESSION', 80, 'center'),
                                 ('enrolled', 'ENROLLED', 100, 'center'), ('days', 'STEPS', 64, 'e'),
                                 ('equity', 'EQUITY', 100, 'e'), ('ret', 'RETURN', 90, 'e'),
                                 ('sharpe', 'SHARPE', 80, 'e'), ('dd', 'MAXDD', 80, 'e'),
@@ -2201,7 +2216,8 @@ class App:
                '• the built portfolio  (portfolio.json)\n\n'
                'Nothing is saved automatically — if you want a way back, save a session '
                'first (Sessions → Save current…).\n'
-               'Search settings (the parameters on the left) and starred favorites (★) remain.')
+               'Search settings, starred favorites (★) and the FORWARD TRACK remain — enrolled '
+               'strategies keep stepping. The next search runs under a fresh session id.')
         if not messagebox.askyesno('Full clear', msg, icon='warning',
                                     default='no', parent=self.root):
             return
@@ -2224,6 +2240,14 @@ class App:
         try:
             os.remove(PORTFOLIO_PNG)                      # the portfolio equity image
         except OSError:
+            pass
+        try:                                             # the work that follows a clear is a NEW
+            self._sessions_lib().begin_new_session(STATE_DIR)   # session — forward entries
+        except Exception:                                # noqa: BLE001    enrolled from it say so
+            pass
+        try:
+            self.sid_lbl.configure(text=f'session {self._session_id()}')
+        except (AttributeError, tk.TclError):
             pass
         self._reset_ui_after_wipe()
         messagebox.showinfo('Done', 'History cleared. You can start the search from scratch.', parent=self.root)
@@ -2527,6 +2551,13 @@ class App:
         import sessions
         return sessions
 
+    def _session_id(self):
+        """The current working session's id — '?' only if the state dir is unwritable."""
+        try:
+            return self._sessions_lib().current_session_id(STATE_DIR)
+        except Exception:                                # noqa: BLE001
+            return '?'
+
     def _sessions_open(self):
         S = self._sessions_lib()
         win = tk.Toplevel(self.root)
@@ -2591,13 +2622,15 @@ class App:
             if not path:
                 messagebox.showinfo('Sessions', 'Select a session in the list first.', parent=win)
                 return
-            busy = None                                  # every writer must be idle: a child
-            if self.proc and self.proc.poll() is None:   # finishing AFTER the swap would
-                busy = 'the node is searching'           # silently overwrite restored files
-            elif self._fwd_proc and self._fwd_proc.poll() is None:
-                busy = 'a forward-track step is running'
-            elif self._pf_proc and self._pf_proc.poll() is None:
-                busy = 'the portfolio build is running'
+            def _busy():                                 # every writer must be idle: a child
+                if self.proc and self.proc.poll() is None:   # finishing AFTER the swap would
+                    return 'the node is searching'       # silently overwrite restored files
+                if self._fwd_proc and self._fwd_proc.poll() is None:
+                    return 'a forward-track step is running'
+                if self._pf_proc and self._pf_proc.poll() is None:
+                    return 'the portfolio build is running'
+                return None
+            busy = _busy()
             if busy:
                 messagebox.showwarning('Sessions', f'Not now — {busy}. Wait for it to finish '
                                        '(usually under a minute), then load.', parent=win)
@@ -2605,12 +2638,19 @@ class App:
             if not messagebox.askyesno('Sessions',
                     'Load this session? The current workspace will be REPLACED — nothing is '
                     "saved automatically. Use 'Save current…' first if you want a way "
-                    'back.\n\nThat means the whole board — library, portfolio, forward track, '
-                    '★ favorites and the run counters at the top — is replaced by this '
-                    'session\'s.\n\n'
+                    'back.\n\nLibrary, portfolio, ★ favorites and the run counters are '
+                    'replaced by this session\'s. The FORWARD TRACK is not: it keeps running, '
+                    'and the archive\'s entries join it (each row shows the session it came '
+                    'from).\n\n'
                     'The forward track resumes from the next closed bar — the '
                     'gap stays visible in its history (nothing is re-computed backwards).',
                     parent=win):
+                return
+            busy = _busy()                               # the modal pumped after-timers while it
+            if busy:                                     # sat open — the 5-minute forward tick
+                messagebox.showwarning(                  # may have spawned a step meanwhile
+                    'Sessions', f'Not now — {busy}. Wait for it to finish '
+                    '(usually under a minute), then load.', parent=win)
                 return
             try:
                 man = S.restore(path, state_dir=STATE_DIR, settings_path=SETTINGS)
@@ -2630,8 +2670,9 @@ class App:
                                     f'Session loaded: {man.get("name") or man.get("created", "")}\n'
                                     f'{n_alphas} alphas · {n_fwd} forward entries · '
                                     f'{n_fav} ★ favorites.\n'
-                                    'The board is as it was: counters, live log, portfolio and '
-                                    'forward track all came back with it.\n'
+                                    'Counters, live log, portfolio and ★ came back with it; '
+                                    'the archive\'s forward entries JOINED the running track '
+                                    '(merged, never replaced).\n'
                                     'The forward track continues from the next closed bar.',
                                     parent=self.root)
             else:
@@ -2668,6 +2709,7 @@ class App:
             L.append(f"forward  {fw.get('entries', 0)} entries"
                      + (f' · equity ${eq:,.2f}' if eq else ''))
             L.append(f"stars    {man.get('favorites', 0)} ★ favorites")
+            L.append(f"session  {man.get('session', '— (saved before session ids)')}")
             rn = man.get('run') or {}
             L.append('run      ' + (f"{rn.get('rounds', 0)} rounds · "
                                     f"{rn.get('trials_total', 0):,} formulas tried · "
@@ -5399,7 +5441,11 @@ class App:
                 pass
         entry = ft.new_entry(entry_id or name, kind, formulas, tickers,
                              c.get('target_vol', 0.25),
-                             c.get('exec_cost', 0.001), start, tf=tf, entry_id=entry_id)
+                             c.get('exec_cost', 0.001), start, tf=tf, entry_id=entry_id,
+                             session=self._session_id())   # the GUI's own dir: with an exported
+        #                                                    ALPHANODE_STATE_DIR the module-level
+        #                                                    default could stamp a DIFFERENT
+        #                                                    directory's epoch than the header shows
         track['entries'].append(entry)
         ft.save_track(track)
         self._fwd_refresh()
@@ -5468,7 +5514,7 @@ class App:
             tf = e.get('tf', '1d')
             kind = e['kind'] if tf == '1d' else f'{e["kind"]}·{tf}'
             self.fwd_tree.insert('', 'end', iid=e['id'], values=(
-                e['id'], kind, e['enrolled'], m['days'],
+                e['id'], kind, e.get('session') or '—', e['enrolled'], m['days'],
                 f'${m["equity"]:,.0f}', f'{m["ret"] * 100:+.1f}%',
                 (f'{m["sharpe"]:+.2f}' if m['sharpe'] is not None else '—'),
                 (f'{m["dd"] * 100:.0f}%' if m['dd'] is not None else '—'),

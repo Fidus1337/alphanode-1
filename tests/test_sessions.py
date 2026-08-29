@@ -13,6 +13,13 @@
     round ticker, and a restore must not leave a library and a portfolio sitting above four
     zeros — but the restored status must never claim a node is running;
   * signals.json is local: it holds PIDs of services on THIS machine and must never travel;
+  * the forward track OUTLIVES sessions: a load MERGES the archive's entries into the live
+    ledger instead of replacing it (paper steps happen in real time and can never be
+    recomputed — a load must not kill what is stepping); same id on both sides — the longer
+    history wins;
+  * the current session (epoch) id lives in state/session_id: adopted from a loaded archive,
+    reset by Clear all history, minted on first need — and stamped into forward entries so
+    a track full of many sessions' strategies still says where each came from;
   * a failed restore rolls the workspace back byte-for-byte; a failed snapshot leaves
     no file at all (no half-written archives under session names);
   * rotation reads the MANIFEST: named sessions are forever even if the user names one
@@ -606,3 +613,217 @@ def test_the_sessions_window_shows_the_id_column(gui_app):
     names = [tree.set(i, 'name') for i in tree.get_children()]
     assert names == ['test2', 'test2'] and len(set(ids)) == 2
     win.destroy()
+
+
+# ---- the forward track outlives sessions; the epoch id says who enrolled what ----------
+
+def _fwd(entries):
+    return {'entries': entries}
+
+
+def _e(eid, steps, **over):
+    d = {'id': eid, 'archived': False,
+         'history': [{'date': f'2026-08-{i+1:02d}', 'equity': 10000 + i} for i in range(steps)],
+         'state': {'equity': 10000.0}}
+    d.update(over)
+    return d
+
+
+def test_a_session_load_merges_the_forward_track_instead_of_replacing_it(ws):
+    """The reported requirement: strategies keep stepping across session switches. Local
+    entries survive the load, the archive's entries JOIN them, and an entry present on both
+    sides keeps the longer (live) history — append-only means the shorter is a stale prefix."""
+    state, settings = ws
+    json.dump(_fwd([_e('both01', 2), _e('arch01', 5)]),
+              open(os.path.join(state, 'forward.json'), 'w'))
+    p = S.snapshot(name='old', state_dir=state, settings_path=settings)
+    # life goes on after the save: 'both01' takes 3 more live steps, 'live01' is enrolled
+    json.dump(_fwd([_e('both01', 5), _e('live01', 1)]),
+              open(os.path.join(state, 'forward.json'), 'w'))
+    S.restore(p, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert [e['id'] for e in got] == ['both01', 'live01', 'arch01']   # local first, then joins
+    assert len(next(e for e in got if e['id'] == 'both01')['history']) == 5   # live copy won
+
+
+def test_loading_an_archive_with_no_forward_keeps_the_live_track(ws):
+    """Under the old wholesale swap this was the killer: an archive without forward.json
+    left the workspace with NO track at all — every running paper test gone."""
+    state, settings = ws
+    os.remove(os.path.join(state, 'forward.json'))
+    p = S.snapshot(name='no-fwd', state_dir=state, settings_path=settings)
+    json.dump(_fwd([_e('live01', 3)]), open(os.path.join(state, 'forward.json'), 'w'))
+    S.restore(p, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert [e['id'] for e in got] == ['live01']
+
+
+def test_the_archives_longer_history_wins_on_a_new_machine(ws):
+    """The same rule, mirrored: restore onto a machine whose copy is BEHIND (or empty) —
+    the archive's longer history is the live one there."""
+    state, settings = ws
+    json.dump(_fwd([_e('both01', 7)]), open(os.path.join(state, 'forward.json'), 'w'))
+    p = S.snapshot(name='ahead', state_dir=state, settings_path=settings)
+    json.dump(_fwd([_e('both01', 2)]), open(os.path.join(state, 'forward.json'), 'w'))
+    S.restore(p, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert len(got[0]['history']) == 7
+
+
+def test_current_session_id_is_minted_once_and_reset_deliberately(ws):
+    state, _settings = ws
+    a = S.current_session_id(state)
+    assert a == S.current_session_id(state)              # stable across calls
+    assert len(a) == 6 and all(c in '0123456789abcdef' for c in a)
+    b = S.begin_new_session(state)
+    assert b != a and b == S.current_session_id(state)
+    open(os.path.join(state, 'session_id'), 'w').write('NOT-AN-ID')
+    c = S.current_session_id(state)                      # corrupt file: re-minted, not trusted
+    assert c not in (a, 'NOT-AN-ID') and len(c) == 6
+
+
+def test_restore_adopts_the_archives_epoch(ws):
+    """Loading a session means CONTINUING it: the workspace's current session id becomes the
+    archive's, so forward entries enrolled after the load carry the loaded session's id."""
+    state, settings = ws
+    a = S.current_session_id(state)
+    p = S.snapshot(name='epoch-a', state_dir=state, settings_path=settings)
+    S.begin_new_session(state)
+    assert S.current_session_id(state) != a
+    S.restore(p, state_dir=state, settings_path=settings)
+    assert S.current_session_id(state) == a
+
+
+def test_two_saves_of_one_workspace_share_the_epoch_but_not_the_save_id(ws):
+    """The two id spaces, side by side: the save id names the photograph, the session id
+    names the living workspace. Saving twice = two photographs of one session."""
+    state, settings = ws
+    S.snapshot(name='s1', state_dir=state, settings_path=settings)
+    S.snapshot(name='s2', state_dir=state, settings_path=settings)
+    rows = S.list_sessions(state)
+    assert rows[0]['session'] == rows[1]['session'] == S.current_session_id(state)
+    assert rows[0]['id'] != rows[1]['id']
+
+
+def test_an_archive_from_before_epochs_starts_a_fresh_one(ws):
+    """No session_id member inside → the swap leaves none behind → the next call mints a
+    new epoch rather than inheriting the abandoned workspace's."""
+    state, settings = ws
+    p = S.snapshot(name='pre-epoch', state_dir=state, settings_path=settings)
+    with tarfile.open(p) as tar:
+        members = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+    members.pop('state/session_id')
+    with tarfile.open(p, 'w:gz') as tar:
+        for n, data in members.items():
+            info = tarfile.TarInfo(n)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    before = S.current_session_id(state)
+    S.restore(p, state_dir=state, settings_path=settings)
+    assert not os.path.exists(os.path.join(state, 'session_id'))
+    assert S.current_session_id(state) != before
+
+
+@pytest.mark.gui
+def test_clear_all_history_spares_the_track_and_mints_a_new_session(gui_app, monkeypatch):
+    """Clear kills the library; the forward track keeps stepping — and what follows the
+    clear is a NEW session, visible in the header, so entries enrolled before and after
+    carry different stamps."""
+    import types
+    app, _rec, state = gui_app
+    import alphanode_gui as G
+    (state / 'library_1h.jsonl').write_text('{"formula":"x","base":1.0}\n')
+    (state / 'forward.json').write_text(json.dumps(_fwd([_e('aaaa01', 2)])))
+    sid_before = app._session_id()
+    assert f'session {sid_before}' == app.sid_lbl.cget('text')
+    yes = types.SimpleNamespace(askyesno=lambda *a, **k: True,
+                                askokcancel=lambda *a, **k: True,
+                                showinfo=lambda *a, **k: None,
+                                showwarning=lambda *a, **k: None,
+                                showerror=lambda *a, **k: None)
+    monkeypatch.setattr(G, 'messagebox', yes)
+    app._wipe_history()
+    assert (state / 'forward.json').exists()             # the track survived the clear
+    assert not (state / 'library_1h.jsonl').exists()     # the library did not
+    sid_after = app._session_id()
+    assert sid_after != sid_before                       # a fresh epoch
+    assert app.sid_lbl.cget('text') == f'session {sid_after}'
+
+
+@pytest.mark.gui
+def test_the_forward_table_shows_each_entrys_session(gui_app):
+    app, _rec, state = gui_app
+    import forward_track as ft
+    e = ft.new_entry('aaaa01', 'alpha', ['tanh(low)'], ['BTCUSDT'], 0.25, 0.001, '2024-01-01',
+                     entry_id='aaaa01')
+    legacy = ft.new_entry('bbbb02', 'alpha', ['rank(v)'], ['ETHUSDT'], 0.25, 0.001, '2024-01-01',
+                          entry_id='bbbb02')
+    legacy.pop('session')                                # enrolled before the stamp existed
+    (state / 'forward.json').write_text(json.dumps(_fwd([e, legacy])))
+    app._fwd_refresh()
+    app.root.update()
+    assert 'session' in app.fwd_tree['columns']
+    assert app.fwd_tree.set('aaaa01', 'session') == app._session_id()
+    assert app.fwd_tree.set('bbbb02', 'session') == '—'  # honest dash, not a blank
+
+
+# ---- review findings, pinned -----------------------------------------------------------
+
+def test_same_id_but_a_different_strategy_never_displaces_the_live_entry(ws):
+    """An alpha's entry id is md5(formula)[:6] whatever the timeframe, universe or fees — an
+    old archive can carry a DIFFERENT enrollment under a live entry's id, with a longer
+    history. It must not win: only a copy of the SAME enrollment is the same append-only
+    stream. (Adversarial review finding.)"""
+    state, settings = ws
+    old = _e('aaaa01', 50, tf='1h', formulas=['tanh(low)'], enrolled='2026-01-01')
+    json.dump(_fwd([old]), open(os.path.join(state, 'forward.json'), 'w'))
+    p = S.snapshot(name='old-strategy', state_dir=state, settings_path=settings)
+    live = _e('aaaa01', 3, tf='1d', formulas=['tanh(low)'], enrolled='2026-08-20')
+    json.dump(_fwd([live]), open(os.path.join(state, 'forward.json'), 'w'))
+    S.restore(p, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert len(got) == 1                                 # one row per id — the table's iid rule
+    assert got[0]['tf'] == '1d' and len(got[0]['history']) == 3   # the LIVE one, 50 steps or not
+
+
+def test_a_shape_corrupt_forward_file_degrades_instead_of_raising(ws):
+    """'entries': null is valid JSON that load_track happily passes through — the merge must
+    treat every corrupt shape as empty, the way the rest of the restore road does, because it
+    runs AFTER the swap and a TypeError there would make every later load fail identically.
+    (Adversarial review finding.)"""
+    state, settings = ws
+    p = S.snapshot(name='sane', state_dir=state, settings_path=settings)
+    open(os.path.join(state, 'forward.json'), 'w').write('{"entries": null}')
+    S.restore(p, state_dir=state, settings_path=settings)          # must not raise
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert [e['id'] for e in got] == ['a', 'b']          # the archive's track, corrupt side empty
+    # …and a truthy non-list history must not crash len(): it counts as 0 steps, so the
+    # side with a WELL-FORMED history of the same enrollment wins
+    assert S._merge_forward({'entries': [{'id': 'x', 'history': 7}]},
+                            {'entries': [{'id': 'x', 'history': [1, 2]}]}) \
+        == {'entries': [{'id': 'x', 'history': [1, 2]}]}
+    assert S._merge_forward({'entries': 3}, {'entries': ['junk', {'id': 'y'}]}) \
+        == {'entries': [{'id': 'y'}]}
+
+
+def test_a_merge_failure_rolls_the_whole_workspace_back(ws, monkeypatch):
+    """The merge runs inside restore's transaction: if it blows up, the parked originals come
+    back byte-for-byte — including the live forward.json it was about to rewrite."""
+    state, settings = ws
+    before = open(os.path.join(state, 'forward.json')).read()
+    p = S.snapshot(name='boom', state_dir=state, settings_path=settings)
+    monkeypatch.setattr(S, '_merge_forward',
+                        lambda *_a: (_ for _ in ()).throw(RuntimeError('merge boom')))
+    with pytest.raises(RuntimeError):
+        S.restore(p, state_dir=state, settings_path=settings)
+    assert open(os.path.join(state, 'forward.json')).read() == before
+
+
+def test_an_explicit_session_stamp_wins_over_the_module_default(tmp_path, monkeypatch):
+    """The GUI passes its own session id: with ALPHANODE_STATE_DIR exported, the module-level
+    default could read a DIFFERENT directory's epoch than the header shows."""
+    monkeypatch.setenv('ALPHANODE_STATE_DIR', str(tmp_path))
+    import forward_track as ft
+    e = ft.new_entry('a', 'alpha', ['tanh(low)'], ['BTCUSDT'], 0.25, 0.001, '2024-01-01',
+                     session='cafe01')
+    assert e['session'] == 'cafe01'
