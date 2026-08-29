@@ -3130,7 +3130,10 @@ class App:
         except Exception:                                # noqa: BLE001
             pass
         found = []
-        for p in range(SIGNAL_PORT, SIGNAL_PORT + 10):
+        # scan a bit past the cap: SIG_MAX services normally sit on 8799..8808, but another
+        # app squatting on one of those pushes ours further up — a detached service past the
+        # window would keep serving invisibly, un-adoptable and un-stoppable from the GUI
+        for p in range(SIGNAL_PORT, SIGNAL_PORT + 2 * self.SIG_MAX):
             h = self._sig_probe(p)
             if not h:
                 continue
@@ -3203,6 +3206,14 @@ class App:
             return
         if any(s['label'] == label for s in self._sigs):   # already serving this one — just show it
             self._render_signal_rows()
+            return
+        alive = sum(1 for s in self._sigs if self._sig_alive(s))
+        if alive >= self.SIG_MAX:                        # each service is a whole engine process
+            messagebox.showwarning(                      # re-simulating on every refresh — ten of
+                'Signal API',                            # them is already a small server farm
+                f'{alive} signal services are already running — {self.SIG_MAX} is the limit.\n'
+                'Free a port first (✕ Free port on a row you no longer need), '
+                'then serve this one.', parent=self.root)
             return
         port = self._free_signal_port()
         if port is None:
@@ -3282,6 +3293,15 @@ class App:
             self._stop_all_signals()
             self._render_signal_rows()
 
+    def _sig_alive(self, s):
+        """Is this service's process still up? Spawned ones answer via poll(); adopted ones
+        (no Popen handle) via the recorded pid — and an adopted row with no pid at all is
+        presumed alive, letting /health speak."""
+        proc, pid = s.get('proc'), s.get('pid')
+        if proc is not None:
+            return proc.poll() is None
+        return not (bool(pid) and not self._pid_alive(pid))
+
     def _sig_tick(self):
         """Every 3s: refresh the health of each service. Main thread — the HTTP call itself is
         handed to a worker (see _sig_poll_worker)."""
@@ -3289,12 +3309,7 @@ class App:
         if pending:
             self._sig_adopt(pending)
         for s in list(self._sigs):
-            proc, pid = s.get('proc'), s.get('pid')
-            if proc is not None:
-                dead = proc.poll() is not None
-            else:                                         # adopted: unknown PID -> let /health speak
-                dead = bool(pid) and not self._pid_alive(pid)
-            if dead:
+            if not self._sig_alive(s):
                 self._sig_health[s['port']] = '○ stopped (the process exited) — port is free'
             else:
                 threading.Thread(target=self._sig_poll_worker, args=(s['port'],), daemon=True).start()
@@ -3304,7 +3319,8 @@ class App:
         else:                                             # same set -> only refresh the status text
             for p, lbl in list(self._sig_status_lbl.items()):
                 if lbl.winfo_exists():
-                    lbl.configure(text=self._sig_health.get(p, 'starting…'))
+                    txt = self._sig_health.get(p, 'starting…')
+                    lbl.configure(text=txt, fg=self._sig_status_color(txt))
         self.root.after(3000, self._sig_tick)
 
     def _render_signal_rows(self):
@@ -3351,10 +3367,24 @@ class App:
             self._lbl(info, text=url + (f'   ·   {s["log"]}' if s.get('log') else ''),
                          text_color=FAINT, font=(self.MONO, 11), wraplength=620,
                          justify='left', anchor='w').pack(anchor='w')
-            lbl = self._lbl(info, text=self._sig_health.get(s['port'], 'starting…'), text_color=MUT,
+            htxt = self._sig_health.get(s['port'], 'starting…')
+            lbl = self._lbl(info, text=htxt, text_color=self._sig_status_color(htxt),
                                font=(self.UI, 11), wraplength=620, justify='left', anchor='w')
             lbl.pack(anchor='w')
             self._sig_status_lbl[s['port']] = lbl
+
+    @staticmethod
+    def _sig_status_color(txt):
+        """Colour of a service's status line: the answer to 'is my API up?' should be read
+        from across the room. Green ONLY for '● serving' — a warning is amber-red, a stopped
+        process fades out, and everything transitional stays neutral."""
+        if txt.startswith('● serving'):
+            return POS
+        if txt.startswith('⚠'):
+            return NEG
+        if txt.startswith('○ stopped'):
+            return FAINT
+        return MUT
 
     def _sig_poll_worker(self, port):
         """Background: fetch /health for ONE service and stash the text. NO Tk here — Tk is not
@@ -3557,6 +3587,9 @@ class App:
             self.tree.heading(c, text=txt.upper() + arrow)
 
     _PF_COLS = ('n', 'id', 'solo', 'fit', 'test', 'formula')
+    SIG_MAX = 10                                         # running signal services at once — each
+    #                                                      is a full engine process re-simulating
+    #                                                      its formulas every refresh
     PF_ROWS_MAX = 12                                     # members shown before the list scrolls
     PF_TOP_MIN, PF_TOP_MAX = 2, 20                       # what the 'top' spinner advertises
 
