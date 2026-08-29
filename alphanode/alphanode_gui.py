@@ -77,6 +77,10 @@ PORTFOLIO_JSON = os.path.join(STATE_DIR, 'portfolio.json')
 PORTFOLIO_PNG = os.path.join(STATE_DIR, 'portfolio_equity.png')
 SETTINGS = apppaths.settings_file()
 CORES = os.cpu_count() or 4
+# Children print '→'/'✓' progress lines; on a cp1251 Windows a dev-mode python child would die
+# with UnicodeEncodeError on the first arrow. Frozen children force UTF-8 themselves (app_entry),
+# dev children pick it up from the environment. Read-side: every pipe below decodes as UTF-8.
+os.environ.setdefault('PYTHONIOENCODING', 'utf-8')
 # vault prototype: where locked formulas get revealed (subscription check lives server-side)
 def _resolve_vault_url():
     """The hub URL, in precedence: an explicit env var (self-host / dev override) wins, then the
@@ -346,7 +350,7 @@ class App:
     # ---------- settings (persist) ----------
     def _load(self):
         try:
-            saved = json.load(open(SETTINGS))
+            saved = json.load(open(SETTINGS, encoding='utf-8'))
         except Exception:
             return                                       # fresh install -> DEFAULTS
         for dead in ('ui_mode', 'welcomed'):             # retired with Simple mode — drop them so
@@ -436,7 +440,7 @@ class App:
             self.v_unilist.set(self.cfg['universe_list'])   # empty list fell back to the default
                                                             # five — show what actually runs
         try:
-            json.dump(self.cfg, open(SETTINGS, 'w'), indent=2)
+            json.dump(self.cfg, open(SETTINGS, 'w', encoding='utf-8'), indent=2)
         except Exception:
             pass
 
@@ -962,7 +966,7 @@ class App:
         auto seed, which is what makes every install's search trajectory unique."""
         path = os.path.join(STATE_DIR, 'node_id')
         try:
-            nid = open(path).read().strip().lower()
+            nid = open(path, encoding='utf-8').read().strip().lower()
         except OSError:
             nid = ''
         if not (len(nid) == 8 and all(c in '0123456789abcdef' for c in nid)):
@@ -970,7 +974,7 @@ class App:
             nid = secrets.token_hex(4)
             try:
                 os.makedirs(STATE_DIR, exist_ok=True)
-                with open(path, 'w') as f:
+                with open(path, 'w', encoding='utf-8') as f:
                     f.write(nid + '\n')
             except OSError:
                 pass
@@ -1620,10 +1624,25 @@ class App:
         def _fit(_e=None):
             w, h = canvas.winfo_width(), canvas.winfo_height()
             H = max(h, right.winfo_reqheight())
+            if (w, H) == getattr(canvas, '_fit_last', None):
+                return
+            canvas._fit_last = (w, H)
             canvas.itemconfigure(item, width=w, height=H)
             canvas.configure(scrollregion=(0, 0, w, H))
         canvas.bind('<Configure>', _fit)
         right.bind('<Configure>', _fit)      # cards appear/grow -> refresh the scrollregion
+
+        def _fit_watch():
+            # Configure alone is not enough: the inner frame is PINNED to the computed height, so
+            # when a card's REQUESTED height changes later (portfolio chart renders, CTk's late
+            # relayout in the frozen build) its actual size — and thus Configure — never fires.
+            # The scrollregion then stays viewport-sized: the scrollbar is dead and the grid
+            # crushes the leaderboard row to 0. Poll the request cheaply instead.
+            if not canvas.winfo_exists():
+                return
+            _fit()
+            canvas.after(400, _fit_watch)
+        canvas.after(400, _fit_watch)
         self._bind_wheel(canvas, through=True)
         self._dash_canvas = canvas
         self._dash_right = right                         # row weights are set by _regrid_cards
@@ -2077,7 +2096,7 @@ class App:
         right = self._dash_right
         hidden = {n for n, w in self._cards.items() if not w.winfo_manager()}
         for r in range(3 * len(self._cards)):
-            right.rowconfigure(r, weight=0)
+            right.rowconfigure(r, weight=0, minsize=0)
         row = 0
         lb_manual = int(self.cfg.get('lb_h') or 0) > 0   # user pinned a height: the row must
         for i, name in enumerate(self._card_order()):    # not soak window slack anymore
@@ -2089,7 +2108,12 @@ class App:
             if name in hidden:
                 w.grid_remove()                          # grid() above re-showed it — undo
             if stretch:
-                right.rowconfigure(row, weight=1)
+                # weight=1 makes this THE shrinkable row — when the fixed-height neighbours
+                # (a dragged-tall console, portfolio, forward) outgrow the window, Tk squeezes
+                # it to 0px and the whole leaderboard card vanishes, header included. Pin a
+                # floor (~header + a few rows); the bottom cards clip instead, which at least
+                # shows WHAT is fighting for space.
+                right.rowconfigure(row, weight=1, minsize=int(220 * self.SCALE))
             row += 1
 
     def _wire_card_drag(self, name, *widgets):
@@ -2347,7 +2371,8 @@ class App:
         try:
             proc = subprocess.Popen(_child_cmd('fetch') + args,
                                     cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
-                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                    text=True, encoding='utf-8', errors='replace')
         except Exception as e:                       # noqa: BLE001
             add(f'Failed to launch fetch_data.py: {e}\n')
             self._fetching = False
@@ -2990,7 +3015,8 @@ class App:
         )
         self.proc = subprocess.Popen(_child_cmd('node'), env=env,
                                      cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
-                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                                     text=True, encoding='utf-8', errors='replace')
         threading.Thread(target=self._reader, daemon=True).start()
         self._set_running(True)
 
@@ -3232,7 +3258,7 @@ class App:
                    ALPHANODE_SIGNAL_REFRESH=('300' if self._tf() in ('15m', '1h') else '900'))
         log_path = os.path.join(STATE_DIR, f'signal_{port}.log')
         try:
-            fh = open(log_path, 'w', buffering=1)
+            fh = open(log_path, 'w', buffering=1, encoding='utf-8')
             proc = subprocess.Popen(                       # each service logs to its own file
                 _child_cmd('signal'), env=env,
                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
@@ -3460,7 +3486,7 @@ class App:
         self._set_running(running)
         st = {}
         try:
-            st = json.load(open(STATUS_FILE))
+            st = json.load(open(STATUS_FILE, encoding='utf-8'))
         except Exception:
             pass
         if st:
@@ -3978,7 +4004,8 @@ class App:
         proc = subprocess.Popen(_child_cmd('metrics'), env=env,
                                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                stderr=subprocess.DEVNULL, text=True)
+                                stderr=subprocess.DEVNULL,
+                                text=True, encoding='utf-8', errors='replace')
         self._metrics_proc = proc
         out, _ = proc.communicate(json.dumps(payload), timeout=600)
         doc = json.loads(out.strip().splitlines()[-1])   # the engine may print warnings first
@@ -4501,7 +4528,8 @@ class App:
                 _child_cmd('portfolio') + ['--top', str(n), '--select', sel,
                                            '--out', PORTFOLIO_JSON], env=env,
                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', errors='replace')
         except Exception as e:                           # noqa: BLE001
             self.lbl_pf.configure(text=f'could not start portfolio build: {e}')
             self.btn_pf.configure(state='normal')
@@ -5516,7 +5544,8 @@ class App:
             self._fwd_proc = subprocess.Popen(
                 _child_cmd('forward') + ['step'] + (['--force'] if force else []), env=env,
                 cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, encoding='utf-8', errors='replace')
         except Exception as e:                                 # noqa: BLE001
             self.lbl_fwd.configure(text=f'step failed to start: {e}')
             return
@@ -5759,7 +5788,8 @@ class App:
                 proc = subprocess.Popen(_child_cmd('pdfreport'), env=env,
                                         cwd=(apppaths.USER_DIR if apppaths.FROZEN else PROJ),
                                         stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                        stderr=subprocess.DEVNULL, text=True)
+                                        stderr=subprocess.DEVNULL,
+                                        text=True, encoding='utf-8', errors='replace')
                 try:
                     out, _ = proc.communicate(json.dumps(payload), timeout=600)
                 except Exception:
