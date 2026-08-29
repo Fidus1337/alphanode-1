@@ -35,6 +35,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import tarfile
 import tempfile
@@ -128,7 +129,22 @@ def _slug(name):
     return s
 
 
-def build_manifest(name, note, auto, state_dir, settings_path):
+def new_session_id(state_dir):
+    """A fresh 6-hex handle for one SAVE. Random, not derived from the workspace: saving the
+    same library twice is two sessions, and a content hash would call them one. Six characters
+    is the same shape the leaderboard, the forward track and the portfolio members use for an
+    alpha, so ids read alike everywhere. Collisions are re-rolled against the ids already on
+    disk — with a handful of sessions this never fires, but 'unique' should not be a promise
+    made by probability alone."""
+    taken = {m.get('id') for m in list_sessions(state_dir)}
+    for _ in range(64):
+        sid = secrets.token_hex(3)
+        if sid not in taken:
+            return sid
+    return secrets.token_hex(6)                          # 64 collisions in a row: widen, not loop
+
+
+def build_manifest(name, note, auto, state_dir, settings_path, sid=''):
     alphas = {}
     for f in _owned_state_files(state_dir):
         b = os.path.basename(f)
@@ -159,7 +175,7 @@ def build_manifest(name, note, auto, state_dir, settings_path):
         run['tf'] = st.get('tf')
     except Exception:                                    # noqa: BLE001 — no run yet
         pass
-    return {'name': name or '', 'note': note or '', 'auto': bool(auto),
+    return {'id': sid, 'name': name or '', 'note': note or '', 'auto': bool(auto),
             'created': datetime.now(timezone.utc).isoformat(timespec='seconds'),
             'version': __version__, 'alphas': alphas, 'forward': fwd, 'favorites': favs,
             'run': run, 'fp': workspace_fingerprint(state_dir, settings_path)}
@@ -177,7 +193,13 @@ def _read_manifest(path):
             if len(raw) > MAX_META_BYTES:
                 return None
             man = json.loads(raw)
-            return man if isinstance(man, dict) else None
+            if not isinstance(man, dict):
+                return None
+            if not man.get('id'):                        # archived before ids existed: derive a
+                man['id'] = hashlib.md5(                 # stable one from the filename, so the
+                    os.path.basename(path).encode()).hexdigest()[:6]   # column is never blank
+                man['id_derived'] = True                 # …and the details panel can say so
+            return man
     except Exception:                                    # noqa: BLE001
         return None
 
@@ -217,13 +239,18 @@ def snapshot(name='', note='', auto=False, state_dir=None, settings_path=None, k
             return None
         if workspace_fingerprint(state_dir, settings_path) == _newest_fingerprint(state_dir):
             return None
-    man = build_manifest(name, note, auto, state_dir, settings_path)
+    sid = new_session_id(state_dir)
+    man = build_manifest(name, note, auto, state_dir, settings_path, sid=sid)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     slug = _slug(name)
-    # second-resolution stamp: two snapshots inside one second must not overwrite
+    # The id rides in the FILENAME as well as the manifest, so an archive is identifiable on
+    # disk — mailed, copied into a backup, sitting in a folder — without opening it. Two
+    # sessions may share a name (they usually do: 'test2' twice), and only this tells them
+    # apart. The second-resolution stamp still guards two snapshots inside one second.
     for i in range(1000):
         mid = f'-{i}' if i else ''
-        base = f'{stamp}{"_" + slug if slug else ""}{mid}{"_auto" if auto else ""}.tar.gz'
+        base = (f'{stamp}{"_" + slug if slug else ""}{mid}_{sid}'
+                f'{"_auto" if auto else ""}.tar.gz')
         path = os.path.join(sessions_dir(state_dir), base)
         if not os.path.exists(path):
             break

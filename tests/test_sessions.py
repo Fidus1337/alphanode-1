@@ -17,6 +17,9 @@
     no file at all (no half-written archives under session names);
   * rotation reads the MANIFEST: named sessions are forever even if the user names one
     '..._auto'; identical back-to-back auto checkpoints are skipped;
+  * every save mints its own id: two sessions routinely share a name ('test2' twice), and
+    the id is the only thing that tells them apart — in the list, in the manifest and in
+    the filename, so an archive is identifiable on disk without being opened;
   * loading the oldest auto snapshot works even when the before-load checkpoint
     rotates the pool (the target is extracted before the backup happens);
   * a malicious archive (absolute paths, ../, symlinks, FIFOs, oversized members) is
@@ -507,3 +510,99 @@ def test_the_gui_tiles_and_log_refill_after_a_load(gui_app):
     assert 'round 7: explore' in app.logbox.get('1.0', 'end')
     assert 'running' not in app.lbl_state.cget('text')   # …but nothing is actually running
     assert 'last run' in app.lbl_cur.cget('text')        # and the ticker says as much
+
+
+# ---- every save gets its own id --------------------------------------------------------
+
+def test_two_saves_of_the_same_name_are_told_apart_by_id(ws):
+    """The reported case, verbatim: two sessions both called 'test2'. Nothing but the id
+    distinguishes them — the content may even be identical."""
+    state, settings = ws
+    a = S.snapshot(name='test2', state_dir=state, settings_path=settings)
+    b = S.snapshot(name='test2', state_dir=state, settings_path=settings)
+    ids = [m['id'] for m in S.list_sessions(state)]
+    assert len(ids) == 2 and len(set(ids)) == 2
+    assert all(len(i) == 6 and all(c in '0123456789abcdef' for c in i) for i in ids)
+    assert a != b
+
+
+def test_the_id_is_in_the_manifest_and_in_the_filename(ws):
+    """On disk, mailed, or copied into a backup folder: the file says which session it is
+    without anyone opening it."""
+    state, settings = ws
+    p = S.snapshot(name='exp', state_dir=state, settings_path=settings)
+    with tarfile.open(p) as tar:
+        man = json.load(tar.extractfile('manifest.json'))
+    assert man['id'] and man['id'] in os.path.basename(p)
+
+
+def test_an_id_is_never_reused(ws, monkeypatch):
+    """'Unique' must not rest on probability alone: a generator handing back a taken id is
+    re-rolled against what is already on disk."""
+    state, settings = ws
+    seq = iter(['aaaaaa', 'aaaaaa', 'aaaaaa', 'bbbbbb'])
+    monkeypatch.setattr(S.secrets, 'token_hex', lambda n: next(seq))
+    S.snapshot(name='one', state_dir=state, settings_path=settings)
+    S.snapshot(name='two', state_dir=state, settings_path=settings)
+    assert sorted(m['id'] for m in S.list_sessions(state)) == ['aaaaaa', 'bbbbbb']
+
+
+def test_the_id_survives_a_restore_round_trip(ws):
+    """Restoring does not renumber anything: the archive keeps the id it was written with."""
+    state, settings = ws
+    p = S.snapshot(name='keep', state_dir=state, settings_path=settings)
+    sid = S.list_sessions(state)[0]['id']
+    man = S.restore(p, state_dir=state, settings_path=settings)
+    assert man['id'] == sid
+    assert S.peek(p)['manifest']['id'] == sid
+
+
+def test_an_archive_from_before_ids_still_gets_a_stable_handle(ws):
+    """Old archives carry no id. Rather than a blank column, one is derived from the
+    filename — stable across listings, and flagged so the details panel can say so."""
+    state, settings = ws
+    p = S.snapshot(name='old', state_dir=state, settings_path=settings)
+    # rewrite the archive without an id, exactly as an older build would have written it
+    with tarfile.open(p) as tar:
+        members = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+    man = json.loads(members['manifest.json'])
+    man.pop('id')
+    members['manifest.json'] = json.dumps(man).encode()
+    with tarfile.open(p, 'w:gz') as tar:
+        for n, data in members.items():
+            info = tarfile.TarInfo(n)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    listed = S.list_sessions(state)[0]
+    assert len(listed['id']) == 6 and listed['id_derived'] is True
+    assert S.list_sessions(state)[0]['id'] == listed['id']        # stable across listings
+
+
+@pytest.mark.gui
+def test_the_sessions_window_shows_the_id_column(gui_app):
+    app, _rec, state = gui_app
+    import alphanode_gui as G
+    (state / 'library_1h.jsonl').write_text('{"formula":"x","base":1.0}\n')
+    S.snapshot(name='test2', state_dir=str(state), settings_path=G.SETTINGS)
+    S.snapshot(name='test2', state_dir=str(state), settings_path=G.SETTINGS)
+    app._sessions_open()
+    app.root.update()
+    wins = [w for w in app.root.winfo_children()
+            if w.winfo_class() in ('Toplevel', 'CTkToplevel') and w.title() == 'Sessions']
+    assert wins, 'the Sessions window did not open'
+    win = wins[-1]
+
+    def _trees(w):
+        out = [w] if w.winfo_class() == 'Treeview' else []
+        for kid in w.winfo_children():
+            out += _trees(kid)
+        return out
+
+    trees = _trees(win)
+    assert trees, 'no sessions table'
+    tree = trees[0]
+    assert tree['columns'][0] == 'id'                    # first: it is the row's name
+    ids = [tree.set(i, 'id') for i in tree.get_children()]
+    names = [tree.set(i, 'name') for i in tree.get_children()]
+    assert names == ['test2', 'test2'] and len(set(ids)) == 2
+    win.destroy()

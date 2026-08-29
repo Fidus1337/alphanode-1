@@ -2537,12 +2537,15 @@ class App:
         pad = tk.Frame(win, bg=BG)
         pad.pack(fill='both', expand=True, padx=14, pady=12)
         self._head(pad, 'SESSIONS — the whole workspace as one file').pack(anchor='w')
-        self._lbl(pad, text='Formulas, forward track, portfolio and settings. The licence key '
-                            'never travels inside a session. Double-click a row for details.',
+        self._lbl(pad, text='Formulas, forward track, portfolio, ★ favourites, the run counters '
+                            'and settings. Every save gets its own ID — names repeat, ids do '
+                            'not. The licence key never travels inside a session. '
+                            'Double-click a row for details.',
                   text_color=MUT, font=(self.UI, 12)).pack(anchor='w', pady=(2, 8))
-        cols = ('created', 'name', 'alphas', 'equity', 'size', 'kind')
+        cols = ('id', 'created', 'name', 'alphas', 'equity', 'size', 'kind')
         tree = ttk.Treeview(pad, columns=cols, show='headings', height=9)
-        for c, txt, w, anc in (('created', 'CREATED', 150, 'w'), ('name', 'NAME', 190, 'w'),
+        for c, txt, w, anc in (('id', 'ID', 72, 'center'),
+                               ('created', 'CREATED', 150, 'w'), ('name', 'NAME', 190, 'w'),
                                ('alphas', 'ALPHAS', 90, 'center'), ('equity', 'FWD EQUITY', 110, 'e'),
                                ('size', 'SIZE', 80, 'e'), ('kind', '', 70, 'center')):
             tree.heading(c, text=txt)
@@ -2556,6 +2559,7 @@ class App:
                 al = ' · '.join(f'{k}:{v}' for k, v in sorted(m.get('alphas', {}).items()))
                 eq = m.get('forward', {}).get('equity')
                 tree.insert('', 'end', iid=m['path'], values=(
+                    m.get('id', '—'),
                     m.get('created', '')[:16].replace('T', ' '), m.get('name') or '—',
                     al or '—', f'${eq:,.0f}' if eq else '—',
                     f"{m['size'] // 1024} KB", 'auto' if m.get('auto') else 'named'))
@@ -2568,13 +2572,19 @@ class App:
         def _save():
             dlg = ctk.CTkInputDialog(text='Name this session:', title='Save session')
             name = (dlg.get_input() or '').strip()
-            if name:
-                try:
-                    S.snapshot(name=name, state_dir=STATE_DIR, settings_path=SETTINGS)
-                except Exception as e:                   # noqa: BLE001
-                    messagebox.showerror('Sessions', f'Could not save the session:\n{e}',
-                                         parent=win)
-                _fill()
+            if not name:
+                return
+            try:
+                saved = S.snapshot(name=name, state_dir=STATE_DIR, settings_path=SETTINGS)
+            except Exception as e:                       # noqa: BLE001
+                messagebox.showerror('Sessions', f'Could not save the session:\n{e}',
+                                     parent=win)
+                _fill()                                  # a partial write leaves nothing, but
+                return                                   # the list may still be stale
+            _fill()
+            if saved and tree.exists(saved):             # land on the new row: names repeat,
+                tree.selection_set(saved)                # so its ID is the thing to look at
+                tree.see(saved)
 
         def _load():
             path = _sel()
@@ -2644,7 +2654,9 @@ class App:
 
             L = []
             title = man.get('name') or os.path.basename(path)
-            L.append(f"SESSION  {title}")
+            L.append(f"SESSION  {title}   ·   id {man.get('id', '?')}"
+                     + ('  (derived from the filename — saved before ids)'
+                        if man.get('id_derived') else ''))
             L.append(f"created  {man.get('created', '?')[:19].replace('T', ' ')}   "
                      f"app v{man.get('version', '?')}   "
                      f"{'auto' if man.get('auto') else 'saved by hand'}")
