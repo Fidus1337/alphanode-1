@@ -167,35 +167,51 @@ def cmd_top(args):
     if getattr(args, 'stats', False):
         print('computing TEST trade stats (builds the panel + simulates every row)…')
         stats = _trade_stats([c.get('formula', '') for c in picked])
-        fcol = max(24, width - 84)
+        fcol = max(24, width - 102)
         print(f'{"#":>3}  {"fitness":>7}  {"TEST":>6}  {"maxDD":>6}  {"CAGR":>6}  {"srtno":>6}  '
-              f'{"T↑":>6}  {"T↓":>6}  {"T~":>6}  {"L/S":>9}  {"win%":>4}  formula')
+              f'{"T↑":>6}  {"T↓":>6}  {"T~":>6}  {"L/S/yr·a":>9}  {"win%":>4}  '
+              f'{"win↑":>4}  {"win↓":>4}  formula')
     else:
         fcol = max(30, width - 26)
         print(f'{"#":>3}  {"fitness":>7}  {"TEST":>6}  formula')
     print('─' * min(width, 140 if stats else 100))
+
+    def fitcell(c):
+        b = c.get('base')
+        if not isinstance(b, (int, float)):
+            return '—'
+        return f'{b * 100:.0f}%' if c.get('fit_metric') == 'winrate' else _fmt(b)
+
     for i, c in enumerate(picked, 1):
         f = c.get('formula', '')
         if len(f) > fcol:
             f = f[:fcol - 1] + '…'
         if stats is None:
-            print(f'{i:>3}  {_fmt(c.get("base")):>7}  {_fmt(_testsh(c)):>6}  {f}')
+            print(f'{i:>3}  {fitcell(c):>7}  {_fmt(_testsh(c)):>6}  {f}')
             continue
         m = stats.get(c.get('formula', ''))
         m = m if isinstance(m, dict) else {}
 
         def pct(v):
             return f'{v * 100:+.0f}%' if isinstance(v, (int, float)) else '—'
-        ls = f"{m['long']}/{m['short']}" if 'long' in m else '—'
+        if isinstance(m.get('long_yr'), (int, float)) and isinstance(m.get('short_yr'), (int, float)):
+            ls = f"{m['long_yr']:.1f}/{m['short_yr']:.1f}"         # entries / asset / year
+        else:
+            ls = f"{m['long']}/{m['short']}" if 'long' in m else '—'
         win = f"{m['win'] * 100:.0f}" if 'win' in m else '—'
-        print(f'{i:>3}  {_fmt(c.get("base")):>7}  {_fmt(_testsh(c)):>6}  {pct(m.get("dd")):>6}  '
+
+        def wpc(v):
+            return f'{v * 100:.0f}' if isinstance(v, (int, float)) else '—'
+        print(f'{i:>3}  {fitcell(c):>7}  {_fmt(_testsh(c)):>6}  {pct(m.get("dd")):>6}  '
               f'{pct(m.get("cagr")):>6}  {_fmt(m.get("sortino")):>6}  {_fmt(m.get("tup")):>6}  '
-              f'{_fmt(m.get("tdown")):>6}  {_fmt(m.get("tflat")):>6}  {ls:>9}  {win:>4}  {f}')
+              f'{_fmt(m.get("tdown")):>6}  {_fmt(m.get("tflat")):>6}  {ls:>9}  {win:>4}  '
+              f'{wpc(m.get("wup")):>4}  {wpc(m.get("wdown")):>4}  {f}')
     if stats is not None:
         print('\nT↑/T↓/T~ = TEST Sharpe on trending-up / trending-down / flat market bars '
               '(direction regime: drift t-stat over ~30 calendar days, labels lagged one '
-              'bar). Analysis, not selection: picking by these is another layer of TEST '
-              'peeking.')
+              'bar); win↑/win↓ = win rate on the same up/down bars; L/S/yr·a = positions '
+              'opened per asset per year, by side. Analysis, not selection: picking by '
+              'these is another layer of TEST peeking.')
 
 
 def cmd_forward(args):

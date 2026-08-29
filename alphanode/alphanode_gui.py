@@ -178,6 +178,7 @@ DEFAULTS = {
     # fitness
     'parsimony': 0.010, 'corr_threshold': 0.70, 'corr_penalty': 0.5, 'hof_capacity': 15,
     'fit_blocks': 0,        # robust multi-block fitness (experimental); 0 = legacy min(TRAIN,VAL)
+    'opt_winrate': False,   # objective: False = Sharpe, True = per-bar win rate (min TRAIN/VAL)
     # date segments (TRAIN < VAL < TEST)
     'train_start': '2019-09-05', 'val_start': '2021-11-01',
     'test_start': '2023-01-01', 'test_end': '2026-07-05',
@@ -362,6 +363,21 @@ class App:
             self.cfg.pop(dead, None)
         if not _parse_universe(self.cfg.get('universe_list') or ''):
             self.cfg['universe_list'] = DEFAULTS['universe_list']
+        # The date boxes ship with the DAILY recommendation, so a settings file that names an
+        # intraday timeframe without ever having passed through the timeframe selector carries
+        # a span its bar size cannot hold — the 1d window is 59,880 bars of 1h, well past the
+        # limit. Re-fill it from the saved timeframe's own recommendation, but ONLY when the
+        # stored dates are verbatim some timeframe's defaults: that means nobody chose them,
+        # so there is no user intent to overwrite. A hand-typed window is left alone and the
+        # note under the fields argues with it instead.
+        try:
+            from timeframe import known as _tf_known, resolve as _rtf
+            _t = _rtf(_tf_clean(self.cfg.get('timeframe', '1d')))
+            _seg = {k: str(self.cfg.get(k, '')) for k in _t.segments}
+            if _seg != _t.segments and any(_seg == _rtf(n).segments for n in _tf_known()):
+                self.cfg.update(_t.segments)
+        except (ImportError, ValueError):                # no engine on the path: keep the file
+            pass
 
     @staticmethod
     def _gi(var, d):
@@ -393,6 +409,7 @@ class App:
             timeframe=_tf_clean(self.v_tf.get()),
             explore_every=max(1, self._gi(self.v_explore, d['explore_every'])),
             seed_from_lib=bool(self.v_seedlib.get()),
+            opt_winrate=bool(self.v_optwr.get()),
             max_rounds=self._gi(self.v_maxrounds, d['max_rounds']),
             leaderboard=self._gi(self.v_leader, d['leaderboard']),
             target_vol=self._gf(self.v_vol, d['target_vol']),
@@ -857,13 +874,27 @@ class App:
         # subtitle/node-id must lose that fight — never the Start button (it clipped to 'tart n')
         self._lbl(top, text='background search for trading strategies', text_color=MUT,
                      font=(self.UI, 13), bg=BG).pack(side='left', padx=(14, 0), pady=(6, 0))
-        nid_lbl = self._lbl(top, text=f'node {self._node_id()}', text_color=FAINT,
+        # node + session ids hide as ONE unit: _hide_when_tight manages a single widget
+        # that must be packed last, and two independently-hidden labels would re-show in
+        # whichever order their handlers fired
+        meta = self._box(top, bg=BG)
+        meta.pack(side='left', padx=(10, 0), pady=(7, 0))
+        nid_lbl = self._lbl(meta, text=f'node {self._node_id()}', text_color=FAINT,
                             font=(self.MONO, 12), bg=BG)
-        nid_lbl.pack(side='left', padx=(10, 0), pady=(7, 0))
+        nid_lbl.pack(side='left')
         self._tip(nid_lbl, 'This install\'s node ID. It mints the search seed, so every node\n'
                            'walks its own path through formula space — no two nodes mine\n'
                            'the same library.')
-        self._hide_when_tight(top, nid_lbl)
+        self.sid_lbl = self._lbl(meta, text=f'session {self._session_id()}', text_color=FAINT,
+                                 font=(self.MONO, 12), bg=BG)
+        self.sid_lbl.pack(side='left', padx=(10, 0))
+        self._tip(self.sid_lbl,
+                  'The CURRENT working session. A new id is minted by \'Clear all history\';\n'
+                  'loading a saved session adopts its id; reopening the app or pressing\n'
+                  'Start continues the same session. Forward-track entries record this id\n'
+                  'at enrollment — the track outlives sessions, and the stamp says where\n'
+                  'each strategy came from.')
+        self._hide_when_tight(top, meta)
         self._box(self._shell, bg=BORDER, height=1).pack(fill='x')       # hairline
         # settings | dashboard live in a PanedWindow for the hide/show plumbing; the split itself
         # is fixed — always the settings content's natural width (see _sash_restore)
@@ -1072,6 +1103,13 @@ class App:
                                  tip='Pause between rounds so the machine gets a breather.')
         self.v_port = self._num(g, 'Status port', self.cfg['port'], 4, 1024, 65535, 1,
                                 tip='Port for the status web page (http://localhost:PORT).')
+        self.v_optwr = self._chk(g, 'Optimize by win rate', self.cfg.get('opt_winrate', False), 5,
+                                 tip='The search maximizes min(TRAIN, VAL) of the per-bar win rate,\n'
+                                     'shrunk by evidence (damped by activity share, minus a binomial SE)\n'
+                                     'so sparse lucky streaks can\'t outrank dense honest ones.\n'
+                                     'CAUTION: win rate ignores magnitude — many small wins can hide rare\n'
+                                     'big losses; judge champions by TEST Sharpe and maxDD as usual.\n'
+                                     'Takes effect at the next Start.')
 
         # --- node mode ---
         g = self._section(inner, 'NODE MODE (continuous search)')
@@ -1132,13 +1170,29 @@ class App:
         # --- segments ---
         g = self._section(inner, 'DATE SEGMENTS  (TRAIN < VAL < TEST)')
         self.v_train = self._txt(g, 'TRAIN start', self.cfg['train_start'], 0,
-                                 tip='Start of the training period (evolution runs on it).')
+                                 tip='Start of the training period (evolution runs on it).\n'
+                                     'Also the start of the whole window, so this is the field\n'
+                                     'that decides whether the span fits the bar size\'s limit —\n'
+                                     'see the line under the timeframe selector.')
         self.v_val = self._txt(g, 'VAL start', self.cfg['val_start'], 1,
                                tip='Start of validation — a robustness check.')
         self.v_test = self._txt(g, 'TEST start', self.cfg['test_start'], 2,
                                 tip='Start of the held-out test — an honest OOS, not part of selection.')
         self.v_end = self._txt(g, 'TEST end', self.cfg['test_end'], 3,
-                               tip='End of the entire data period.')
+                               tip='End of the entire data period. Strictly after TEST start —\n'
+                                   'the four dates must read TRAIN < VAL < TEST < end.')
+        # The four boxes are free text, and until now nothing read them until the node was
+        # already running: a reversed pair silently produced an empty slice (numbers computed
+        # on no data), a typo'd date killed the node at load_config with no window to show it
+        # in, and a span the bar size cannot carry just ran for hours. The note answers all
+        # three while you are still typing; Start re-checks it as the hard gate.
+        self.lbl_seg = self._lbl(g, text='', text_color=NEG, font=(self.UI, 11),
+                                 wraplength=self.UNI_WRAP, justify='left', anchor='w')
+        self.lbl_seg.grid(row=4, column=0, columnspan=2, sticky='w', pady=(5, 0))
+        self.lbl_seg.grid_remove()                       # takes no space while the dates are fine
+        for _v in (self.v_train, self.v_val, self.v_test, self.v_end):
+            _v.trace_add('write', lambda *_a: self._seg_check())
+        self._seg_check()
 
         # --- buttons (Start/Stop live in the header — always visible) ---
         btns = self._box(inner)
@@ -1191,17 +1245,19 @@ class App:
     def _uni_build(self, parent):
         self.uni_chips = self._box(parent)
         self.uni_chips.pack(fill='x', pady=(3, 0))
-        self.e_uni = self._entry(parent, None, placeholder='add pair — Enter or comma')
+        self.e_uni = self._entry(parent, None,
+                                 placeholder='add pairs — paste a list, or type + Enter')
         self.e_uni.pack(fill='x', pady=(4, 4))
         self.e_uni.bind('<Return>', self._uni_commit)
         self.e_uni.bind('<FocusOut>', self._uni_commit)
-        self.e_uni.bind('<KeyRelease>', self._uni_key)
         self.e_uni.bind('<KeyPress-BackSpace>', self._uni_backspace)
-        self.e_uni.bind('<ButtonPress-2>', self._uni_mpaste)
+        self.e_uni.bind('<<Paste>>', self._uni_paste)          # Ctrl+V / Shift+Insert
+        self.e_uni.bind('<ButtonPress-2>', self._uni_paste)    # middle-click PRIMARY
         self._tip(self.e_uni,
                   'The search, signals and metrics run on exactly this basket.\n'
-                  'Enter or comma turns what you typed into a chip; paste a whole\n'
-                  'list — commas, spaces or line breaks all split it.\n'
+                  'Write as many pairs as you like — commas, spaces or line breaks\n'
+                  'separate them — then ENTER turns the whole box into chips.\n'
+                  'A paste lands the same way, all at once.\n'
                   '✕ removes a pair; clicking a chip pulls it back down for editing;\n'
                   'Backspace in the empty box pulls the last chip down.\n'
                   'Remove everything and the default five come back at Start/Save.')
@@ -1277,8 +1333,14 @@ class App:
         return ''.join(',' if ch.isspace() else ch for ch in (s or ''))
 
     def _uni_commit(self, _e=None):
-        """The WHOLE entry -> chips. Bound to Enter and FocusOut; _collect also calls it,
-        so a pair still sitting in the box is never lost to Start/Save/theme switch."""
+        """The WHOLE entry -> chips, splitting on commas and whitespace. THE commit: bound to
+        Enter and FocusOut, called by _uni_paste and by _collect, so a pair still sitting in
+        the box is never lost to Start/Save/theme switch.
+
+        A typed comma deliberately does nothing. It used to commit everything before it, and
+        the box emptying itself mid-word is what a person reads as the field losing their
+        input — you watch the box you are typing in, not the chip row above it. Writing
+        'XMRUSDT, XLMUSDT' and pressing Enter once is now exactly what it looks like."""
         try:
             raw = self._uni_raw(self.e_uni.get())
         except Exception:                            # noqa: BLE001 — teardown mid-FocusOut
@@ -1290,22 +1352,6 @@ class App:
         except Exception:                            # noqa: BLE001
             pass
         return 'break'
-
-    def _uni_key(self, _e=None):
-        """A typed separator commits only the COMPLETE tokens — everything before the last
-        comma; the tail stays in the box. Fast typists press the next letter before the
-        comma's KeyRelease (rollover): committing the whole buffer at release time shredded
-        'btc,eth' into BTC + E + TH."""
-        raw = self._uni_raw(self.e_uni.get())
-        if ',' not in raw:
-            return
-        head, _, rest = raw.rpartition(',')
-        if head.strip(','):
-            self.v_unilist.set(','.join(_parse_universe(self.v_unilist.get() + ',' + head)))
-        self.e_uni.delete(0, 'end')
-        if rest:
-            self.e_uni.insert(0, rest)
-            self.e_uni.icursor('end')
 
     def _uni_backspace(self, e=None):
         """KeyPress fires BEFORE the class binding erases a character — an empty box here
@@ -1325,15 +1371,18 @@ class App:
             self._uni_edit(syms[-1])
         return 'break'
 
-    def _uni_mpaste(self, _e=None):
-        """Middle-click PRIMARY paste goes straight to the inner tk.Entry via the Entry
-        class binding, bypassing CTkEntry.insert() — with the placeholder active the pasted
-        text would glue itself onto the ghost text. Deactivate it before the class binding
-        pastes (widget-tag bindings fire first)."""
+    def _uni_paste(self, _e=None):
+        """A paste is finished text, so it commits itself — no Enter needed. Bound for
+        Ctrl+V/Shift+Insert and for middle-click PRIMARY, which reaches the inner tk.Entry
+        through the Entry class binding and bypasses CTkEntry.insert() entirely — hence the
+        placeholder has to be dismissed here or the pasted text glues itself onto the ghost
+        string. Widget-tag bindings run BEFORE the class binding that does the actual insert,
+        so the commit waits for the idle after it."""
         try:
             self.e_uni._deactivate_placeholder()
         except Exception:                            # noqa: BLE001
             pass
+        self.root.after_idle(self._uni_commit)
 
     def _uni_remove(self, sym):
         self.v_unilist.set(','.join(
@@ -1388,6 +1437,7 @@ class App:
         v = tk.StringVar(value=str(val))
         e = self._entry(parent, v, width=104)
         self._row(parent, label, row, e, tip)
+        v.widget = e                                     # so _seg_check can redden the bad box
         return v
 
     def _chk(self, parent, label, val, row, tip=None):
@@ -1698,7 +1748,7 @@ class App:
         wrap.pack(fill='both', expand=True)
         self._lbwrap = wrap                              # smooth pixel resize (its in-card grip)
         cols = ('fav', 'rank', 'fit', 'test', 'dd', 'cagr', 'srt',
-                'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'id', 'formula')
+                'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown', 'id', 'formula')
         self.tree = ttk.Treeview(wrap, columns=cols, show='headings',
                                  height=int(self.cfg.get('lb_rows') or 12))
         self._HEAD = {}
@@ -1711,9 +1761,11 @@ class App:
                                ('cagr', 'CAGR', 72, 'e'), ('srt', 'sortino', 80, 'e'),
                                ('tup', 'T ↑', 64, 'e'), ('tdown', 'T ↓', 64, 'e'),
                                ('tflat', 'T ~', 64, 'e'),
-                               ('ls', 'trades L/S', 100, 'center'),
+                               ('ls', 'L/S /yr·a', 100, 'center'),
                                ('act', 'tr/yr·a', 72, 'e'),
-                               ('win', 'win%', 62, 'e'), ('id', 'ID', 72, 'center'),
+                               ('win', 'win%', 62, 'e'),
+                               ('wup', 'win ↑', 64, 'e'), ('wdown', 'win ↓', 64, 'e'),
+                               ('id', 'ID', 72, 'center'),
                                ('formula', 'formula', 260, 'w')):
             self._HEAD[c] = txt
             kw = {} if c in ('fav', 'rank', 'id') else {'command': (lambda c=c: self._sort_by(c))}
@@ -1734,7 +1786,10 @@ class App:
             'fav': 'favorites — click a row\'s ★ cell to star/unstar the formula;\n'
                    'the ★ Favorites button opens the starred list',
             'rank': 'position in the current sort',
-            'fit': 'fitness = min(TRAIN, VAL) Sharpe — the number the search optimizes',
+            'fit': 'fitness = min(TRAIN, VAL) Sharpe — the number the search optimizes.\n'
+                   'With \'Optimize by win rate\' on: min(TRAIN, VAL) of the evidence-\n'
+                   'shrunk win rate (damped by activity share, minus a binomial SE) —\n'
+                   'such rows show a percentage, slightly below the raw win% column.',
             'test': 'held-out TEST Sharpe (out-of-sample) — never optimized;\n'
                     'picking rows by it is peeking',
             'dd': 'worst peak-to-trough drawdown on TEST',
@@ -1750,9 +1805,15 @@ class App:
                      'Same direction regime as T↑ — see that column\'s tooltip.',
             'tflat': 'TEST Sharpe on FLAT market bars — no statistically confident drift\n'
                      '(|t| below 1.28). Same direction regime as T↑ — see its tooltip.',
-            'ls': 'positions OPENED over TEST: long / short',
+            'ls': 'positions opened per asset per year on TEST: long / short\n'
+                  '(an annualized rate — comparable across universes and periods)',
             'act': 'trades per asset per year — relative activity',
             'win': 'share of profitable days on TEST',
+            'wup': 'win rate on TRENDING-UP market bars only — the same direction\n'
+                   'regime as T↑ (see its tooltip). \'—\' = under 30 such bars on TEST,\n'
+                   'or fewer than 5 bars where the formula actually traded there.',
+            'wdown': 'win rate on TRENDING-DOWN market bars only.\n'
+                     'Same direction regime as T↑ — see that column\'s tooltip.',
             'id': 'stable ID — the md5 tail of the formula; the forward track uses the SAME id',
             'formula': 'the alpha itself — right-click: copy / choose columns',
         }
@@ -1764,7 +1825,7 @@ class App:
                                     'flat halves of TEST (market direction regime; causal, lagged one bar).\n'
                                     'Analysis, not selection: picking alphas by TEST numbers is another\n'
                                     'layer of TEST peeking;\n'
-                                    'trades L/S = total number of long / short positions OPENED over TEST\n'
+                                    'L/S /yr·a = positions opened per asset per year on TEST, long / short\n'
                                     '(a trade = crossing into long/short from flat or the opposite side);\n'
                                     'tr/yr·a = trades per asset per year (relative activity — the "min tr/yr"\n'
                                     'filter drops barely-trading alphas); win% = share of days with profit.\n'
@@ -1892,6 +1953,41 @@ class App:
         self.lbl_pf_m = self._lbl(p3, text='', text_color=TXT, font=(self.UI, 16, 'bold'),
                                      anchor='w')
         self.lbl_pf_m.pack(anchor='w')
+        # WHICH alphas got combined. The card's whole claim is that the mix beats every one of
+        # its members, and that was unfalsifiable while the members were not on screen: the
+        # summary named a count, the chart drew one line, and the formulas lived only inside
+        # portfolio.json. SOLO is each member's TEST Sharpe on its own — read the combined
+        # number above against this column and the diversification gain is either there or not.
+        self._pfwrap = self._box(p3)
+        self._pfwrap.pack(fill='x', pady=(10, 0))
+        self.pf_tree = ttk.Treeview(self._pfwrap, columns=self._PF_COLS, show='headings',
+                                    height=1, selectmode='browse')
+        for c, txt, w, anch in (('n', '#', 40, 'center'), ('id', 'ID', 72, 'center'),
+                                ('solo', 'SOLO TEST', 92, 'e'), ('fit', 'FITNESS', 86, 'e'),
+                                ('test', 'TEST OOS', 86, 'e'), ('formula', 'FORMULA', 260, 'w')):
+            self.pf_tree.heading(c, text=txt, anchor=anch)
+            self.pf_tree.column(c, width=int(w * self.SCALE), anchor=anch,
+                                stretch=(c == 'formula'), minwidth=int(w * self.SCALE))
+        # tags are per-widget in ttk: the leaderboard's are configured on ITS tree only.
+        # Same colour economy — the green tint marks the rows the combination actually beat.
+        self.pf_tree.tag_configure('pos', background=_mix(CARD, POS, 0.12))
+        self.pf_tree.tag_configure('odd', background=STRIPE)
+        self.pf_tree.tag_configure('even', background=CARD)
+        self._pf_vsb = ctk.CTkScrollbar(self._pfwrap, orientation='vertical',
+                                        command=self.pf_tree.yview, fg_color=CARD,
+                                        button_color=BORDER, button_hover_color=FAINT, width=14)
+        self.pf_tree.configure(yscrollcommand=self._pf_vsb.set)
+        self.pf_tree.pack(side='left', fill='both', expand=True)
+        self.pf_tree.bind('<Double-1>', self._pf_member_plot)
+        self._selectable_cells(self.pf_tree)
+        self._tip(self.pf_tree,
+                  'The alphas this portfolio is made of, in pick order — equal weight,\n'
+                  'no member is sized larger than another.\n'
+                  'SOLO TEST — that member\'s held-out Sharpe ON ITS OWN. The combined\n'
+                  'Sharpe above should beat every row here; if it does not, the mix is\n'
+                  'carrying dead weight.\n'
+                  'FITNESS and TEST OOS are the leaderboard\'s own numbers for the row.\n'
+                  'Double-click a member for its equity chart.')
         self.pf_img = tk.Label(p3, bg=CARD, borderwidth=0, cursor='hand2')
         self.pf_img.pack(fill='x', pady=(8, 0))
         self.pf_img.bind('<Double-1>', self._pf_interactive)  # live zoomable copy of the chart
@@ -1933,10 +2029,11 @@ class App:
         self.lbl_fwd.pack(anchor='w', fill='x', pady=(8, 2))
         self._fwdwrap = self._box(p4)
         self._fwdwrap.pack(fill='x', pady=(4, 0))
-        fcols = ('id', 'kind', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
+        fcols = ('id', 'kind', 'session', 'enrolled', 'days', 'equity', 'ret', 'sharpe', 'dd', 'last')
         self.fwd_tree = ttk.Treeview(p4, columns=fcols, show='headings',
                                      height=int(self.cfg.get('fwd_rows') or 4))
         for c, txt, w, anch in (('id', 'STRATEGY', 240, 'w'), ('kind', 'KIND', 96, 'w'),
+                                ('session', 'SESSION', 80, 'center'),
                                 ('enrolled', 'ENROLLED', 100, 'center'), ('days', 'STEPS', 64, 'e'),
                                 ('equity', 'EQUITY', 100, 'e'), ('ret', 'RETURN', 90, 'e'),
                                 ('sharpe', 'SHARPE', 80, 'e'), ('dd', 'MAXDD', 80, 'e'),
@@ -2055,6 +2152,9 @@ class App:
         self._pf_last_w = 0
         self.lbl_pf.configure(text='no portfolio yet — set "top" and click "Build portfolio".')
         self.lbl_pf_m.configure(text='')
+        if getattr(self, 'pf_tree', None) is not None:
+            self.pf_tree.delete(*self.pf_tree.get_children())
+            self.pf_tree.configure(height=1)
         self.pf_img.config(image='')
         self._pf_img_ref = None
         for b in (self.btn_pf_csv, self.btn_pf_sig, self.btn_pf_track):
@@ -2116,7 +2216,8 @@ class App:
                '• the built portfolio  (portfolio.json)\n\n'
                'Nothing is saved automatically — if you want a way back, save a session '
                'first (Sessions → Save current…).\n'
-               'Search settings (the parameters on the left) and starred favorites (★) remain.')
+               'Search settings, starred favorites (★) and the FORWARD TRACK remain — enrolled '
+               'strategies keep stepping. The next search runs under a fresh session id.')
         if not messagebox.askyesno('Full clear', msg, icon='warning',
                                     default='no', parent=self.root):
             return
@@ -2139,6 +2240,14 @@ class App:
         try:
             os.remove(PORTFOLIO_PNG)                      # the portfolio equity image
         except OSError:
+            pass
+        try:                                             # the work that follows a clear is a NEW
+            self._sessions_lib().begin_new_session(STATE_DIR)   # session — forward entries
+        except Exception:                                # noqa: BLE001    enrolled from it say so
+            pass
+        try:
+            self.sid_lbl.configure(text=f'session {self._session_id()}')
+        except (AttributeError, tk.TclError):
             pass
         self._reset_ui_after_wipe()
         messagebox.showinfo('Done', 'History cleared. You can start the search from scratch.', parent=self.root)
@@ -2329,6 +2438,7 @@ class App:
         self.v_pars.set(c['parsimony']); self.v_corrt.set(c['corr_threshold'])
         self.v_corrp.set(c['corr_penalty']); self.v_hof.set(c['hof_capacity'])
         self.v_fitblocks.set(c.get('fit_blocks', 5))
+        self.v_optwr.set(c.get('opt_winrate', False))
         self.v_train.set(c['train_start']); self.v_val.set(c['val_start'])
         self.v_test.set(c['test_start']); self.v_end.set(c['test_end'])
 
@@ -2364,13 +2474,51 @@ class App:
             t = _rtf(self.v_tf.get())
         except Exception:                                # noqa: BLE001
             return
-        note = ('daily engine — full history' if t.name == '1d' else
-                f'{t.name} bars · recommended history from {t.history} · '
+        span = f'window ≤ {t.max_bars:,} bars (~{t.max_span_days / 365.0:.1f} yr)'
+        note = ('daily engine — full history · ' + span if t.name == '1d' else
+                f'{t.name} bars · history from {t.history} · {span} · '
                 f'download {t.name} data first, then Start')
         try:
             self.lbl_tf_note.configure(text=note)
         except (AttributeError, tk.TclError):
             pass
+
+    # ---------- date segments: the four boxes are checked, not trusted ----------
+    def _seg_problems(self):
+        """(field, message) pairs for the four date boxes against the bar size CURRENTLY
+        selected in the widget — not the saved one, because the user may be mid-edit and the
+        ceiling that matters is the one they are about to mine on. [] when they are fine."""
+        try:
+            from timeframe import check_segments
+            return check_segments(self.v_tf.get(), self.v_train.get(), self.v_val.get(),
+                                  self.v_test.get(), self.v_end.get())
+        except (ImportError, ValueError, AttributeError, tk.TclError):
+            return []                                    # no timeframe module / torn-down widgets
+
+    def _seg_check(self):
+        """Repaint the note under the date fields and redden whichever box is at fault.
+        Returns the problems so Start can reuse the same verdict as the hard gate."""
+        probs = self._seg_problems()
+        bad = {f for f, _m in probs}
+        for lbl, v in (('TRAIN start', self.v_train), ('VAL start', self.v_val),
+                       ('TEST start', self.v_test), ('TEST end', self.v_end)):
+            w = getattr(v, 'widget', None)
+            if w is not None:
+                try:
+                    w.configure(border_color=(NEG if lbl in bad else BORDER))
+                except tk.TclError:                      # widget died under a theme rebuild
+                    pass
+        lbl_seg = getattr(self, 'lbl_seg', None)
+        if lbl_seg is not None:
+            try:
+                if probs:
+                    lbl_seg.configure(text='\n'.join(m for _f, m in probs))
+                    lbl_seg.grid()
+                else:
+                    lbl_seg.grid_remove()
+            except tk.TclError:
+                pass
+        return probs
 
     def _tf(self):
         """The configured bar size ('1d','4h','1h','15m'); the whole pipeline follows it."""
@@ -2403,6 +2551,13 @@ class App:
         import sessions
         return sessions
 
+    def _session_id(self):
+        """The current working session's id — '?' only if the state dir is unwritable."""
+        try:
+            return self._sessions_lib().current_session_id(STATE_DIR)
+        except Exception:                                # noqa: BLE001
+            return '?'
+
     def _sessions_open(self):
         S = self._sessions_lib()
         win = tk.Toplevel(self.root)
@@ -2413,12 +2568,16 @@ class App:
         pad = tk.Frame(win, bg=BG)
         pad.pack(fill='both', expand=True, padx=14, pady=12)
         self._head(pad, 'SESSIONS — the whole workspace as one file').pack(anchor='w')
-        self._lbl(pad, text='Formulas, forward track, portfolio and settings. The licence key '
-                            'never travels inside a session. Double-click a row for details.',
+        self._lbl(pad, text='Formulas, forward track, portfolio, ★ favourites, the run counters '
+                            'and settings. ID is the SESSION id — the one in the header when '
+                            'it was saved; two saves of one session share it and differ by '
+                            'date. The licence key never travels inside a session. '
+                            'Double-click a row for details.',
                   text_color=MUT, font=(self.UI, 12)).pack(anchor='w', pady=(2, 8))
-        cols = ('created', 'name', 'alphas', 'equity', 'size', 'kind')
+        cols = ('id', 'created', 'name', 'alphas', 'equity', 'size', 'kind')
         tree = ttk.Treeview(pad, columns=cols, show='headings', height=9)
-        for c, txt, w, anc in (('created', 'CREATED', 150, 'w'), ('name', 'NAME', 190, 'w'),
+        for c, txt, w, anc in (('id', 'ID', 72, 'center'),
+                               ('created', 'CREATED', 150, 'w'), ('name', 'NAME', 190, 'w'),
                                ('alphas', 'ALPHAS', 90, 'center'), ('equity', 'FWD EQUITY', 110, 'e'),
                                ('size', 'SIZE', 80, 'e'), ('kind', '', 70, 'center')):
             tree.heading(c, text=txt)
@@ -2432,6 +2591,7 @@ class App:
                 al = ' · '.join(f'{k}:{v}' for k, v in sorted(m.get('alphas', {}).items()))
                 eq = m.get('forward', {}).get('equity')
                 tree.insert('', 'end', iid=m['path'], values=(
+                    m.get('id', '—'),
                     m.get('created', '')[:16].replace('T', ' '), m.get('name') or '—',
                     al or '—', f'${eq:,.0f}' if eq else '—',
                     f"{m['size'] // 1024} KB", 'auto' if m.get('auto') else 'named'))
@@ -2444,26 +2604,34 @@ class App:
         def _save():
             dlg = ctk.CTkInputDialog(text='Name this session:', title='Save session')
             name = (dlg.get_input() or '').strip()
-            if name:
-                try:
-                    S.snapshot(name=name, state_dir=STATE_DIR, settings_path=SETTINGS)
-                except Exception as e:                   # noqa: BLE001
-                    messagebox.showerror('Sessions', f'Could not save the session:\n{e}',
-                                         parent=win)
-                _fill()
+            if not name:
+                return
+            try:
+                saved = S.snapshot(name=name, state_dir=STATE_DIR, settings_path=SETTINGS)
+            except Exception as e:                       # noqa: BLE001
+                messagebox.showerror('Sessions', f'Could not save the session:\n{e}',
+                                     parent=win)
+                _fill()                                  # a partial write leaves nothing, but
+                return                                   # the list may still be stale
+            _fill()
+            if saved and tree.exists(saved):             # land on the new row: names repeat,
+                tree.selection_set(saved)                # so its ID is the thing to look at
+                tree.see(saved)
 
         def _load():
             path = _sel()
             if not path:
                 messagebox.showinfo('Sessions', 'Select a session in the list first.', parent=win)
                 return
-            busy = None                                  # every writer must be idle: a child
-            if self.proc and self.proc.poll() is None:   # finishing AFTER the swap would
-                busy = 'the node is searching'           # silently overwrite restored files
-            elif self._fwd_proc and self._fwd_proc.poll() is None:
-                busy = 'a forward-track step is running'
-            elif self._pf_proc and self._pf_proc.poll() is None:
-                busy = 'the portfolio build is running'
+            def _busy():                                 # every writer must be idle: a child
+                if self.proc and self.proc.poll() is None:   # finishing AFTER the swap would
+                    return 'the node is searching'       # silently overwrite restored files
+                if self._fwd_proc and self._fwd_proc.poll() is None:
+                    return 'a forward-track step is running'
+                if self._pf_proc and self._pf_proc.poll() is None:
+                    return 'the portfolio build is running'
+                return None
+            busy = _busy()
             if busy:
                 messagebox.showwarning('Sessions', f'Not now — {busy}. Wait for it to finish '
                                        '(usually under a minute), then load.', parent=win)
@@ -2471,9 +2639,19 @@ class App:
             if not messagebox.askyesno('Sessions',
                     'Load this session? The current workspace will be REPLACED — nothing is '
                     "saved automatically. Use 'Save current…' first if you want a way "
-                    'back.\n\nThe forward track resumes from the next closed bar — the '
+                    'back.\n\nLibrary, portfolio, ★ favorites and the run counters are '
+                    'replaced by this session\'s. The FORWARD TRACK is not: it keeps running, '
+                    'and the archive\'s entries join it (each row shows the session it came '
+                    'from).\n\n'
+                    'The forward track resumes from the next closed bar — the '
                     'gap stays visible in its history (nothing is re-computed backwards).',
                     parent=win):
+                return
+            busy = _busy()                               # the modal pumped after-timers while it
+            if busy:                                     # sat open — the 5-minute forward tick
+                messagebox.showwarning(                  # may have spawned a step meanwhile
+                    'Sessions', f'Not now — {busy}. Wait for it to finish '
+                    '(usually under a minute), then load.', parent=win)
                 return
             try:
                 man = S.restore(path, state_dir=STATE_DIR, settings_path=SETTINGS)
@@ -2487,10 +2665,15 @@ class App:
             self._sessions_rebuild()
             n_alphas = sum((man.get('alphas') or {}).values())
             n_fwd = (man.get('forward') or {}).get('entries') or 0
+            n_fav = man.get('favorites') or 0             # absent in pre-favorites archives
             if n_alphas or n_fwd:
                 messagebox.showinfo('Sessions',
                                     f'Session loaded: {man.get("name") or man.get("created", "")}\n'
-                                    f'{n_alphas} alphas · {n_fwd} forward entries.\n'
+                                    f'{n_alphas} alphas · {n_fwd} forward entries · '
+                                    f'{n_fav} ★ favorites.\n'
+                                    'Counters, live log, portfolio and ★ came back with it; '
+                                    'the archive\'s forward entries JOINED the running track '
+                                    '(merged, never replaced).\n'
                                     'The forward track continues from the next closed bar.',
                                     parent=self.root)
             else:
@@ -2513,7 +2696,12 @@ class App:
 
             L = []
             title = man.get('name') or os.path.basename(path)
-            L.append(f"SESSION  {title}")
+            L.append(f"SESSION  {title}   ·   id {man.get('id', '?')}"
+                     + ('  (derived from the filename — saved before ids)'
+                        if man.get('id_derived') else ''))
+            if man.get('session') and man.get('session') != man.get('id'):
+                # a transitional archive: written while saves minted their own id
+                L.append(f"           (workspace session at save time: {man['session']})")
             L.append(f"created  {man.get('created', '?')[:19].replace('T', ' ')}   "
                      f"app v{man.get('version', '?')}   "
                      f"{'auto' if man.get('auto') else 'saved by hand'}")
@@ -2524,6 +2712,12 @@ class App:
             eq = fw.get('equity')
             L.append(f"forward  {fw.get('entries', 0)} entries"
                      + (f' · equity ${eq:,.2f}' if eq else ''))
+            L.append(f"stars    {man.get('favorites', 0)} ★ favorites")
+            rn = man.get('run') or {}
+            L.append('run      ' + (f"{rn.get('rounds', 0)} rounds · "
+                                    f"{rn.get('trials_total', 0):,} formulas tried · "
+                                    f"{rn.get('found', 0)} kept"
+                                    if rn else 'no search had run yet'))
             L.append('')
             L.append('PORTFOLIO')
             if pf is None:
@@ -2614,7 +2808,9 @@ class App:
         self._pf_last_w = 0
         self._treesig = None
         self._sig_shown = None
-        self._build()
+        self._fav_ids = None                             # the restored session brought its OWN
+        self._build()                                    # stars — re-read, don't paint the last
+        #                                                  workspace's ★ onto this one's rows
         self._set_running(bool(self.proc and self.proc.poll() is None))
         self._render_signal_rows()
         self._start_lb_compute(force=True)               # show the restored library NOW,
@@ -2681,6 +2877,13 @@ class App:
         if self._starting:                               # a Start hub-check is already in flight
             return
         self._save()
+        probs = self._seg_check()                        # bad dates never announce themselves:
+        if probs:                                        # a typo kills the node inside
+            messagebox.showerror(                        # load_config with no window to say so,
+                'Date segments',                         # and a reversed pair mines an EMPTY
+                '\n\n'.join(m for _f, m in probs),       # slice while reporting real-looking
+                parent=self.root)                        # Sharpes for it
+            return
         os.makedirs(STATE_DIR, exist_ok=True)
         need, why = self._data_gap()
         if need:                                         # missing/stale/short snapshot: fetch the
@@ -2781,6 +2984,7 @@ class App:
             ALPHANODE_CORR_PENALTY=str(c['corr_penalty']),
             ALPHANODE_HOF_CAPACITY=str(c['hof_capacity']),
             ALPHANODE_FIT_BLOCKS=str(c['fit_blocks']),
+            ALPHANODE_FIT_METRIC=('winrate' if c.get('opt_winrate') else 'sharpe'),
             ALPHANODE_TRAIN_START=c['train_start'], ALPHANODE_VAL_START=c['val_start'],
             ALPHANODE_TEST_START=c['test_start'], ALPHANODE_TEST_END=c['test_end'],
         )
@@ -2926,7 +3130,10 @@ class App:
         except Exception:                                # noqa: BLE001
             pass
         found = []
-        for p in range(SIGNAL_PORT, SIGNAL_PORT + 10):
+        # scan a bit past the cap: SIG_MAX services normally sit on 8799..8808, but another
+        # app squatting on one of those pushes ours further up — a detached service past the
+        # window would keep serving invisibly, un-adoptable and un-stoppable from the GUI
+        for p in range(SIGNAL_PORT, SIGNAL_PORT + 2 * self.SIG_MAX):
             h = self._sig_probe(p)
             if not h:
                 continue
@@ -2999,6 +3206,14 @@ class App:
             return
         if any(s['label'] == label for s in self._sigs):   # already serving this one — just show it
             self._render_signal_rows()
+            return
+        alive = sum(1 for s in self._sigs if self._sig_alive(s))
+        if alive >= self.SIG_MAX:                        # each service is a whole engine process
+            messagebox.showwarning(                      # re-simulating on every refresh — ten of
+                'Signal API',                            # them is already a small server farm
+                f'{alive} signal services are already running — {self.SIG_MAX} is the limit.\n'
+                'Free a port first (✕ Free port on a row you no longer need), '
+                'then serve this one.', parent=self.root)
             return
         port = self._free_signal_port()
         if port is None:
@@ -3078,6 +3293,15 @@ class App:
             self._stop_all_signals()
             self._render_signal_rows()
 
+    def _sig_alive(self, s):
+        """Is this service's process still up? Spawned ones answer via poll(); adopted ones
+        (no Popen handle) via the recorded pid — and an adopted row with no pid at all is
+        presumed alive, letting /health speak."""
+        proc, pid = s.get('proc'), s.get('pid')
+        if proc is not None:
+            return proc.poll() is None
+        return not (bool(pid) and not self._pid_alive(pid))
+
     def _sig_tick(self):
         """Every 3s: refresh the health of each service. Main thread — the HTTP call itself is
         handed to a worker (see _sig_poll_worker)."""
@@ -3085,12 +3309,7 @@ class App:
         if pending:
             self._sig_adopt(pending)
         for s in list(self._sigs):
-            proc, pid = s.get('proc'), s.get('pid')
-            if proc is not None:
-                dead = proc.poll() is not None
-            else:                                         # adopted: unknown PID -> let /health speak
-                dead = bool(pid) and not self._pid_alive(pid)
-            if dead:
+            if not self._sig_alive(s):
                 self._sig_health[s['port']] = '○ stopped (the process exited) — port is free'
             else:
                 threading.Thread(target=self._sig_poll_worker, args=(s['port'],), daemon=True).start()
@@ -3100,7 +3319,8 @@ class App:
         else:                                             # same set -> only refresh the status text
             for p, lbl in list(self._sig_status_lbl.items()):
                 if lbl.winfo_exists():
-                    lbl.configure(text=self._sig_health.get(p, 'starting…'))
+                    txt = self._sig_health.get(p, 'starting…')
+                    lbl.configure(text=txt, fg=self._sig_status_color(txt))
         self.root.after(3000, self._sig_tick)
 
     def _render_signal_rows(self):
@@ -3147,10 +3367,24 @@ class App:
             self._lbl(info, text=url + (f'   ·   {s["log"]}' if s.get('log') else ''),
                          text_color=FAINT, font=(self.MONO, 11), wraplength=620,
                          justify='left', anchor='w').pack(anchor='w')
-            lbl = self._lbl(info, text=self._sig_health.get(s['port'], 'starting…'), text_color=MUT,
+            htxt = self._sig_health.get(s['port'], 'starting…')
+            lbl = self._lbl(info, text=htxt, text_color=self._sig_status_color(htxt),
                                font=(self.UI, 11), wraplength=620, justify='left', anchor='w')
             lbl.pack(anchor='w')
             self._sig_status_lbl[s['port']] = lbl
+
+    @staticmethod
+    def _sig_status_color(txt):
+        """Colour of a service's status line: the answer to 'is my API up?' should be read
+        from across the room. Green ONLY for '● serving' — a warning is amber-red, a stopped
+        process fades out, and everything transitional stays neutral."""
+        if txt.startswith('● serving'):
+            return POS
+        if txt.startswith('⚠'):
+            return NEG
+        if txt.startswith('○ stopped'):
+            return FAINT
+        return MUT
 
     def _sig_poll_worker(self, port):
         """Background: fetch /health for ONE service and stash the text. NO Tk here — Tk is not
@@ -3258,7 +3492,10 @@ class App:
             hist = st.get('history') or []               # the retired PROGRESS chart, as one number
             fit = next((p.get('best_base', p.get('best_test')) for p in reversed(hist)
                         if p.get('best_base', p.get('best_test')) is not None), None)
-            self.s_fit.configure(text=f'{fit:+.2f}' if fit is not None else '—')
+            wr = st.get('fit_metric') == 'winrate' and isinstance(fit, (int, float)) \
+                and 0.0 <= fit <= 1.0                    # a winrate base is a share
+            self.s_fit.configure(text=('—' if fit is None
+                                       else f'{fit * 100:.0f}%' if wr else f'{fit:+.2f}'))
         # the leaderboard is a view of the LIBRARY FILE, not of the node: it must fill
         # even when no status.json exists yet (fresh start, restored session)
         self._refresh_leaderboard(st.get('best', []))
@@ -3293,7 +3530,7 @@ class App:
         lambda c: (c.get('test') if isinstance(c.get('test'), dict) else {}).get('sharpe'))
 
     _SORTABLE = ('fit', 'test', 'dd', 'cagr', 'srt',
-                 'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'formula')
+                 'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown', 'formula')
 
     @staticmethod
     def _finite(v):
@@ -3316,7 +3553,7 @@ class App:
                 else self._finite(m.get(col))
         if col == 'srt':
             return self._finite(m.get('sortino'))
-        if col in ('tup', 'tdown', 'tflat'):
+        if col in ('tup', 'tdown', 'tflat', 'wup', 'wdown'):
             return self._finite(m.get(col))
         if col == 'ls':
             return m.get('long', 0) + m.get('short', 0)
@@ -3330,6 +3567,14 @@ class App:
         col, desc = self._sort_col, self._sort_desc
         if col == 'formula':
             return sorted(rows, key=lambda c: c.get('formula', ''), reverse=desc)
+        if col == 'fit':                                 # two-tier: active objective's rows ALWAYS
+            act = 'winrate' if self.cfg.get('opt_winrate') else 'sharpe'
+
+            def bk(c):                                   # first (their bases share a scale), the
+                b = c.get('base')                        # click only flips base order inside tiers
+                b = b if isinstance(b, (int, float)) else float('-inf')
+                return ((c.get('fit_metric') or 'sharpe') != act, -b if desc else b)
+            return sorted(rows, key=bk)
 
         def k(c):
             v = self._sort_key(c, col)
@@ -3341,17 +3586,29 @@ class App:
             arrow = ('  ▼' if self._sort_desc else '  ▲') if c == self._sort_col else ''
             self.tree.heading(c, text=txt.upper() + arrow)
 
-    _LB_OPT_ORDER = ('dd', 'cagr', 'id', 'srt',
-                     'tup', 'tdown', 'tflat', 'ls', 'act', 'win')
-    _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'tup', 'tdown', 'tflat')
+    _PF_COLS = ('n', 'id', 'solo', 'fit', 'test', 'formula')
+    SIG_MAX = 10                                         # running signal services at once — each
+    #                                                      is a full engine process re-simulating
+    #                                                      its formulas every refresh
+    PF_ROWS_MAX = 12                                     # members shown before the list scrolls
+    PF_TOP_MIN, PF_TOP_MAX = 2, 20                       # what the 'top' spinner advertises
+
+    _LB_OPT_ORDER = ('id', 'dd', 'cagr', 'srt',
+                     'tup', 'tdown', 'tflat', 'ls', 'act', 'win', 'wup', 'wdown')
+    _LB_OPT_DEFAULT = ('dd', 'cagr', 'id', 'win', 'wup', 'wdown', 'tup', 'tdown', 'tflat')
 
     def _adv_cols(self):
         """Advanced display columns: the honest core (#/fitness/TEST/formula) plus the user's
-        optional picks, in a fixed order that keeps ID ahead of the lazily computed block —
-        a '…' placeholder next to the ID used to read as a truncated ID."""
+        optional picks. ID rides right behind the rank number — it is the row's NAME, the token
+        carried to the forward track and the CSVs, so it belongs beside '#' rather than adrift
+        in the middle of the analysis block. The rest keep the _LB_OPT_ORDER sequence, which
+        still holds ID ahead of the lazily computed columns — a '…' placeholder next to the ID
+        used to read as a truncated ID."""
         saved = self.cfg.get('lb_cols')
         on = set(saved) if isinstance(saved, list) else set(self._LB_OPT_DEFAULT)
-        return ('fav', 'rank', 'fit', 'test', *[c for c in self._LB_OPT_ORDER if c in on], 'formula')
+        head = ('id',) if 'id' in on else ()
+        rest = [c for c in self._LB_OPT_ORDER if c in on and c != 'id']
+        return ('fav', 'rank', *head, 'fit', 'test', *rest, 'formula')
 
     def _lb_toggle_col(self, c):
         """Header right-click menu: show/hide an optional column. Data, sorting and the CSV
@@ -3481,8 +3738,12 @@ class App:
             rows = [c for c in rows if self._LB_TESTKEY(c) is not None]
             rows.sort(key=self._LB_TESTKEY, reverse=True)        # top by held-out TEST OOS (cherry-pick)
         else:
+            act = 'winrate' if self.cfg.get('opt_winrate') else 'sharpe'
             rows = [c for c in rows if c.get('base') is not None]
-            rows.sort(key=lambda c: c.get('base'), reverse=True)  # top by honest fitness min(train,val)
+            # active objective first: winrate bases (<=1.0) and Sharpe bases (~1-2.5) are
+            # different units — one raw ladder sinks every row of the other mode
+            rows.sort(key=lambda c: ((c.get('fit_metric') or 'sharpe') != act,
+                                     -c.get('base')))
         families = self._families(rows, self._lb_target)
         self._lib_cache.update(all=rows, families=families, mtime=mtime, select=select,
                                computing=False, dirty=True, computed=True)
@@ -3544,14 +3805,18 @@ class App:
                 m = self._metrics_cache.get(formula)
             need = max(need, self._tree_font.measure(f))   # row; the two spaces are the gutter to
             #                                                the neighbour cell's right-flush value
-            ls, act, win, srt, tup, tdn, tfl = self._fmt_metrics(m)
+            ls, act, win, wup, wdn, srt, tup, tdn, tfl = self._fmt_metrics(m)
             dd = self._lb_test_ratio(c, m, 'dd', pct=True)
             cagr = self._lb_test_ratio(c, m, 'cagr', pct=True)
+            fitcell = ('—' if base is None                        # win-rate-mined rows carry a
+                       else f'{base * 100:.0f}%'                  # fit_metric tag: their 'base'
+                       if c.get('fit_metric') == 'winrate'        # is a share, not a Sharpe
+                       else f'{base:+.2f}')
             item = self.tree.insert('', 'end', values=(
                 ('★' if aid in self._fav_ids else ''),
-                i + 1, f'{base:+.2f}' if base is not None else '—',
+                i + 1, fitcell,
                 f'{ts:+.2f}' if ts is not None else '—', dd, cagr, srt,
-                tup, tdn, tfl, ls, act, win, aid, f),
+                tup, tdn, tfl, ls, act, win, wup, wdn, aid, f),
                 tags=tags)
             self._row_items[formula or ('id:' + aid)] = item
         self._lb_need_px = need + int(28 * self.SCALE)   # + cell padding / a breath of air
@@ -3617,7 +3882,7 @@ class App:
     def _pump_metrics(self):
         """After a redraw: compute the visible rows' stats. Sorting BY a stat column is the one case
         that needs every value at once (else the order is wrong), so there we compute the full set."""
-        if self._sort_col in ('ls', 'act', 'win', 'srt',
+        if self._sort_col in ('ls', 'act', 'win', 'wup', 'wdown', 'srt',
                               'tup', 'tdown', 'tflat', 'dd', 'cagr'):
             self._start_metrics(self._shown)
         else:
@@ -3642,16 +3907,25 @@ class App:
         return self._fmt_ratio(v, pct=pct)               # which read as truncated content
 
     @staticmethod
+    def _fmt_winpct(v):
+        return f'{v * 100:.0f}%' if isinstance(v, (int, float)) else '—'
+
+    @staticmethod
     def _fmt_metrics(m):
-        """('L/S', 'tr/yr·a', 'win%', 'sortino', 'T↑', 'T↓', 'T~') strings from the cache:
-        None=still computing, 'err'=failed."""
+        """('L/S', 'tr/yr·a', 'win%', 'win↑', 'win↓', 'sortino', 'T↑', 'T↓', 'T~') strings
+        from the cache: None=still computing, 'err'=failed."""
         if m is None:
-            return ('·',) * 7                            # still computing (quiet placeholder)
+            return ('·',) * 9                            # still computing (quiet placeholder)
         if m == 'err':
-            return ('—',) * 7
+            return ('—',) * 9
         a = m.get('act', 0.0)
         astr = f'{a:.1f}' if a < 10 else f'{a:.0f}'
-        return (f'{m["long"]:.0f}/{m["short"]:.0f}', astr, f'{m["win"] * 100:.0f}%',
+        if m.get('long_yr') is not None and m.get('short_yr') is not None:
+            ls = f'{m["long_yr"]:.1f}/{m["short_yr"]:.1f}'   # entries / asset / year, by side
+        else:                                            # a cache doc from an older worker
+            ls = f'{m["long"]:.0f}/{m["short"]:.0f}'
+        return (ls, astr, f'{m["win"] * 100:.0f}%',
+                App._fmt_winpct(m.get('wup')), App._fmt_winpct(m.get('wdown')),
                 App._fmt_ratio(m.get('sortino')), App._fmt_ratio(m.get('tup')),
                 App._fmt_ratio(m.get('tdown')), App._fmt_ratio(m.get('tflat')))
 
@@ -3747,10 +4021,12 @@ class App:
             if formula.startswith('id:'):                # locked row: no plaintext to simulate —
                 continue                                 # leave its '—' cells, don't repaint to '·'
             m = self._metrics_cache.get(formula)
-            ls, act, win, srt, tup, tdn, tfl = self._fmt_metrics(m)
+            ls, act, win, wup, wdn, srt, tup, tdn, tfl = self._fmt_metrics(m)
             self.tree.set(item, 'ls', ls)
             self.tree.set(item, 'act', act)
             self.tree.set(item, 'win', win)
+            self.tree.set(item, 'wup', wup)
+            self.tree.set(item, 'wdown', wdn)
             self.tree.set(item, 'srt', srt)
             self.tree.set(item, 'tup', tup)
             self.tree.set(item, 'tdown', tdn)
@@ -3761,7 +4037,7 @@ class App:
                         self.tree.set(item, col, self._fmt_ratio(m.get(col), pct=True))
         if seq != self._metrics_seq:
             return
-        if self._sort_col in ('ls', 'act', 'win', 'srt',
+        if self._sort_col in ('ls', 'act', 'win', 'wup', 'wdown', 'srt',
                               'tup', 'tdown', 'tflat', 'dd', 'cagr'):
             self._treesig = None
             self._render_lb(self._lb_rows() or self._shown)
@@ -3933,7 +4209,7 @@ class App:
             v = (c.get(seg) or {}).get('sharpe')
             return f'{v:+.2f}' if v is not None else '—'
         txt = (f"{c.get('formula', '')}\n"
-               f"fitness(base)={c.get('base')}  train={sh('train')}  val={sh('val')}  TEST(OOS)={sh('test')}")
+               f"fitness(base)={c.get('base')}{' (win rate)' if c.get('fit_metric') == 'winrate' else ''}  train={sh('train')}  val={sh('val')}  TEST(OOS)={sh('test')}")
         self._to_clipboard(txt, '✓ formula + metrics copied')
 
     # ---------- favorites (starred formulas) ----------
@@ -4001,9 +4277,12 @@ class App:
             for f in favdb.load(STATE_DIR):
                 t = f.get('test') if isinstance(f.get('test'), dict) else {}
                 ts, base = t.get('sharpe'), f.get('base')
+                fitc = ('—' if not isinstance(base, (int, float))
+                        else f'{base * 100:.0f}%' if f.get('fit_metric') == 'winrate'
+                        else f'{base:+.2f}')
                 iid = tv.insert('', 'end', values=(
                     f.get('added', '—'), favdb.alpha_id(f['formula']), f.get('tf', '—'),
-                    f'{base:+.2f}' if isinstance(base, (int, float)) else '—',
+                    fitc,
                     f'{ts:+.2f}' if isinstance(ts, (int, float)) else '—',
                     '  ' + f['formula']))
                 rows[iid] = f
@@ -4107,6 +4386,7 @@ class App:
             base = c.get('base')
             out.append([i + 1,
                         round(base, 4) if isinstance(base, (int, float)) else '',
+                        c.get('fit_metric', ''),
                         self._seg(c, 'train', 'sharpe'), self._seg(c, 'val', 'sharpe'),
                         self._seg(c, 'test', 'sharpe'), self._seg(c, 'test', 'dd'),
                         self._seg(c, 'test', 'cagr'),
@@ -4115,14 +4395,19 @@ class App:
                         round(m['tdown'], 3) if isinstance(m.get('tdown'), (int, float)) else '',
                         round(m['tflat'], 3) if isinstance(m.get('tflat'), (int, float)) else '',
                         m.get('long', ''), m.get('short', ''),
+                        round(m['long_yr'], 2) if isinstance(m.get('long_yr'), (int, float)) else '',
+                        round(m['short_yr'], 2) if isinstance(m.get('short_yr'), (int, float)) else '',
                         round(m['act'], 2) if 'act' in m else '',
                         round(m['win'] * 100, 1) if 'win' in m else '',
+                        round(m['wup'] * 100, 1) if isinstance(m.get('wup'), (int, float)) else '',
+                        round(m['wdown'] * 100, 1) if isinstance(m.get('wdown'), (int, float)) else '',
                         aid, fcell])
-        self._save_csv(path, ('rank', 'fitness', 'train_sharpe', 'val_sharpe', 'test_sharpe',
+        self._save_csv(path, ('rank', 'fitness', 'fit_metric', 'train_sharpe', 'val_sharpe', 'test_sharpe',
                               'test_dd', 'test_cagr', 'test_sortino',
                               'test_sh_trend_up', 'test_sh_trend_down',
-                              'test_sh_flat', 'long', 'short', 'tr_yr_a',
-                              'win_pct', 'id', 'formula'), out, 'rows')
+                              'test_sh_flat', 'long', 'short', 'long_yr_a', 'short_yr_a',
+                              'tr_yr_a', 'win_pct', 'win_up_pct', 'win_down_pct',
+                              'id', 'formula'), out, 'rows')
 
     def _export_library(self):
         """Everything the node has ever mined — no dedup, no TEST filter. The table on screen is a
@@ -4174,7 +4459,18 @@ class App:
     def _build_portfolio(self):
         if self._pf_proc and self._pf_proc.poll() is None:
             return                                       # already building
-        n = self._gi(self.v_pfn, 6)
+        # ttk.Spinbox enforces from_/to on its ARROWS only — a typed 150 reads back as 150,
+        # and went to the builder unchallenged. Two things then went quietly wrong: 'combo'
+        # caps its search pool at 30, so asking for a combination of anything above that
+        # silently stopped searching and took the whole pool ('pool has only 30 distinct
+        # alphas'), and the build simply took as long as the library was deep. Clamp to the
+        # advertised range and say so in the status line rather than in a modal.
+        raw = self._gi(self.v_pfn, 6)
+        n = max(self.PF_TOP_MIN, min(self.PF_TOP_MAX, raw))
+        clamped = '' if n == raw else (f'  ·  top {raw} is outside {self.PF_TOP_MIN}–'
+                                       f'{self.PF_TOP_MAX} — building {n}')
+        if clamped:
+            self.v_pfn.set(n)                            # the box shows what is being built
         sel = {'fitness': 'base', 'combo': 'combo'}.get(self.v_pfsel.get(), 'test')
         eng = ('real engine, ~1–2 min' if self._tf() == '1d'
                else f'{self._tf()} fastsim, ~seconds')
@@ -4187,7 +4483,7 @@ class App:
         self.lbl_pf.configure(text=(
             f'searching the best combination of {n} on TRAIN+VAL ({eng})…' if sel == 'combo'
             else f'building portfolio from top-{n} by '
-                 f'{"TEST" if sel == "test" else "fitness min(train,val)"} ({eng})…'))
+                 f'{"TEST" if sel == "test" else "fitness min(train,val)"} ({eng})…') + clamped)
         env = dict(os.environ)
         env.update(ALPHANODE_STATE_DIR=STATE_DIR, ALPHANODE_DATA=self._data_file(),
                    ALPHANODE_TF=self._tf(),
@@ -4274,8 +4570,69 @@ class App:
             text = (f'Sharpe {sh:+.2f}   ·   CAGR {m.get("cagr", 0) * 100:+.0f}%   ·   '
                     f'MaxDD {m.get("dd", 0) * 100:.0f}%      (vs buy&hold Sharpe {b.get("sharpe", 0):+.2f})')
         self.lbl_pf_m.configure(text=text, fg=(POS if (sh is not None and sh >= 0) else NEG))
+        self._fill_pf_members(doc, sh)
         threading.Thread(target=self._render_pf_equity, args=(doc, self._pf_width()),
                          daemon=True).start()
+
+    def _fill_pf_members(self, doc, combined_sharpe=None):
+        """One row per member: pick order, id, how it does ALONE on TEST, and the two numbers
+        the leaderboard shows for the same alpha. FITNESS/TEST OOS are joined from the library
+        by formula text — a member whose row has since been cleared shows dashes rather than
+        disappearing, because it is still in the built portfolio either way.
+
+        Rows whose SOLO Sharpe the combination beats are tinted: that is the diversification
+        gain, and it is the reason to combine at all."""
+        tree = getattr(self, 'pf_tree', None)
+        if tree is None:
+            return
+        tree.delete(*tree.get_children())
+        lib = {c['formula']: c for c in (self._lib_cache.get('all') or []) if c.get('formula')}
+        solo = doc.get('indiv_sharpe') or []
+        members = doc.get('formulas_full') or doc.get('formulas') or []
+        for i, f in enumerate(members):
+            c = lib.get(f) or {}
+            base = c.get('base')
+            t = c.get('test') if isinstance(c.get('test'), dict) else {}
+            ts = t.get('sharpe')
+            s0 = solo[i] if i < len(solo) else None
+            beaten = (isinstance(s0, (int, float)) and isinstance(combined_sharpe, (int, float))
+                      and combined_sharpe > s0)
+            tree.insert('', 'end', values=(
+                i + 1,
+                hashlib.md5(f.encode()).hexdigest()[:6],
+                f'{s0:+.2f}' if isinstance(s0, (int, float)) else '—',
+                ('—' if base is None else f'{base * 100:.0f}%'
+                 if c.get('fit_metric') == 'winrate' else f'{base:+.2f}'),
+                f'{ts:+.2f}' if isinstance(ts, (int, float)) else '—',
+                '  ' + f),
+                tags=(('pos',) if beaten else ('odd' if i % 2 else 'even',)))
+        # The table sizes itself to the membership so the usual top-6 needs no scrolling —
+        # but only up to PF_ROWS_MAX. 'top' does not enforce its own 2–20 range on a TYPED
+        # value, and an unbounded height turned a 150-member build into a card eight thousand
+        # pixels tall (measured: 8,462px against a 2,466px screen).
+        tree.configure(height=max(1, min(len(members), self.PF_ROWS_MAX)))
+        if len(members) > self.PF_ROWS_MAX:
+            self._pf_vsb.pack(side='right', fill='y', padx=(4, 0))
+        else:
+            self._pf_vsb.pack_forget()
+
+    def _pf_member_plot(self, _e=None):
+        """Double-click a member -> its own equity chart, the same one the leaderboard opens.
+        Only possible while the library still holds the row: the chart is re-simulated from
+        the champion doc, and a portfolio outlives the library it was built from."""
+        sel = self.pf_tree.selection()
+        if not sel:
+            return
+        i = self.pf_tree.index(sel[0])
+        members = (self._pf_doc or {}).get('formulas_full') or []
+        if i >= len(members):
+            return
+        c = next((x for x in (self._lib_cache.get('all') or [])
+                  if x.get('formula') == members[i]), None)
+        if c is None:
+            self._flash_lb('that member is no longer in the library — nothing to chart')
+            return
+        self._open_plot(c)
 
     def _pf_width(self):
         """Target equity-image width = current panel width (so it fills the space, expandable)."""
@@ -4953,6 +5310,10 @@ class App:
                                  f"   ·   T↓ {self._fmt_ratio(_m.get('tdown'))}"
                                  f"   ·   T~ {self._fmt_ratio(_m.get('tflat'))}  (Sharpe)",
                       text_color=MUT, anchor='w', font=(self.UI, 11)).pack(anchor='w')
+        if isinstance(_m, dict) and any(_m.get(k) is not None for k in ('wup', 'wdown')):
+            self._lbl(head, text=f"win rate by direction:   W↑ {self._fmt_winpct(_m.get('wup'))}"
+                                 f"   ·   W↓ {self._fmt_winpct(_m.get('wdown'))}",
+                      text_color=MUT, anchor='w', font=(self.UI, 11)).pack(anchor='w')
         self._lbl(head, text=champ.get('formula', ''), text_color=MUT, justify='left', anchor='w',
                      wraplength=img_w - 30, font=(self.MONO, 12)).pack(anchor='w', pady=(6, 0))
         btnrow = self._box(head)
@@ -5116,7 +5477,11 @@ class App:
                 pass
         entry = ft.new_entry(entry_id or name, kind, formulas, tickers,
                              c.get('target_vol', 0.25),
-                             c.get('exec_cost', 0.001), start, tf=tf, entry_id=entry_id)
+                             c.get('exec_cost', 0.001), start, tf=tf, entry_id=entry_id,
+                             session=self._session_id())   # the GUI's own dir: with an exported
+        #                                                    ALPHANODE_STATE_DIR the module-level
+        #                                                    default could stamp a DIFFERENT
+        #                                                    directory's epoch than the header shows
         track['entries'].append(entry)
         ft.save_track(track)
         self._fwd_refresh()
@@ -5185,7 +5550,7 @@ class App:
             tf = e.get('tf', '1d')
             kind = e['kind'] if tf == '1d' else f'{e["kind"]}·{tf}'
             self.fwd_tree.insert('', 'end', iid=e['id'], values=(
-                e['id'], kind, e['enrolled'], m['days'],
+                e['id'], kind, e.get('session') or '—', e['enrolled'], m['days'],
                 f'${m["equity"]:,.0f}', f'{m["ret"] * 100:+.1f}%',
                 (f'{m["sharpe"]:+.2f}' if m['sharpe'] is not None else '—'),
                 (f'{m["dd"] * 100:.0f}%' if m['dd'] is not None else '—'),

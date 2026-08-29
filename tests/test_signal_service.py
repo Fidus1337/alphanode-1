@@ -230,3 +230,96 @@ def test_compute_from_dfs_fast_smoke(fake_market):
         assert p['side'] == ('LONG' if p['weight'] > 0 else 'SHORT')
     weights = [abs(p['weight']) for p in sig['positions']]
     assert weights == sorted(weights, reverse=True)        # served biggest-first
+
+
+# ---- the GUI card: a green 'serving', and no more than ten services ---------------------
+
+import types
+
+import pytest
+
+
+@pytest.mark.gui
+def test_serving_reads_green_and_only_serving(gui_app):
+    """'Is my API up?' should be readable from across the room: green belongs to '● serving'
+    alone — a warning is loss-coloured, a stopped process fades, transitions stay neutral."""
+    app, _rec, _state = gui_app
+    import alphanode_gui as G
+    assert app._sig_status_color('● serving · updated …Z (6s ago)') == G.POS
+    assert app._sig_status_color('● serving') == G.POS
+    assert app._sig_status_color('⚠ data source unreachable') == G.NEG
+    assert app._sig_status_color('○ stopped (the process exited) — port is free') == G.FAINT
+    for neutral in ('starting…', '⏳ computing the first signal…', 'reconnecting…'):
+        assert app._sig_status_color(neutral) == G.MUT
+
+
+@pytest.mark.gui
+def test_the_row_label_actually_wears_the_color(gui_app):
+    app, _rec, _state = gui_app
+    import alphanode_gui as G
+    app._sigs.append({'port': 8799, 'proc': types.SimpleNamespace(poll=lambda: None, pid=1),
+                      'pid': 1, 'label': 'alpha_x', 'n_formulas': 1, 'n_tickers': 5,
+                      'started': '2026-08-29 17:22'})
+    app._sig_health[8799] = '● serving'
+    app._render_signal_rows()
+    app.root.update_idletasks()
+    assert app._sig_status_lbl[8799].cget('fg') == G.POS
+    app._sig_health[8799] = '⚠ trouble'
+    app._sig_shown = tuple(s['port'] for s in app._sigs)  # same set -> tick refreshes in place
+    app._sig_tick()
+    assert app._sig_status_lbl[8799].cget('fg') == G.NEG
+    app._sigs.clear()
+
+
+def _fake_sig(port, dead=False):
+    return {'port': port, 'proc': types.SimpleNamespace(poll=lambda: (0 if dead else None)),
+            'pid': port, 'label': f'alpha_{port}', 'n_formulas': 1, 'n_tickers': 5}
+
+
+@pytest.mark.gui
+def test_the_eleventh_service_is_refused(gui_app, monkeypatch):
+    """Ten engine processes re-simulating every refresh is already a small server farm —
+    the eleventh gets a warning naming the way out, and no process is spawned."""
+    app, rec, _state = gui_app
+    import alphanode_gui as G
+    app._sigs.extend(_fake_sig(8800 + i) for i in range(app.SIG_MAX))
+    monkeypatch.setattr(G.subprocess, 'Popen',
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError('spawned!')))
+    app._serve_signal(['tanh(low)'], 'one_too_many')
+    kind, title, msg = rec.calls[-1]
+    assert kind == 'showwarning' and 'limit' in msg and 'Free a port' in msg
+    assert len(app._sigs) == app.SIG_MAX
+    app._sigs.clear()
+
+
+@pytest.mark.gui
+def test_dead_rows_do_not_count_against_the_cap(gui_app, monkeypatch):
+    """A row whose process exited still sits in the list saying 'port is free' — it must not
+    occupy a slot, or ten dead rows would lock the feature shut."""
+    app, rec, _state = gui_app
+    import alphanode_gui as G
+    app._sigs.extend(_fake_sig(8800 + i, dead=True) for i in range(app.SIG_MAX))
+    spawned = {}
+
+    def fake_popen(*a, **k):
+        spawned['yes'] = True
+        return types.SimpleNamespace(pid=424242, poll=lambda: None)
+
+    monkeypatch.setattr(G.subprocess, 'Popen', fake_popen)
+    app._serve_signal(['tanh(low)'], 'fits_fine')
+    assert spawned.get('yes')                            # the cap ignored the corpses
+    assert not [c for c in rec.calls if c[0] in ('showwarning', 'showerror')]
+    app._sigs.clear()
+
+
+@pytest.mark.gui
+def test_reshowing_an_existing_label_is_never_capped(gui_app, monkeypatch):
+    """Serving something already served just re-renders the card — even at the limit."""
+    app, rec, _state = gui_app
+    import alphanode_gui as G
+    app._sigs.extend(_fake_sig(8800 + i) for i in range(app.SIG_MAX))
+    monkeypatch.setattr(G.subprocess, 'Popen',
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError('spawned!')))
+    app._serve_signal(['tanh(low)'], 'alpha_8801')       # that label is already on a row
+    assert not [c for c in rec.calls if c[0] == 'showwarning']
+    app._sigs.clear()

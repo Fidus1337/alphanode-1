@@ -102,6 +102,9 @@ def load_config(path=None):
         'fit_se_penalty': cp.getfloat('fitness', 'se_penalty', fallback=1.0),
         'fit_conc_penalty': cp.getfloat('fitness', 'conc_penalty', fallback=0.3),
         'fit_min_eff_n': cp.getfloat('fitness', 'min_eff_n', fallback=3.0),
+        # what base_fit measures: 'sharpe' (default) or 'winrate' — per-bar share of
+        # winning active bars, min(TRAIN, VAL), same number the leaderboard's win% shows
+        'fit_metric': (cp.get('fitness', 'metric', fallback='sharpe') or 'sharpe').strip().lower(),
         # final coordinate-descent tuning of champions' windows (continuous, off-grid)
         'window_polish': cp.getboolean('search', 'window_polish', fallback=True),
     }

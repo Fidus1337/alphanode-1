@@ -167,6 +167,46 @@ def _sharpe(r, ann=ANN):
     return (r.mean() * ann) / (s * np.sqrt(ann))
 
 
+def _winrate(r):
+    """Raw per-bar win rate: the share of ACTIVE bars (|r| > 1e-9) that gained — the SAME
+    definition the leaderboard's win% column shows (metrics_worker). Display/diagnostic
+    only: the SELECTION score is _wr_score below."""
+    a = np.abs(r) > 1e-9
+    if int(a.sum()) < 5:
+        return np.nan
+    return float((r[a] > 0).mean())
+
+
+WR_MIN_ACT = 30         # under this many active bars a segment/block is not evidence at all
+
+
+def _wr_score(r, se_penalty=1.0):
+    """SELECTION score for the win-rate objective on one segment (or block).
+
+    The raw win rate strips flat bars from its denominator — exactly the sparse-Sharpe
+    inflation the calendar convention above was introduced to kill: a coin-flip genome
+    active on 10% of bars clears min(TRAIN,VAL) wr >= 0.62 at p~2e-3, so a 200k-eval
+    search fills the HoF with sparse luck while a dense genuine 55%-edge (~0.54 observed)
+    can never enter (confirmed by review Monte Carlo). Three honesty layers fix that:
+      1) calendar damping — the edge over a coin flip shrinks by sqrt(active share),
+         the same convention that fixed sparse Sharpe: 62% of 40 bars < 55% of 700;
+      2) binomial SE shrinkage with an add-one prior p~=(k+1)/(n+2) — keeps the SE
+         alive at w=0/1, so a 5/5 streak reads as luck, not certainty;
+      3) under WR_MIN_ACT active bars: NaN — no evidence, the genome is invalid.
+    Result stays in win-rate units (~0..1), formattable as a percentage."""
+    x = np.asarray(r, dtype=np.float64)
+    a = np.abs(x) > 1e-9
+    n_act = int(a.sum())
+    if n_act < WR_MIN_ACT:
+        return np.nan
+    k = int((x[a] > 0).sum())
+    wr = k / n_act
+    pt = (k + 1.0) / (n_act + 2.0)
+    se = np.sqrt(pt * (1.0 - pt) / n_act)
+    damp = np.sqrt(n_act / max(len(x), 1))
+    return float(0.5 + (wr - 0.5) * damp - se_penalty * se)
+
+
 def _metrics(r, ann=ANN):
     act = int((r != 0).sum())
     s = r.std()
@@ -189,7 +229,7 @@ def _metrics(r, ann=ANN):
 # lucky slices lose the most), and the fitness is the `quantile` of the shrunk values
 # (0 = strict worst block). One golden regime can no longer carry a formula: it has to
 # work, at least modestly, almost everywhere. blocks = 0 restores min(TRAIN, VAL).
-def _block_fitness(sel, ann, blocks, quantile, se_penalty):
+def _block_fitness(sel, ann, blocks, quantile, se_penalty, metric='sharpe'):
     n = len(sel)
     if n < blocks * 30:                                # too short to measure per block
         return None
@@ -197,6 +237,13 @@ def _block_fitness(sel, ann, blocks, quantile, se_penalty):
     adj = []
     for a, b in zip(edges[:-1], edges[1:]):
         r = sel.iloc[a:b]
+        if metric == 'winrate':
+            s = _wr_score(r, se_penalty)
+            if not np.isfinite(s):                     # under WR_MIN_ACT active bars: a noisy
+                n_act = int((np.abs(np.asarray(r)) > 1e-9).sum())   # coin flip — neutral minus
+                s = 0.5 - se_penalty * np.sqrt(0.25 / max(n_act, 5))  # noise, never a prize
+            adj.append(s)
+            continue
         sh = _sharpe(r, ann)
         if not np.isfinite(sh):
             sh = 0.0                                   # no evidence in this slice ≠ disaster
@@ -332,13 +379,24 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lamb
     if m_tr is None or m_va is None:
         return None
 
-    base_fit = min(m_tr['sharpe'], m_va['sharpe'])     # legacy fitness (blocks = 0)
+    metric = (fit or {}).get('metric', 'sharpe')
+    if metric == 'winrate':
+        sp = float((fit or {}).get('se_penalty', 1.0))
+        wr_tr, wr_va = _wr_score(tr, sp), _wr_score(va, sp)   # evidence-shrunk win rate
+        if not (np.isfinite(wr_tr) and np.isfinite(wr_va)):
+            return None
+        base_fit = min(wr_tr, wr_va)                   # the score must hold on BOTH segments
+    else:
+        base_fit = min(m_tr['sharpe'], m_va['sharpe'])  # legacy fitness (blocks = 0)
+    # penalties below are calibrated in Sharpe units (a ~2.5-wide scale); win rate lives
+    # on ~0.25 (0.40..0.65), so every subtraction shrinks 10x or it swamps the signal
+    scale = 0.1 if metric == 'winrate' else 1.0
     blocks_adj = eff_n = None
     if fit and int(fit.get('blocks', 0)) >= 2:
         sel = ret[(ret.index >= splits['train'][0]) & (ret.index < splits['test'][0])]
         bf = _block_fitness(sel, ann, int(fit['blocks']),
                             float(fit.get('quantile', 0.25)),
-                            float(fit.get('se_penalty', 1.0)))
+                            float(fit.get('se_penalty', 1.0)), metric=metric)
         if bf is None:
             return None
         base_fit, blocks_adj = bf
@@ -348,7 +406,7 @@ def evaluate(node, tk, panel, market, splits, vol, exec_rate, ann=ANN, ewma_lamb
         eff_n = round(_mean_eff_n(A, market['base_elig'], rows), 2)
         need = float(fit.get('min_eff_n', 3.0))
         if eff_n < need:                               # one-coin books bleed fitness
-            base_fit -= float(fit['conc_penalty']) * (need - eff_n) / need
+            base_fit -= scale * float(fit['conc_penalty']) * (need - eff_n) / need
 
     rv = pd.concat([tr, va])                    # vector for correlation/novelty
     return {

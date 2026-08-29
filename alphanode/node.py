@@ -318,8 +318,8 @@ def load_existing():
                 leaderboard.append(c)
             except json.JSONDecodeError:
                 pass
-    leaderboard.sort(key=_basesh, reverse=True)        # selection by fitness min(train,val), NOT by TEST
-    del leaderboard[KEEP:]
+    leaderboard.sort(key=_rank_key)                    # active objective first, then fitness;
+    del leaderboard[KEEP:]                             # never by TEST
     if os.path.exists(HIST):
         for line in open(HIST, encoding='utf-8'):
             line = line.strip()
@@ -348,11 +348,34 @@ def load_existing():
     status['history'] = history[-300:]
 
 
-def champions_from_hof(hof):
+FIT_METRIC = (env('ALPHANODE_FIT_METRIC', '') or 'sharpe').strip().lower() or 'sharpe'
+
+
+def _rank_key(c):
+    """Leaderboard order: rows mined under the ACTIVE objective first (their 'base' values
+    share a scale), then by base. Winrate bases (<= 1.0) and Sharpe bases (~1-2.5) are
+    different units — one raw ladder drowned every winrate champion under old Sharpe rows,
+    so refine kept seeding Sharpe formulas during a winrate run (confirmed by review)."""
+    return ((c.get('fit_metric') or 'sharpe') != FIT_METRIC, -_basesh(c))
+
+
+def _fmt_fit(c, v):
+    """A row's fitness, in its own units: '57%' for winrate-mined rows, '+1.85' Sharpe."""
+    if v is None or v <= -1e8:
+        return '—'
+    if (c.get('fit_metric') or 'sharpe') == 'winrate':
+        return f'{v * 100:.0f}%'
+    return f'{v:+.2f}'
+
+
+def champions_from_hof(hof, metric='sharpe'):
+    # 'fit_metric' tags what 'base' measures: a library mixes rows mined under different
+    # objectives (Sharpe ~1.5 vs win rate ~0.55 are different scales), the tag lets every
+    # display format the number honestly
     return [{'rank': i, 'formula': h['canon'], 'size': h['size'], 'base': round(h['base'], 3),
              'train': _rm(h.get('train')), 'val': _rm(h.get('val')), 'test': _rm(h.get('test')),
              'blocks': h.get('blocks'), 'eff_n': h.get('eff_n'),   # robust-fitness evidence
-             'origin': h.get('origin', 'ga')}
+             'origin': h.get('origin', 'ga'), 'fit_metric': metric}
             for i, h in enumerate(hof)]
 
 
@@ -399,6 +422,8 @@ def _apply_overrides(cfg):
     _override(cfg, 'corr_penalty', 'CORR_PENALTY', float)
     _override(cfg, 'hof_cap', 'HOF_CAPACITY', int)
     _override(cfg, 'fit_blocks', 'FIT_BLOCKS', int)    # robust fitness; 0 = legacy min(train,val)
+    _override(cfg, 'fit_metric', 'FIT_METRIC',         # 'sharpe' | 'winrate'
+              lambda s: s.strip().lower())
     _apply_segments(cfg)
 
 
@@ -428,7 +453,7 @@ def _html_formula(c):
 def render_html():
     rows = ''.join(
         f"<tr><td>{i + 1}</td>"
-        f"<td class=t>{('%+.2f' % _basesh(c)) if _basesh(c) > -1e8 else '—'}</td>"
+        f"<td class=t>{_fmt_fit(c, _basesh(c))}</td>"
         f"<td>{('%+.2f' % _testsh(c)) if _testsh(c) > -1e8 else '—'}</td>"
         f"<td class=f>{_html_formula(c)}</td></tr>"
         for i, c in enumerate(leaderboard[:KEEP]))
@@ -748,7 +773,7 @@ def main():
 
         new = 0
         with open(LIB, 'a', encoding='utf-8') as f:
-            for c in champions_from_hof(hof):
+            for c in champions_from_hof(hof, metric=cfg.get('fit_metric', 'sharpe')):
                 if c['formula'] in seen or _id_key(c['formula']) in seen:
                     continue                             # already mined (plaintext OR a locked doc)
                 seen.add(c['formula'])
@@ -756,14 +781,14 @@ def main():
                 f.write(json.dumps(_disk_doc(c), ensure_ascii=False) + '\n')
                 leaderboard.append(c)                    # memory keeps plaintext (refine seeding)
                 new += 1
-        leaderboard.sort(key=_basesh, reverse=True)    # champion = best by min(train,val); TEST closed
-        del leaderboard[KEEP:]
+        leaderboard.sort(key=_rank_key)                # champion = best under the ACTIVE objective;
+        del leaderboard[KEEP:]                         # TEST closed
         champ = leaderboard[0] if leaderboard else None
         bb = _basesh(champ) if champ else None          # optimized fitness
         bt = _testsh(champ) if champ else None          # honest held-out OOS of the same champion (read-only)
         bb_val = round(bb, 3) if (bb is not None and bb > -1e8) else None
         bt_val = round(bt, 3) if (bt is not None and bt > -1e8) else None
-        bb_s = f'{bb_val:+.2f}' if bb_val is not None else '—'
+        bb_s = _fmt_fit(champ or {}, bb) if bb_val is not None else '—'
         bt_s = f'{bt_val:+.2f}' if bt_val is not None else '—'
         entry = {'round': rnd, 'best_base': bb_val, 'best_test': bt_val,
                  'found': len(seen), 'mode': mode, 'ts': iso()}
@@ -777,7 +802,7 @@ def main():
                       # status.json reaches disk AND the :8787 status HTTP — vault mode must
                       # seal here too, or the library lock would leak through the side door
                       found=len(seen), best=[_disk_doc(c) for c in leaderboard[:KEEP]],
-                      best_base=bb_val, best_test=bt_val,
+                      best_base=bb_val, best_test=bt_val, fit_metric=FIT_METRIC,
                       history=history[-300:],
                       current=f'round {rnd} done [{mode}]: +{new} new · fitness {bb_s} · '
                               f'TEST(OOS) {bt_s} · {time.time()-t0:.0f}s')

@@ -75,8 +75,17 @@ def save_track(track):
     os.replace(tmp, path)
 
 
+def _current_session():
+    """The current session id, '' when unavailable (see the stamp's comment in new_entry)."""
+    try:
+        from sessions import current_session_id
+        return current_session_id(_state_dir())
+    except Exception:                                    # noqa: BLE001
+        return ''
+
+
 def new_entry(name, kind, formulas, tickers, vol, exec_rate, engine_start,
-              capital=START_CAPITAL, tf='1d', entry_id=None):
+              capital=START_CAPITAL, tf='1d', entry_id=None, session=None):
     """A frozen strategy: everything a step needs, snapshotted at enrollment.
     entry_id: explicit id (the GUI passes the leaderboard's md5(formula)[:6], so the
     forward track and the leaderboard read as ONE list); legacy callers get name_sig."""
@@ -91,6 +100,11 @@ def new_entry(name, kind, formulas, tickers, vol, exec_rate, engine_start,
         'engine_start': str(engine_start)[:10],          # warm-up start for the simulation
         'start_capital': float(capital),
         'enrolled': datetime.now(timezone.utc).date().isoformat(),
+        # which working session enrolled it. The track OUTLIVES sessions — Clear all history
+        # spares it and a session load merges rather than replaces it — so entries from many
+        # sessions pile up in one list, and this stamp is what still says where each came
+        # from. Guarded: a missing/unimportable sessions module must never block an enroll.
+        'session': _current_session() if session is None else str(session),
         'archived': False,
         'state': {'equity': float(capital), 'positions': {}, 'prices': {}, 'last_run': None},
         'history': [],

@@ -102,11 +102,25 @@ def trend_bar_counts(ctx):
             'flat': int((lab == 0.0).sum())}
 
 
+def regime_winrate(x):
+    """Per-bar win rate of a return slice: the share of ACTIVE bars (|r| > 1e-9) that
+    gained. None under 30 bars in the regime (the same evidence floor as regime_sharpe)
+    or under 5 bars where the formula actually traded there."""
+    if x.size < 30:
+        return None
+    a = np.abs(x) > 1e-9
+    if int(a.sum()) < 5:
+        return None
+    return float((x[a] > 0).mean())
+
+
 def trade_stats(formula, ctx):
-    """{long, short, win, act, dd, cagr, sortino, tup, tdown, tflat} for one formula on
-    TEST — act = trades per asset per year (relative activity, universe/period independent);
-    dd/cagr/sortino from the same simulated TEST equity; tup/tdown/tflat = Sharpe by market
-    DIRECTION regime (see trend_split). 'err' if it doesn't parse or never trades."""
+    """{long, short, long_yr, short_yr, win, wup, wdown, act, dd, cagr, sortino, tup,
+    tdown, tflat} for one formula on TEST — act = trades per asset per year (relative
+    activity, universe/period independent), long_yr/short_yr the same rate split by side;
+    dd/cagr/sortino from the same simulated TEST equity; tup/tdown/tflat = Sharpe and
+    wup/wdown = win rate by market DIRECTION regime (see trend_split / regime_winrate).
+    'err' if it doesn't parse or never trades."""
     from genome import parse
     from evaluator import eval_alpha_panel
     from fastsim import fast_sim
@@ -138,11 +152,17 @@ def trade_stats(formula, ctx):
         sortino = (float(rt.mean()) * ctx['ann'] / (dstd * np.sqrt(ctx['ann']))
                    if dstd > 1e-12 else None)                               # no losing bars -> null
 
-        ts = trend_split(rt, ctx['trend'][tmask], ctx['ann'])               # labels pre-lagged
+        lab = ctx['trend'][tmask]                                           # labels pre-lagged
+        ts = trend_split(rt, lab, ctx['ann'])
+        wup = regime_winrate(rt[lab == 1])                                  # win rate when the
+        wdown = regime_winrate(rt[lab == -1])                               # market trends up/down
 
         def _fin(v):                                                        # JSON-safe: NaN/inf -> null
             return float(v) if (v is not None and np.isfinite(v)) else None
         return {'long': long_tr, 'short': short_tr, 'win': win, 'act': act,
+                'long_yr': _fin(long_tr / ctx['n_assets'] / ctx['years']),  # entries / asset / year,
+                'short_yr': _fin(short_tr / ctx['n_assets'] / ctx['years']),  # split by side
+                'wup': _fin(wup), 'wdown': _fin(wdown),
                 'dd': _fin(dd), 'cagr': _fin(cagr), 'sortino': _fin(sortino),
                 'tup': _fin(ts['tup']), 'tdown': _fin(ts['tdown']), 'tflat': _fin(ts['tflat'])}
     except Exception:                                                   # noqa: BLE001

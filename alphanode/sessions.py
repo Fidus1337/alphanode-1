@@ -35,6 +35,7 @@ import io
 import json
 import os
 import re
+import secrets
 import shutil
 import tarfile
 import tempfile
@@ -49,8 +50,44 @@ from version import __version__
 _STATE_PATTERNS = (re.compile(r'^library(_[A-Za-z0-9]+)?\.jsonl$'),
                    re.compile(r'^history(_[A-Za-z0-9]+)?\.jsonl$'),
                    re.compile(r'^forward\.json$'),
-                   re.compile(r'^portfolio\.json$'))
-_TRANSIENT = ('status.json',)                            # never archived; cleared on restore
+                   re.compile(r'^portfolio\.json$'),
+                   re.compile(r'^favorites\.json$'),
+                   re.compile(r'^status\.json$'),
+                   re.compile(r'^session_id$'))
+# favorites.json is session-owned. A star points at a formula in the library,
+# and it used to outlive the library it pointed into: load a different workspace and the
+# ★ list still held rows mined on another basket, another cut, sometimes another timeframe.
+# Now a session carries its own stars — saving keeps them, loading swaps them. Restore is a
+# wholesale swap of owned files, so loading an archive written before this change (it has
+# no favorites.json in it) leaves the workspace with none; that is the same rule every
+# other owned file follows, and the load dialog says the workspace is replaced.
+# status.json is session-owned too. It was 'transient' — never archived, wiped on restore —
+# because it describes a RUNNING node, and a restored 'running' would have the window claiming
+# a search that is not happening. But it is also the only home of what the top of the board
+# shows: ROUNDS, FORMULAS TRIED, ALPHAS FOUND, BEST FITNESS, the live log and the round ticker.
+# Dropping it meant a loaded session came back with its library, portfolio and forward track
+# intact above four zeros and an empty log. So it travels, and restore neutralises the one
+# field that could lie (see _settle_status); the GUI already dims a non-live status and
+# prefixes it 'last run —'.
+#
+# signals.json stays local on purpose and must not be added here: it is a registry of PIDs of
+# signal services running on THIS machine, and a pid from another machine or another boot is
+# either meaningless or somebody else's process.
+#
+# session_id names the CURRENT working session — the epoch of work between beginnings.
+# An epoch begins at first run, at 'Clear all history' (begin_new_session), or by loading an
+# archive (this file is owned, so the swap adopts the archive's epoch; an archive from before
+# epochs carries none, and the next current_session_id() call honestly mints a fresh one).
+# Reopening the app or pressing Start again is NOT a new session — it continues the same work.
+# Forward-track entries stamp this id at enrollment, which is what makes them traceable once
+# the track outlives the session that enrolled them (see the forward.json note below).
+#
+# forward.json is the exception to restore's wholesale-swap rule: it is ARCHIVED on save (a
+# session that travels carries its paper history) but MERGED on load, never replaced. The
+# track is a live, append-only ledger — its steps happen in real time and can never be
+# recomputed — so loading a session must not kill the strategies currently stepping. Entries
+# are united by id; an id present on both sides keeps the copy with the LONGER history
+# (append-only means the longer one contains the shorter — the shorter is a stale prefix).
 SECRET_KEYS = ('vault_license',)                         # never inside an archive
 
 MAX_MEMBERS = 64                                         # a snapshot writes ~a dozen
@@ -108,7 +145,117 @@ def _slug(name):
     return s
 
 
-def build_manifest(name, note, auto, state_dir, settings_path):
+def _mint_sid(state_dir):
+    """A fresh 6-hex epoch id, re-rolled against every id already on disk — the archives'
+    and their recorded sessions' — so no two SESSIONS ever share one. With a handful of
+    archives the re-roll never fires, but 'unique' should not be a promise made by
+    probability alone. Six characters: the same shape an alpha, a forward entry and a
+    portfolio member carry, so ids read alike everywhere."""
+    taken = set()
+    for m in list_sessions(state_dir):
+        taken.add(m.get('id'))
+        taken.add(m.get('session'))
+    for _ in range(64):
+        sid = secrets.token_hex(3)
+        if sid not in taken:
+            return sid
+    return secrets.token_hex(6)                          # 64 collisions in a row: widen, not loop
+
+
+_SID_RE = re.compile(r'^[0-9a-f]{6,12}$')
+
+
+def current_session_id(state_dir=None):
+    """The id of the CURRENT working session, minted on first need and kept in
+    state/session_id. Six hex characters — the same shape an alpha, an archive and a
+    portfolio member carry, so ids read alike everywhere. Atomic write + re-read: if two
+    processes mint at once (the GUI and a CLI enroll), the write that lands last wins for
+    both readers."""
+    state_dir = state_dir or apppaths.state_dir()
+    path = os.path.join(state_dir, 'session_id')
+    try:
+        sid = open(path, encoding='utf-8').read().strip()
+    except OSError:
+        sid = ''
+    if _SID_RE.match(sid):
+        return sid
+    fresh = _mint_sid(state_dir)
+    try:
+        fd, tmp = tempfile.mkstemp(dir=state_dir, prefix='.sid-')
+        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
+            fh.write(fresh)
+        os.replace(tmp, path)
+    except OSError:
+        return fresh                                     # unwritable dir: an id for this call
+    try:
+        got = open(path, encoding='utf-8').read().strip()
+        if _SID_RE.match(got):
+            return got
+    except OSError:
+        pass
+    return fresh
+
+
+def begin_new_session(state_dir=None):
+    """Start a NEW epoch — 'Clear all history' calls this. The search that follows is a
+    different session, and forward entries enrolled from it must say so."""
+    state_dir = state_dir or apppaths.state_dir()
+    try:
+        os.remove(os.path.join(state_dir, 'session_id'))
+    except OSError:
+        pass
+    return current_session_id(state_dir)
+
+
+def _fwd_entries(src):
+    """The entry dicts of one track side — [] for every corrupt shape ('entries': null, a
+    number, a list of strings): a merge must degrade the way every other corrupt-input path
+    on the restore road does, never TypeError after the swap already happened."""
+    e = src.get('entries') if isinstance(src, dict) else None
+    return [x for x in e if isinstance(x, dict)] if isinstance(e, list) else []
+
+
+def _hist_len(e):
+    h = e.get('history')
+    return len(h) if isinstance(h, list) else 0
+
+
+def _same_enrollment(a, b):
+    """Same FROZEN strategy, enrolled the same day — only then are two histories the same
+    append-only stream and comparable by length."""
+    return all(a.get(k) == b.get(k) for k in
+               ('formulas', 'tickers', 'tf', 'vol', 'exec', 'enrolled', 'start_capital'))
+
+
+def _merge_forward(local, incoming):
+    """Union of two forward tracks by entry id — restore's merge (see the note atop the
+    module). Local entries keep their positions (they are what the user watches every day);
+    the archive's own entries follow. None if there is nothing on either side.
+
+    Same id does NOT mean same strategy: an alpha's entry id is md5(formula)[:6] whatever
+    the timeframe, universe or fees, so an old archive can carry a DIFFERENT enrollment
+    under a live entry's id. Only a copy of the SAME enrollment may replace the live one —
+    and only by being further along its append-only history. Anything else keeps the live
+    entry: a load must never displace what is stepping."""
+    if not (isinstance(local, dict) or isinstance(incoming, dict)):
+        return None
+    by_id, order = {}, []
+    for e in _fwd_entries(local):
+        eid = str(e.get('id'))
+        if eid not in by_id:
+            by_id[eid] = e
+            order.append(eid)
+    for e in _fwd_entries(incoming):
+        eid = str(e.get('id'))
+        if eid not in by_id:
+            by_id[eid] = e
+            order.append(eid)
+        elif _same_enrollment(by_id[eid], e) and _hist_len(e) > _hist_len(by_id[eid]):
+            by_id[eid] = e                               # the longer copy of the SAME stream
+    return {'entries': [by_id[i] for i in order]}
+
+
+def build_manifest(name, note, auto, state_dir, settings_path, sid=''):
     alphas = {}
     for f in _owned_state_files(state_dir):
         b = os.path.basename(f)
@@ -127,10 +274,23 @@ def build_manifest(name, note, auto, state_dir, settings_path):
         fwd['equity'] = round(sum(eqs), 2) if eqs else None
     except Exception:                                    # noqa: BLE001
         pass
-    return {'name': name or '', 'note': note or '', 'auto': bool(auto),
+    try:
+        doc = json.load(open(os.path.join(state_dir, 'favorites.json'), encoding='utf-8'))
+        favs = sum(1 for f in doc.get('favorites', []) if isinstance(f, dict) and f.get('formula'))
+    except Exception:                                    # noqa: BLE001 — absent/corrupt = none
+        favs = 0
+    run = {}
+    try:                                                 # how far the search got, for the list
+        st = json.load(open(os.path.join(state_dir, 'status.json'), encoding='utf-8'))
+        run = {k: st.get(k) for k in ('rounds', 'trials_total', 'found')}
+        run['tf'] = st.get('tf')
+    except Exception:                                    # noqa: BLE001 — no run yet
+        pass
+    return {'id': sid, 'session': current_session_id(state_dir),
+            'name': name or '', 'note': note or '', 'auto': bool(auto),
             'created': datetime.now(timezone.utc).isoformat(timespec='seconds'),
-            'version': __version__, 'alphas': alphas, 'forward': fwd,
-            'fp': workspace_fingerprint(state_dir, settings_path)}
+            'version': __version__, 'alphas': alphas, 'forward': fwd, 'favorites': favs,
+            'run': run, 'fp': workspace_fingerprint(state_dir, settings_path)}
 
 
 def _read_manifest(path):
@@ -145,7 +305,13 @@ def _read_manifest(path):
             if len(raw) > MAX_META_BYTES:
                 return None
             man = json.loads(raw)
-            return man if isinstance(man, dict) else None
+            if not isinstance(man, dict):
+                return None
+            if not man.get('id'):                        # archived before ids existed: derive a
+                man['id'] = hashlib.md5(                 # stable one from the filename, so the
+                    os.path.basename(path).encode()).hexdigest()[:6]   # column is never blank
+                man['id_derived'] = True                 # …and the details panel can say so
+            return man
     except Exception:                                    # noqa: BLE001
         return None
 
@@ -180,18 +346,27 @@ def snapshot(name='', note='', auto=False, state_dir=None, settings_path=None, k
     (same content fingerprint) or archiving a workspace that owns no files at all."""
     state_dir = state_dir or apppaths.state_dir()
     settings_path = settings_path or apppaths.settings_file()
-    if skip_unchanged:
+    sid = current_session_id(state_dir)                  # ensure the epoch file exists: the
+    if skip_unchanged:                                   # fingerprint and the tar both carry it
         if not _owned_state_files(state_dir):
             return None
         if workspace_fingerprint(state_dir, settings_path) == _newest_fingerprint(state_dir):
             return None
-    man = build_manifest(name, note, auto, state_dir, settings_path)
+    # The archive's id IS the session's — the one in the window header when it was saved.
+    # There is deliberately no separate per-save id: the user saves "session be8434" and must
+    # see be8434 in the list, not a second identifier minted behind their back (which is
+    # exactly how it read in the field). Two saves of one session share the id — they are two
+    # photographs of the same work, told apart by their timestamps; ids differ where SESSIONS
+    # differ, and the epoch mint re-rolls against everything already on disk. The id rides in
+    # the FILENAME too, so an archive is identifiable without being opened. The
+    # second-resolution stamp still guards two snapshots inside one second.
+    man = build_manifest(name, note, auto, state_dir, settings_path, sid=sid)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     slug = _slug(name)
-    # second-resolution stamp: two snapshots inside one second must not overwrite
     for i in range(1000):
         mid = f'-{i}' if i else ''
-        base = f'{stamp}{"_" + slug if slug else ""}{mid}{"_auto" if auto else ""}.tar.gz'
+        base = (f'{stamp}{"_" + slug if slug else ""}{mid}_{sid}'
+                f'{"_auto" if auto else ""}.tar.gz')
         path = os.path.join(sessions_dir(state_dir), base)
         if not os.path.exists(path):
             break
@@ -266,6 +441,25 @@ def _safe_members(tar):
     return ok
 
 
+def _settle_status(state_dir):
+    """A restored status.json describes the node as it was when the session was SAVED — very
+    possibly mid-round. Nothing is running now, so the one field that would lie is rewritten:
+    'running'/'starting' becomes 'stopped'. Everything else — the counters, the event log, the
+    champion list, the round ticker — is history and is kept, which is the whole point of
+    carrying the file. Unreadable or absent: leave it alone, the GUI copes with either."""
+    p = os.path.join(state_dir, 'status.json')
+    try:
+        with open(p, encoding='utf-8') as fh:
+            doc = json.load(fh)
+        if not isinstance(doc, dict) or doc.get('state') not in ('running', 'starting'):
+            return
+        doc['state'] = 'stopped'
+        with open(p, 'w', encoding='utf-8') as fh:
+            json.dump(doc, fh, ensure_ascii=False, indent=2, default=str)
+    except Exception:                                    # noqa: BLE001 — absent/corrupt/read-only
+        pass
+
+
 def restore(path, state_dir=None, settings_path=None, backup=False):
     """Swap the workspace for the archived one. The caller must have stopped the node
     (it appends to the library mid-round). Order of operations is the safety story:
@@ -285,14 +479,17 @@ def restore(path, state_dir=None, settings_path=None, backup=False):
             if backup:                                   # AFTER the target is safely out
                 snapshot(name='before-load', auto=True, state_dir=state_dir,
                          settings_path=settings_path, skip_unchanged=True)
-            # transactional swap: current session-owned files (plus transient status)
-            # are parked, not deleted — a mid-swap failure puts everything back
+            # transactional swap: the current session-owned files are parked, not deleted —
+            # a mid-swap failure puts every one of them back
             undo = tempfile.mkdtemp(prefix='.undo-', dir=sessions_dir(state_dir))
             parked = []                                  # (parked_path, original_path)
+            fwd_path = os.path.join(state_dir, 'forward.json')
+            try:                                         # the live ledger, BEFORE it is parked
+                local_fwd = json.load(open(fwd_path, encoding='utf-8'))
+            except Exception:                            # noqa: BLE001 — none yet / unreadable
+                local_fwd = None
             try:
-                for f in _owned_state_files(state_dir) + [
-                        os.path.join(state_dir, t) for t in _TRANSIENT
-                        if os.path.isfile(os.path.join(state_dir, t))]:
+                for f in _owned_state_files(state_dir):
                     b = os.path.join(undo, os.path.basename(f))
                     os.replace(f, b)
                     parked.append((b, f))
@@ -300,6 +497,19 @@ def restore(path, state_dir=None, settings_path=None, backup=False):
                 if os.path.isdir(src_state):
                     for b in sorted(os.listdir(src_state)):
                         os.replace(os.path.join(src_state, b), os.path.join(state_dir, b))
+                # forward.json: MERGE, not swap. The track is live and append-only — a load
+                # must not kill the strategies currently stepping (see the module note).
+                try:
+                    incoming_fwd = json.load(open(fwd_path, encoding='utf-8'))
+                except Exception:                        # noqa: BLE001 — archive carried none
+                    incoming_fwd = None
+                merged = _merge_forward(local_fwd, incoming_fwd)
+                if merged is not None:                   # tmp + replace, like save_track: a
+                    mfd, mtmp = tempfile.mkstemp(         # SIGKILL mid-write must never leave
+                        dir=state_dir, prefix='.fwd-merge-')   # the live ledger torn
+                    with os.fdopen(mfd, 'w', encoding='utf-8') as fh:
+                        json.dump(merged, fh, ensure_ascii=False)
+                    os.replace(mtmp, fwd_path)
             except BaseException:
                 for f in _owned_state_files(state_dir):  # anything already placed is new
                     try:
@@ -314,6 +524,7 @@ def restore(path, state_dir=None, settings_path=None, backup=False):
                 shutil.rmtree(undo, ignore_errors=True)
                 raise
             shutil.rmtree(undo, ignore_errors=True)
+            _settle_status(state_dir)
             try:
                 incoming = json.load(open(os.path.join(tmp, 'settings.json'), encoding='utf-8'))
             except Exception:                            # noqa: BLE001

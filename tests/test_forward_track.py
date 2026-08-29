@@ -29,7 +29,7 @@ def test_new_entry_field_shape():
                      0.25, 0.001, '2019-09-05', tf='1h')
     assert set(e) == {'id', 'name', 'kind', 'tf', 'formulas', 'tickers', 'vol', 'exec',
                       'engine_start', 'start_capital', 'enrolled', 'archived', 'state',
-                      'history'}
+                      'history', 'session'}
     assert e['name'] == 'alpha_t01' and e['kind'] == 'alpha' and e['tf'] == '1h'
     assert e['formulas'] == [FORMULA]
     assert e['tickers'] == ['BTCUSDT', 'ETHUSDT']
@@ -43,6 +43,9 @@ def test_new_entry_field_shape():
                           'last_run': None}
     # enrolled is today's UTC date in ISO form
     assert len(e['enrolled']) == 10 and e['enrolled'][4] == '-' and e['enrolled'][7] == '-'
+    # the enrolling session's id — '' only when the sessions module is unavailable
+    assert e['session'] == '' or (len(e['session']) >= 6
+                                  and all(c in '0123456789abcdef' for c in e['session']))
 
 
 def test_new_entry_signature_matches_frozen_strategy():
@@ -345,3 +348,17 @@ def test_gui_leaderboard_search_filters_by_id_and_formula(gui_app):
     assert len(app.tree.get_children()) == 0
     app.v_lb_q.set('')                                   # cleared -> everything is back
     assert len(app.tree.get_children()) == 2
+
+
+def test_new_entry_stamps_the_current_session(tmp_path, monkeypatch):
+    """The track outlives sessions (Clear all history spares it; a load merges into it), so
+    entries from many sessions pile up in one list — the stamp says where each came from."""
+    monkeypatch.setenv('ALPHANODE_STATE_DIR', str(tmp_path))
+    import sessions as S
+    sid = S.current_session_id(str(tmp_path))
+    e = ft.new_entry('a', 'alpha', [FORMULA], ['BTCUSDT'], 0.25, 0.001, '2024-01-01')
+    assert e['session'] == sid
+    # …and a fresh epoch changes the stamp for the NEXT enroll, not the existing entry
+    S.begin_new_session(str(tmp_path))
+    e2 = ft.new_entry('b', 'alpha', [FORMULA], ['ETHUSDT'], 0.25, 0.001, '2024-01-01')
+    assert e2['session'] != sid and e['session'] == sid

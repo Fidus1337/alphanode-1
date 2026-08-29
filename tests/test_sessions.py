@@ -7,10 +7,27 @@
     silently absent from every checkpoint;
   * restore is a full swap: files the archive does not carry must not survive and mix
     two workspaces — but files sessions do not own (device_id, data) are untouched;
+  * ★ favorites are session-owned: a star points at a formula in a particular library, so
+    it must not be inherited by a workspace mined on another basket, cut or timeframe;
+  * the WHOLE board travels: status.json carries the four counters, the live log and the
+    round ticker, and a restore must not leave a library and a portfolio sitting above four
+    zeros — but the restored status must never claim a node is running;
+  * signals.json is local: it holds PIDs of services on THIS machine and must never travel;
+  * the forward track OUTLIVES sessions: a load MERGES the archive's entries into the live
+    ledger instead of replacing it (paper steps happen in real time and can never be
+    recomputed — a load must not kill what is stepping); same id on both sides — the longer
+    history wins;
+  * the current session (epoch) id lives in state/session_id: adopted from a loaded archive,
+    reset by Clear all history, minted on first need — and stamped into forward entries so
+    a track full of many sessions' strategies still says where each came from;
   * a failed restore rolls the workspace back byte-for-byte; a failed snapshot leaves
     no file at all (no half-written archives under session names);
   * rotation reads the MANIFEST: named sessions are forever even if the user names one
     '..._auto'; identical back-to-back auto checkpoints are skipped;
+  * an archive's id IS the session's — the one in the header at save time. Two saves of one
+    session share it (two photographs of the same work, told apart by date); ids differ
+    where SESSIONS differ, and the epoch mint re-rolls against everything already on disk.
+    The id rides in the manifest and the filename, so an archive is identifiable unopened;
   * loading the oldest auto snapshot works even when the before-load checkpoint
     rotates the pool (the target is extracted before the backup happens);
   * a malicious archive (absolute paths, ../, symlinks, FIFOs, oversized members) is
@@ -41,6 +58,14 @@ def ws(tmp_path, monkeypatch):
         {'id': 'a', 'archived': False, 'state': {'equity': 9950.0}},
         {'id': 'b', 'archived': True, 'state': {'equity': 111.0}}]}))
     (state / 'portfolio.json').write_text('{"top": 6}')
+    (state / 'status.json').write_text(json.dumps({
+        'state': 'running', 'rounds': 7, 'trials_total': 31337, 'found': 12, 'tf': '1h',
+        'current': 'round 8: exploring new…', 'events': [{'ts': '10:00', 'k': 'round', 't': '▶'}],
+        'history': [{'round': 7, 'best_base': 2.1}]}))
+    (state / 'signals.json').write_text('[{"port": 8799, "pid": 4242}]')   # PIDs: stay local
+    (state / 'favorites.json').write_text(json.dumps({'favorites': [
+        {'formula': 'tanh(low)', 'added': '2026-08-01'},
+        {'formula': 'ema:12(close)', 'added': '2026-08-02'}]}))
     (state / 'device_id').write_text('MACHINE')          # identity: never in a session
     (state / 'library.jsonl.bak').write_text('old\n')    # stray backup: not ours
     settings.write_text(json.dumps({'tf': '1h', 'vault_license': 'SECRET-KEY-123',
@@ -68,6 +93,11 @@ def test_snapshot_manifest_and_secret_stripping(ws):
     assert 'state/history.jsonl' in names
     assert man['alphas'] == {'1h': 3, '1d': 2}
     assert man['forward'] == {'entries': 1, 'equity': 9950.0}   # archived entry not counted
+    assert 'state/favorites.json' in names               # stars travel with their session
+    assert man['favorites'] == 2
+    assert 'state/status.json' in names                  # …and so does the top of the board
+    assert man['run'] == {'rounds': 7, 'trials_total': 31337, 'found': 12, 'tf': '1h'}
+    assert 'state/signals.json' not in names             # PIDs of local services: never
     assert man['name'] == 'my exp' and man['auto'] is False
     assert man['fp']                                     # content fingerprint present
     assert 'vault_license' not in cfg                    # THE invariant
@@ -81,7 +111,7 @@ def test_restore_round_trip_swaps_the_whole_workspace(ws):
     open(os.path.join(state, 'library_1h.jsonl'), 'a').write('{"f":4}\n')
     open(os.path.join(state, 'library.jsonl'), 'a').write('{"d":3}\n')
     open(os.path.join(state, 'library_4h.jsonl'), 'w').write('{"x":1}\n')
-    open(os.path.join(state, 'status.json'), 'w').write('{"round": 99}')   # transient
+    open(os.path.join(state, 'status.json'), 'w').write('{"rounds": 99}')  # a later run
     json.dump({'tf': '4h', 'vault_license': 'SECRET-KEY-123'}, open(settings, 'w'))
 
     man = S.restore(p, state_dir=state, settings_path=settings)
@@ -90,7 +120,7 @@ def test_restore_round_trip_swaps_the_whole_workspace(ws):
     assert len(lines) == 3                               # back to the snapshot
     assert open(os.path.join(state, 'library.jsonl')).read().count('\n') == 2
     assert not os.path.exists(os.path.join(state, 'library_4h.jsonl'))  # no workspace mixing
-    assert not os.path.exists(os.path.join(state, 'status.json'))       # stale status gone
+    assert json.load(open(os.path.join(state, 'status.json')))['rounds'] == 7   # the archive's
     cfg = json.load(open(settings))
     assert cfg['tf'] == '1h'                             # session settings won...
     assert cfg['vault_license'] == 'SECRET-KEY-123'      # ...but the machine keeps its key
@@ -321,3 +351,494 @@ def test_peek_reads_archive_without_touching_the_workspace(ws):
     junk = os.path.join(S.sessions_dir(state), 'junk.tar.gz')
     open(junk, 'wb').write(b'not a tar')
     assert S.peek(junk) == {'manifest': None, 'settings': None, 'portfolio': None}
+
+
+# ---- ★ favorites belong to the session that mined them -------------------------------
+
+def test_stars_travel_with_the_session_and_do_not_leak_between_them(ws):
+    """The reported problem: a star outlived the library it pointed into. Save session A
+    with two stars, star something else, load A back — you get A's stars, not today's."""
+    state, settings = ws
+    a = S.snapshot(name='A', state_dir=state, settings_path=settings)
+    json.dump({'favorites': [{'formula': 'rank(volume)'}]},
+              open(os.path.join(state, 'favorites.json'), 'w'))
+    b = S.snapshot(name='B', state_dir=state, settings_path=settings)
+
+    S.restore(a, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'favorites.json')))['favorites']
+    assert [f['formula'] for f in got] == ['tanh(low)', 'ema:12(close)']
+
+    S.restore(b, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'favorites.json')))['favorites']
+    assert [f['formula'] for f in got] == ['rank(volume)']    # B's star, not A's two
+
+
+def test_a_session_saved_without_stars_restores_without_stars(ws):
+    """A full swap, not a merge — the same rule every other owned file follows. Loading a
+    starless workspace must not leave the previous one's ★ behind."""
+    state, settings = ws
+    os.remove(os.path.join(state, 'favorites.json'))
+    p = S.snapshot(name='no-stars', state_dir=state, settings_path=settings)
+    json.dump({'favorites': [{'formula': 'rank(volume)'}]},
+              open(os.path.join(state, 'favorites.json'), 'w'))
+    man = S.restore(p, state_dir=state, settings_path=settings)
+    assert man['favorites'] == 0
+    assert not os.path.exists(os.path.join(state, 'favorites.json'))
+
+
+def test_starring_makes_the_workspace_look_changed(ws):
+    """The fingerprint drives 'skip this auto checkpoint, nothing moved'. A star IS a
+    change now, so a checkpoint taken after one must not be skipped as a duplicate."""
+    state, settings = ws
+    before = S.workspace_fingerprint(state, settings)
+    doc = json.load(open(os.path.join(state, 'favorites.json')))
+    doc['favorites'].append({'formula': 'rank(volume)'})
+    json.dump(doc, open(os.path.join(state, 'favorites.json'), 'w'))
+    assert S.workspace_fingerprint(state, settings) != before
+
+
+def test_a_corrupt_favorites_file_is_counted_as_none(ws):
+    """The manifest is written on every save — a hand-mangled star file must not stop one."""
+    state, settings = ws
+    open(os.path.join(state, 'favorites.json'), 'w').write('{ not json')
+    p = S.snapshot(name='c', state_dir=state, settings_path=settings)
+    with tarfile.open(p) as tar:
+        man = json.load(tar.extractfile('manifest.json'))
+    assert man['favorites'] == 0
+    assert 'state/favorites.json' in {m.name for m in tarfile.open(p).getmembers()}
+
+
+@pytest.mark.gui
+def test_the_leaderboard_repaints_stars_after_a_session_load(gui_app):
+    """_fav_ids is cached until something sets it to None. A restore swaps favorites.json
+    under the GUI, so without the invalidation the table keeps painting the PREVIOUS
+    workspace's ★ onto rows that belong to a different library."""
+    app, _rec, state = gui_app
+    import alphanode_gui as G
+    import favorites as favdb
+    lib = state / 'library_1h.jsonl'
+    lib.write_text('{"formula":"tanh(low)","base":1.0}\n')
+    favdb.toggle(str(state), {'formula': 'tanh(low)'}, '1h')
+    assert favdb.ids(str(state)) == {favdb.alpha_id('tanh(low)')}
+    starless = S.snapshot(name='starless', state_dir=str(state), settings_path=G.SETTINGS)
+
+    app._fav_ids = {'deadbe'}                            # a star from the workspace we are
+    S.restore(starless, state_dir=str(state), settings_path=G.SETTINGS)   # about to leave
+    app._sessions_rebuild()
+    live = app._fav_ids if app._fav_ids is not None else favdb.ids(str(state))
+    assert 'deadbe' not in live                          # the stale star did not survive
+    assert live == favdb.ids(str(state)) == {favdb.alpha_id('tanh(low)')}
+
+
+# ---- the whole board travels: counters, live log, round ticker ------------------------
+
+def test_the_board_comes_back_with_the_session(ws):
+    """A loaded session used to show its library, portfolio and forward track above four
+    zeros and an empty log: status.json — the only home of ROUNDS / FORMULAS TRIED /
+    ALPHAS FOUND / BEST FITNESS and the event feed — was deliberately never archived."""
+    state, settings = ws
+    p = S.snapshot(name='deep-run', state_dir=state, settings_path=settings)
+    json.dump({'state': 'stopped', 'rounds': 0, 'trials_total': 0, 'events': []},
+              open(os.path.join(state, 'status.json'), 'w'))          # a fresh, empty run
+    S.restore(p, state_dir=state, settings_path=settings)
+    st = json.load(open(os.path.join(state, 'status.json')))
+    assert st['rounds'] == 7 and st['trials_total'] == 31337 and st['found'] == 12
+    assert st['events'] and st['history']                             # log and fitness history
+
+
+def test_a_restored_status_never_claims_the_node_is_running(ws):
+    """The reason status.json was transient in the first place. It is saved mid-round, so the
+    archive says 'running' — restoring that verbatim would have the window reporting a search
+    that is not happening. Only that field is rewritten; the history it carries is the point."""
+    state, settings = ws
+    p = S.snapshot(name='mid-round', state_dir=state, settings_path=settings)
+    with tarfile.open(p) as tar:
+        archived = json.load(tar.extractfile('state/status.json'))
+    assert archived['state'] == 'running'                             # saved as it really was
+    S.restore(p, state_dir=state, settings_path=settings)
+    st = json.load(open(os.path.join(state, 'status.json')))
+    assert st['state'] == 'stopped'
+    assert st['rounds'] == 7 and st['current'] == 'round 8: exploring new…'   # kept verbatim
+
+
+def test_a_stopped_status_is_restored_untouched(ws):
+    state, settings = ws
+    doc = json.load(open(os.path.join(state, 'status.json')))
+    doc['state'] = 'stopped'
+    json.dump(doc, open(os.path.join(state, 'status.json'), 'w'))
+    p = S.snapshot(name='done', state_dir=state, settings_path=settings)
+    S.restore(p, state_dir=state, settings_path=settings)
+    assert json.load(open(os.path.join(state, 'status.json')))['state'] == 'stopped'
+
+
+def test_signals_json_stays_on_this_machine(ws):
+    """A PID from another machine — or another boot of this one — is either meaningless or
+    somebody else's process. The registry must survive a restore untouched, not travel."""
+    state, settings = ws
+    p = S.snapshot(name='s', state_dir=state, settings_path=settings)
+    open(os.path.join(state, 'signals.json'), 'w').write('[{"port": 8800, "pid": 99}]')
+    S.restore(p, state_dir=state, settings_path=settings)
+    assert json.load(open(os.path.join(state, 'signals.json')))[0]['pid'] == 99
+
+
+def test_a_corrupt_status_does_not_break_a_restore(ws):
+    state, settings = ws
+    open(os.path.join(state, 'status.json'), 'w').write('{ not json')
+    p = S.snapshot(name='bad', state_dir=state, settings_path=settings)
+    man = S.restore(p, state_dir=state, settings_path=settings)
+    assert man['name'] == 'bad'
+    assert open(os.path.join(state, 'status.json')).read() == '{ not json'   # left as found
+
+
+@pytest.mark.gui
+def test_the_gui_tiles_and_log_refill_after_a_load(gui_app):
+    """End to end, in the widgets: the four counters and the event feed must read the
+    restored run, and the state pill must not say 'running'."""
+    app, _rec, state = gui_app
+    import alphanode_gui as G
+    (state / 'library_1h.jsonl').write_text('{"formula":"tanh(low)","base":1.0}\n')
+    (state / 'status.json').write_text(json.dumps({
+        'state': 'running', 'rounds': 7, 'trials_total': 31337, 'found': 12,
+        'cpu_percent': 50, 'n_jobs': 6, 'cores': 12, 'universe': 'BTCUSDT',
+        'current': 'round 8: exploring new…', 'best': [],
+        'events': [{'ts': '10:00', 'k': 'round', 't': '▶ round 7: explore'}],
+        'history': [{'round': 7, 'best_base': 2.14}]}))
+    saved = S.snapshot(name='deep', state_dir=str(state), settings_path=G.SETTINGS)
+
+    (state / 'status.json').write_text('{"state": "stopped", "rounds": 0, "trials_total": 0}')
+    S.restore(saved, state_dir=str(state), settings_path=G.SETTINGS)
+    app._sessions_rebuild()
+    app._poll()
+    app.root.update()
+
+    assert app.s_rounds.cget('text') == '7'
+    assert app.s_trials.cget('text') == '31,337'
+    assert app.s_found.cget('text') == '12'
+    assert app.s_fit.cget('text') == '+2.14'             # from the restored history
+    assert 'round 7: explore' in app.logbox.get('1.0', 'end')
+    assert 'running' not in app.lbl_state.cget('text')   # …but nothing is actually running
+    assert 'last run' in app.lbl_cur.cget('text')        # and the ticker says as much
+
+
+# ---- every save gets its own id --------------------------------------------------------
+
+def test_the_archive_wears_the_id_from_the_header(ws):
+    """The field report, verbatim: 'я сохранил сессию be8434, а сохранило как d47541'. The
+    id the user watches is the SESSION id — the archive must show that one, not a second
+    identifier minted behind their back."""
+    state, settings = ws
+    sid = S.current_session_id(state)
+    S.snapshot(name='session', state_dir=state, settings_path=settings)
+    assert S.list_sessions(state)[0]['id'] == sid
+
+
+def test_two_saves_of_one_session_share_the_id_and_two_sessions_never_do(ws):
+    """Two saves of the same workspace are two photographs of ONE session — same id, told
+    apart by their timestamps. A different session (after Clear) gets a different id, which
+    is what keeps two same-named archives distinguishable."""
+    state, settings = ws
+    a = S.snapshot(name='test2', state_dir=state, settings_path=settings)
+    b = S.snapshot(name='test2', state_dir=state, settings_path=settings)
+    ids = [m['id'] for m in S.list_sessions(state)]
+    assert len(set(ids)) == 1 and a != b                 # one session, two files
+    S.begin_new_session(state)
+    S.snapshot(name='test2', state_dir=state, settings_path=settings)
+    ids = {m['id'] for m in S.list_sessions(state)}
+    assert len(ids) == 2                                 # a new SESSION is a new id
+
+
+def test_the_id_is_in_the_manifest_and_in_the_filename(ws):
+    """On disk, mailed, or copied into a backup folder: the file says which session it is
+    without anyone opening it."""
+    state, settings = ws
+    p = S.snapshot(name='exp', state_dir=state, settings_path=settings)
+    with tarfile.open(p) as tar:
+        man = json.load(tar.extractfile('manifest.json'))
+    assert man['id'] and man['id'] in os.path.basename(p)
+
+
+def test_a_new_epoch_never_reuses_an_archived_id(ws, monkeypatch):
+    """'Unique' must not rest on probability alone: the epoch mint re-rolls against every id
+    already on disk, so a fresh session can never collide with an archived one."""
+    state, settings = ws
+    seq = iter(['aaaaaa', 'aaaaaa', 'aaaaaa', 'bbbbbb'])
+    monkeypatch.setattr(S.secrets, 'token_hex', lambda n: next(seq))
+    S.begin_new_session(state)                           # epoch 'aaaaaa'
+    S.snapshot(name='one', state_dir=state, settings_path=settings)
+    got = S.begin_new_session(state)                     # 'aaaaaa' twice more -> re-rolled
+    assert got == 'bbbbbb'
+    assert {m['id'] for m in S.list_sessions(state)} == {'aaaaaa'}
+
+
+def test_the_id_survives_a_restore_round_trip(ws):
+    """Restoring does not renumber anything: the archive keeps the id it was written with."""
+    state, settings = ws
+    p = S.snapshot(name='keep', state_dir=state, settings_path=settings)
+    sid = S.list_sessions(state)[0]['id']
+    man = S.restore(p, state_dir=state, settings_path=settings)
+    assert man['id'] == sid
+    assert S.peek(p)['manifest']['id'] == sid
+
+
+def test_an_archive_from_before_ids_still_gets_a_stable_handle(ws):
+    """Old archives carry no id. Rather than a blank column, one is derived from the
+    filename — stable across listings, and flagged so the details panel can say so."""
+    state, settings = ws
+    p = S.snapshot(name='old', state_dir=state, settings_path=settings)
+    # rewrite the archive without an id, exactly as an older build would have written it
+    with tarfile.open(p) as tar:
+        members = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+    man = json.loads(members['manifest.json'])
+    man.pop('id')
+    members['manifest.json'] = json.dumps(man).encode()
+    with tarfile.open(p, 'w:gz') as tar:
+        for n, data in members.items():
+            info = tarfile.TarInfo(n)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    listed = S.list_sessions(state)[0]
+    assert len(listed['id']) == 6 and listed['id_derived'] is True
+    assert S.list_sessions(state)[0]['id'] == listed['id']        # stable across listings
+
+
+@pytest.mark.gui
+def test_the_sessions_window_shows_the_id_column(gui_app):
+    app, _rec, state = gui_app
+    import alphanode_gui as G
+    (state / 'library_1h.jsonl').write_text('{"formula":"x","base":1.0}\n')
+    S.snapshot(name='test2', state_dir=str(state), settings_path=G.SETTINGS)
+    S.snapshot(name='test2', state_dir=str(state), settings_path=G.SETTINGS)
+    app._sessions_open()
+    app.root.update()
+    wins = [w for w in app.root.winfo_children()
+            if w.winfo_class() in ('Toplevel', 'CTkToplevel') and w.title() == 'Sessions']
+    assert wins, 'the Sessions window did not open'
+    win = wins[-1]
+
+    def _trees(w):
+        out = [w] if w.winfo_class() == 'Treeview' else []
+        for kid in w.winfo_children():
+            out += _trees(kid)
+        return out
+
+    trees = _trees(win)
+    assert trees, 'no sessions table'
+    tree = trees[0]
+    assert tree['columns'][0] == 'id'                    # first: it is the row's name
+    ids = [tree.set(i, 'id') for i in tree.get_children()]
+    names = [tree.set(i, 'name') for i in tree.get_children()]
+    assert names == ['test2', 'test2']
+    assert ids == [app._session_id()] * 2                # both photographs of THIS session
+    win.destroy()
+
+
+# ---- the forward track outlives sessions; the epoch id says who enrolled what ----------
+
+def _fwd(entries):
+    return {'entries': entries}
+
+
+def _e(eid, steps, **over):
+    d = {'id': eid, 'archived': False,
+         'history': [{'date': f'2026-08-{i+1:02d}', 'equity': 10000 + i} for i in range(steps)],
+         'state': {'equity': 10000.0}}
+    d.update(over)
+    return d
+
+
+def test_a_session_load_merges_the_forward_track_instead_of_replacing_it(ws):
+    """The reported requirement: strategies keep stepping across session switches. Local
+    entries survive the load, the archive's entries JOIN them, and an entry present on both
+    sides keeps the longer (live) history — append-only means the shorter is a stale prefix."""
+    state, settings = ws
+    json.dump(_fwd([_e('both01', 2), _e('arch01', 5)]),
+              open(os.path.join(state, 'forward.json'), 'w'))
+    p = S.snapshot(name='old', state_dir=state, settings_path=settings)
+    # life goes on after the save: 'both01' takes 3 more live steps, 'live01' is enrolled
+    json.dump(_fwd([_e('both01', 5), _e('live01', 1)]),
+              open(os.path.join(state, 'forward.json'), 'w'))
+    S.restore(p, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert [e['id'] for e in got] == ['both01', 'live01', 'arch01']   # local first, then joins
+    assert len(next(e for e in got if e['id'] == 'both01')['history']) == 5   # live copy won
+
+
+def test_loading_an_archive_with_no_forward_keeps_the_live_track(ws):
+    """Under the old wholesale swap this was the killer: an archive without forward.json
+    left the workspace with NO track at all — every running paper test gone."""
+    state, settings = ws
+    os.remove(os.path.join(state, 'forward.json'))
+    p = S.snapshot(name='no-fwd', state_dir=state, settings_path=settings)
+    json.dump(_fwd([_e('live01', 3)]), open(os.path.join(state, 'forward.json'), 'w'))
+    S.restore(p, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert [e['id'] for e in got] == ['live01']
+
+
+def test_the_archives_longer_history_wins_on_a_new_machine(ws):
+    """The same rule, mirrored: restore onto a machine whose copy is BEHIND (or empty) —
+    the archive's longer history is the live one there."""
+    state, settings = ws
+    json.dump(_fwd([_e('both01', 7)]), open(os.path.join(state, 'forward.json'), 'w'))
+    p = S.snapshot(name='ahead', state_dir=state, settings_path=settings)
+    json.dump(_fwd([_e('both01', 2)]), open(os.path.join(state, 'forward.json'), 'w'))
+    S.restore(p, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert len(got[0]['history']) == 7
+
+
+def test_current_session_id_is_minted_once_and_reset_deliberately(ws):
+    state, _settings = ws
+    a = S.current_session_id(state)
+    assert a == S.current_session_id(state)              # stable across calls
+    assert len(a) == 6 and all(c in '0123456789abcdef' for c in a)
+    b = S.begin_new_session(state)
+    assert b != a and b == S.current_session_id(state)
+    open(os.path.join(state, 'session_id'), 'w').write('NOT-AN-ID')
+    c = S.current_session_id(state)                      # corrupt file: re-minted, not trusted
+    assert c not in (a, 'NOT-AN-ID') and len(c) == 6
+
+
+def test_restore_adopts_the_archives_epoch(ws):
+    """Loading a session means CONTINUING it: the workspace's current session id becomes the
+    archive's, so forward entries enrolled after the load carry the loaded session's id."""
+    state, settings = ws
+    a = S.current_session_id(state)
+    p = S.snapshot(name='epoch-a', state_dir=state, settings_path=settings)
+    S.begin_new_session(state)
+    assert S.current_session_id(state) != a
+    S.restore(p, state_dir=state, settings_path=settings)
+    assert S.current_session_id(state) == a
+
+
+def test_the_manifest_id_and_session_agree(ws):
+    """One id space: the manifest's 'id' and 'session' are the same value now — 'session'
+    stays only so archives from the two-id interlude still render in the details panel."""
+    state, settings = ws
+    S.snapshot(name='s1', state_dir=state, settings_path=settings)
+    row = S.list_sessions(state)[0]
+    assert row['id'] == row['session'] == S.current_session_id(state)
+
+
+def test_an_archive_from_before_epochs_starts_a_fresh_one(ws):
+    """No session_id member inside → the swap leaves none behind → the next call mints a
+    new epoch rather than inheriting the abandoned workspace's."""
+    state, settings = ws
+    p = S.snapshot(name='pre-epoch', state_dir=state, settings_path=settings)
+    with tarfile.open(p) as tar:
+        members = {m.name: tar.extractfile(m).read() for m in tar.getmembers()}
+    members.pop('state/session_id')
+    with tarfile.open(p, 'w:gz') as tar:
+        for n, data in members.items():
+            info = tarfile.TarInfo(n)
+            info.size = len(data)
+            tar.addfile(info, io.BytesIO(data))
+    before = S.current_session_id(state)
+    S.restore(p, state_dir=state, settings_path=settings)
+    assert not os.path.exists(os.path.join(state, 'session_id'))
+    assert S.current_session_id(state) != before
+
+
+@pytest.mark.gui
+def test_clear_all_history_spares_the_track_and_mints_a_new_session(gui_app, monkeypatch):
+    """Clear kills the library; the forward track keeps stepping — and what follows the
+    clear is a NEW session, visible in the header, so entries enrolled before and after
+    carry different stamps."""
+    import types
+    app, _rec, state = gui_app
+    import alphanode_gui as G
+    (state / 'library_1h.jsonl').write_text('{"formula":"x","base":1.0}\n')
+    (state / 'forward.json').write_text(json.dumps(_fwd([_e('aaaa01', 2)])))
+    sid_before = app._session_id()
+    assert f'session {sid_before}' == app.sid_lbl.cget('text')
+    yes = types.SimpleNamespace(askyesno=lambda *a, **k: True,
+                                askokcancel=lambda *a, **k: True,
+                                showinfo=lambda *a, **k: None,
+                                showwarning=lambda *a, **k: None,
+                                showerror=lambda *a, **k: None)
+    monkeypatch.setattr(G, 'messagebox', yes)
+    app._wipe_history()
+    assert (state / 'forward.json').exists()             # the track survived the clear
+    assert not (state / 'library_1h.jsonl').exists()     # the library did not
+    sid_after = app._session_id()
+    assert sid_after != sid_before                       # a fresh epoch
+    assert app.sid_lbl.cget('text') == f'session {sid_after}'
+
+
+@pytest.mark.gui
+def test_the_forward_table_shows_each_entrys_session(gui_app):
+    app, _rec, state = gui_app
+    import forward_track as ft
+    e = ft.new_entry('aaaa01', 'alpha', ['tanh(low)'], ['BTCUSDT'], 0.25, 0.001, '2024-01-01',
+                     entry_id='aaaa01')
+    legacy = ft.new_entry('bbbb02', 'alpha', ['rank(v)'], ['ETHUSDT'], 0.25, 0.001, '2024-01-01',
+                          entry_id='bbbb02')
+    legacy.pop('session')                                # enrolled before the stamp existed
+    (state / 'forward.json').write_text(json.dumps(_fwd([e, legacy])))
+    app._fwd_refresh()
+    app.root.update()
+    assert 'session' in app.fwd_tree['columns']
+    assert app.fwd_tree.set('aaaa01', 'session') == app._session_id()
+    assert app.fwd_tree.set('bbbb02', 'session') == '—'  # honest dash, not a blank
+
+
+# ---- review findings, pinned -----------------------------------------------------------
+
+def test_same_id_but_a_different_strategy_never_displaces_the_live_entry(ws):
+    """An alpha's entry id is md5(formula)[:6] whatever the timeframe, universe or fees — an
+    old archive can carry a DIFFERENT enrollment under a live entry's id, with a longer
+    history. It must not win: only a copy of the SAME enrollment is the same append-only
+    stream. (Adversarial review finding.)"""
+    state, settings = ws
+    old = _e('aaaa01', 50, tf='1h', formulas=['tanh(low)'], enrolled='2026-01-01')
+    json.dump(_fwd([old]), open(os.path.join(state, 'forward.json'), 'w'))
+    p = S.snapshot(name='old-strategy', state_dir=state, settings_path=settings)
+    live = _e('aaaa01', 3, tf='1d', formulas=['tanh(low)'], enrolled='2026-08-20')
+    json.dump(_fwd([live]), open(os.path.join(state, 'forward.json'), 'w'))
+    S.restore(p, state_dir=state, settings_path=settings)
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert len(got) == 1                                 # one row per id — the table's iid rule
+    assert got[0]['tf'] == '1d' and len(got[0]['history']) == 3   # the LIVE one, 50 steps or not
+
+
+def test_a_shape_corrupt_forward_file_degrades_instead_of_raising(ws):
+    """'entries': null is valid JSON that load_track happily passes through — the merge must
+    treat every corrupt shape as empty, the way the rest of the restore road does, because it
+    runs AFTER the swap and a TypeError there would make every later load fail identically.
+    (Adversarial review finding.)"""
+    state, settings = ws
+    p = S.snapshot(name='sane', state_dir=state, settings_path=settings)
+    open(os.path.join(state, 'forward.json'), 'w').write('{"entries": null}')
+    S.restore(p, state_dir=state, settings_path=settings)          # must not raise
+    got = json.load(open(os.path.join(state, 'forward.json')))['entries']
+    assert [e['id'] for e in got] == ['a', 'b']          # the archive's track, corrupt side empty
+    # …and a truthy non-list history must not crash len(): it counts as 0 steps, so the
+    # side with a WELL-FORMED history of the same enrollment wins
+    assert S._merge_forward({'entries': [{'id': 'x', 'history': 7}]},
+                            {'entries': [{'id': 'x', 'history': [1, 2]}]}) \
+        == {'entries': [{'id': 'x', 'history': [1, 2]}]}
+    assert S._merge_forward({'entries': 3}, {'entries': ['junk', {'id': 'y'}]}) \
+        == {'entries': [{'id': 'y'}]}
+
+
+def test_a_merge_failure_rolls_the_whole_workspace_back(ws, monkeypatch):
+    """The merge runs inside restore's transaction: if it blows up, the parked originals come
+    back byte-for-byte — including the live forward.json it was about to rewrite."""
+    state, settings = ws
+    before = open(os.path.join(state, 'forward.json')).read()
+    p = S.snapshot(name='boom', state_dir=state, settings_path=settings)
+    monkeypatch.setattr(S, '_merge_forward',
+                        lambda *_a: (_ for _ in ()).throw(RuntimeError('merge boom')))
+    with pytest.raises(RuntimeError):
+        S.restore(p, state_dir=state, settings_path=settings)
+    assert open(os.path.join(state, 'forward.json')).read() == before
+
+
+def test_an_explicit_session_stamp_wins_over_the_module_default(tmp_path, monkeypatch):
+    """The GUI passes its own session id: with ALPHANODE_STATE_DIR exported, the module-level
+    default could read a DIFFERENT directory's epoch than the header shows."""
+    monkeypatch.setenv('ALPHANODE_STATE_DIR', str(tmp_path))
+    import forward_track as ft
+    e = ft.new_entry('a', 'alpha', ['tanh(low)'], ['BTCUSDT'], 0.25, 0.001, '2024-01-01',
+                     session='cafe01')
+    assert e['session'] == 'cafe01'
