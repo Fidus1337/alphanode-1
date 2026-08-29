@@ -145,14 +145,16 @@ def _slug(name):
     return s
 
 
-def new_session_id(state_dir):
-    """A fresh 6-hex handle for one SAVE. Random, not derived from the workspace: saving the
-    same library twice is two sessions, and a content hash would call them one. Six characters
-    is the same shape the leaderboard, the forward track and the portfolio members use for an
-    alpha, so ids read alike everywhere. Collisions are re-rolled against the ids already on
-    disk — with a handful of sessions this never fires, but 'unique' should not be a promise
-    made by probability alone."""
-    taken = {m.get('id') for m in list_sessions(state_dir)}
+def _mint_sid(state_dir):
+    """A fresh 6-hex epoch id, re-rolled against every id already on disk — the archives'
+    and their recorded sessions' — so no two SESSIONS ever share one. With a handful of
+    archives the re-roll never fires, but 'unique' should not be a promise made by
+    probability alone. Six characters: the same shape an alpha, a forward entry and a
+    portfolio member carry, so ids read alike everywhere."""
+    taken = set()
+    for m in list_sessions(state_dir):
+        taken.add(m.get('id'))
+        taken.add(m.get('session'))
     for _ in range(64):
         sid = secrets.token_hex(3)
         if sid not in taken:
@@ -177,7 +179,7 @@ def current_session_id(state_dir=None):
         sid = ''
     if _SID_RE.match(sid):
         return sid
-    fresh = secrets.token_hex(3)
+    fresh = _mint_sid(state_dir)
     try:
         fd, tmp = tempfile.mkstemp(dir=state_dir, prefix='.sid-')
         with os.fdopen(fd, 'w', encoding='utf-8') as fh:
@@ -344,20 +346,23 @@ def snapshot(name='', note='', auto=False, state_dir=None, settings_path=None, k
     (same content fingerprint) or archiving a workspace that owns no files at all."""
     state_dir = state_dir or apppaths.state_dir()
     settings_path = settings_path or apppaths.settings_file()
-    current_session_id(state_dir)                        # ensure the epoch file exists: the
+    sid = current_session_id(state_dir)                  # ensure the epoch file exists: the
     if skip_unchanged:                                   # fingerprint and the tar both carry it
         if not _owned_state_files(state_dir):
             return None
         if workspace_fingerprint(state_dir, settings_path) == _newest_fingerprint(state_dir):
             return None
-    sid = new_session_id(state_dir)
+    # The archive's id IS the session's — the one in the window header when it was saved.
+    # There is deliberately no separate per-save id: the user saves "session be8434" and must
+    # see be8434 in the list, not a second identifier minted behind their back (which is
+    # exactly how it read in the field). Two saves of one session share the id — they are two
+    # photographs of the same work, told apart by their timestamps; ids differ where SESSIONS
+    # differ, and the epoch mint re-rolls against everything already on disk. The id rides in
+    # the FILENAME too, so an archive is identifiable without being opened. The
+    # second-resolution stamp still guards two snapshots inside one second.
     man = build_manifest(name, note, auto, state_dir, settings_path, sid=sid)
     stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
     slug = _slug(name)
-    # The id rides in the FILENAME as well as the manifest, so an archive is identifiable on
-    # disk — mailed, copied into a backup, sitting in a folder — without opening it. Two
-    # sessions may share a name (they usually do: 'test2' twice), and only this tells them
-    # apart. The second-resolution stamp still guards two snapshots inside one second.
     for i in range(1000):
         mid = f'-{i}' if i else ''
         base = (f'{stamp}{"_" + slug if slug else ""}{mid}_{sid}'

@@ -24,9 +24,10 @@
     no file at all (no half-written archives under session names);
   * rotation reads the MANIFEST: named sessions are forever even if the user names one
     '..._auto'; identical back-to-back auto checkpoints are skipped;
-  * every save mints its own id: two sessions routinely share a name ('test2' twice), and
-    the id is the only thing that tells them apart — in the list, in the manifest and in
-    the filename, so an archive is identifiable on disk without being opened;
+  * an archive's id IS the session's — the one in the header at save time. Two saves of one
+    session share it (two photographs of the same work, told apart by date); ids differ
+    where SESSIONS differ, and the epoch mint re-rolls against everything already on disk.
+    The id rides in the manifest and the filename, so an archive is identifiable unopened;
   * loading the oldest auto snapshot works even when the before-load checkpoint
     rotates the pool (the target is extracted before the backup happens);
   * a malicious archive (absolute paths, ../, symlinks, FIFOs, oversized members) is
@@ -521,16 +522,29 @@ def test_the_gui_tiles_and_log_refill_after_a_load(gui_app):
 
 # ---- every save gets its own id --------------------------------------------------------
 
-def test_two_saves_of_the_same_name_are_told_apart_by_id(ws):
-    """The reported case, verbatim: two sessions both called 'test2'. Nothing but the id
-    distinguishes them — the content may even be identical."""
+def test_the_archive_wears_the_id_from_the_header(ws):
+    """The field report, verbatim: 'я сохранил сессию be8434, а сохранило как d47541'. The
+    id the user watches is the SESSION id — the archive must show that one, not a second
+    identifier minted behind their back."""
+    state, settings = ws
+    sid = S.current_session_id(state)
+    S.snapshot(name='session', state_dir=state, settings_path=settings)
+    assert S.list_sessions(state)[0]['id'] == sid
+
+
+def test_two_saves_of_one_session_share_the_id_and_two_sessions_never_do(ws):
+    """Two saves of the same workspace are two photographs of ONE session — same id, told
+    apart by their timestamps. A different session (after Clear) gets a different id, which
+    is what keeps two same-named archives distinguishable."""
     state, settings = ws
     a = S.snapshot(name='test2', state_dir=state, settings_path=settings)
     b = S.snapshot(name='test2', state_dir=state, settings_path=settings)
     ids = [m['id'] for m in S.list_sessions(state)]
-    assert len(ids) == 2 and len(set(ids)) == 2
-    assert all(len(i) == 6 and all(c in '0123456789abcdef' for c in i) for i in ids)
-    assert a != b
+    assert len(set(ids)) == 1 and a != b                 # one session, two files
+    S.begin_new_session(state)
+    S.snapshot(name='test2', state_dir=state, settings_path=settings)
+    ids = {m['id'] for m in S.list_sessions(state)}
+    assert len(ids) == 2                                 # a new SESSION is a new id
 
 
 def test_the_id_is_in_the_manifest_and_in_the_filename(ws):
@@ -543,15 +557,17 @@ def test_the_id_is_in_the_manifest_and_in_the_filename(ws):
     assert man['id'] and man['id'] in os.path.basename(p)
 
 
-def test_an_id_is_never_reused(ws, monkeypatch):
-    """'Unique' must not rest on probability alone: a generator handing back a taken id is
-    re-rolled against what is already on disk."""
+def test_a_new_epoch_never_reuses_an_archived_id(ws, monkeypatch):
+    """'Unique' must not rest on probability alone: the epoch mint re-rolls against every id
+    already on disk, so a fresh session can never collide with an archived one."""
     state, settings = ws
     seq = iter(['aaaaaa', 'aaaaaa', 'aaaaaa', 'bbbbbb'])
     monkeypatch.setattr(S.secrets, 'token_hex', lambda n: next(seq))
+    S.begin_new_session(state)                           # epoch 'aaaaaa'
     S.snapshot(name='one', state_dir=state, settings_path=settings)
-    S.snapshot(name='two', state_dir=state, settings_path=settings)
-    assert sorted(m['id'] for m in S.list_sessions(state)) == ['aaaaaa', 'bbbbbb']
+    got = S.begin_new_session(state)                     # 'aaaaaa' twice more -> re-rolled
+    assert got == 'bbbbbb'
+    assert {m['id'] for m in S.list_sessions(state)} == {'aaaaaa'}
 
 
 def test_the_id_survives_a_restore_round_trip(ws):
@@ -611,7 +627,8 @@ def test_the_sessions_window_shows_the_id_column(gui_app):
     assert tree['columns'][0] == 'id'                    # first: it is the row's name
     ids = [tree.set(i, 'id') for i in tree.get_children()]
     names = [tree.set(i, 'name') for i in tree.get_children()]
-    assert names == ['test2', 'test2'] and len(set(ids)) == 2
+    assert names == ['test2', 'test2']
+    assert ids == [app._session_id()] * 2                # both photographs of THIS session
     win.destroy()
 
 
@@ -694,15 +711,13 @@ def test_restore_adopts_the_archives_epoch(ws):
     assert S.current_session_id(state) == a
 
 
-def test_two_saves_of_one_workspace_share_the_epoch_but_not_the_save_id(ws):
-    """The two id spaces, side by side: the save id names the photograph, the session id
-    names the living workspace. Saving twice = two photographs of one session."""
+def test_the_manifest_id_and_session_agree(ws):
+    """One id space: the manifest's 'id' and 'session' are the same value now — 'session'
+    stays only so archives from the two-id interlude still render in the details panel."""
     state, settings = ws
     S.snapshot(name='s1', state_dir=state, settings_path=settings)
-    S.snapshot(name='s2', state_dir=state, settings_path=settings)
-    rows = S.list_sessions(state)
-    assert rows[0]['session'] == rows[1]['session'] == S.current_session_id(state)
-    assert rows[0]['id'] != rows[1]['id']
+    row = S.list_sessions(state)[0]
+    assert row['id'] == row['session'] == S.current_session_id(state)
 
 
 def test_an_archive_from_before_epochs_starts_a_fresh_one(ws):

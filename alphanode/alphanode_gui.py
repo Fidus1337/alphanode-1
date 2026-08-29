@@ -2569,8 +2569,9 @@ class App:
         pad.pack(fill='both', expand=True, padx=14, pady=12)
         self._head(pad, 'SESSIONS — the whole workspace as one file').pack(anchor='w')
         self._lbl(pad, text='Formulas, forward track, portfolio, ★ favourites, the run counters '
-                            'and settings. Every save gets its own ID — names repeat, ids do '
-                            'not. The licence key never travels inside a session. '
+                            'and settings. ID is the SESSION id — the one in the header when '
+                            'it was saved; two saves of one session share it and differ by '
+                            'date. The licence key never travels inside a session. '
                             'Double-click a row for details.',
                   text_color=MUT, font=(self.UI, 12)).pack(anchor='w', pady=(2, 8))
         cols = ('id', 'created', 'name', 'alphas', 'equity', 'size', 'kind')
@@ -2698,6 +2699,9 @@ class App:
             L.append(f"SESSION  {title}   ·   id {man.get('id', '?')}"
                      + ('  (derived from the filename — saved before ids)'
                         if man.get('id_derived') else ''))
+            if man.get('session') and man.get('session') != man.get('id'):
+                # a transitional archive: written while saves minted their own id
+                L.append(f"           (workspace session at save time: {man['session']})")
             L.append(f"created  {man.get('created', '?')[:19].replace('T', ' ')}   "
                      f"app v{man.get('version', '?')}   "
                      f"{'auto' if man.get('auto') else 'saved by hand'}")
@@ -2709,7 +2713,6 @@ class App:
             L.append(f"forward  {fw.get('entries', 0)} entries"
                      + (f' · equity ${eq:,.2f}' if eq else ''))
             L.append(f"stars    {man.get('favorites', 0)} ★ favorites")
-            L.append(f"session  {man.get('session', '— (saved before session ids)')}")
             rn = man.get('run') or {}
             L.append('run      ' + (f"{rn.get('rounds', 0)} rounds · "
                                     f"{rn.get('trials_total', 0):,} formulas tried · "
